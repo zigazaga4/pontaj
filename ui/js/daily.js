@@ -69,7 +69,7 @@ export function renderDaily(container, ctx, ei) {
       parse: (text) => parseCellInput(text),
       classes: (e) =>
         [e.code ? (KNOWN_CODES.includes(e.code) ? "code" : "code unknown") : "", e.overrideHours != null || (e.hours != null && e.workedMin === 0 && !e.code) ? "manual" : ""].join(" "),
-      title: (e) => (e.overrideHours != null ? "Ore trecute manual" : "Ore întregi sau jumătăți: 8 · 7,5 · 7:30 · 730"),
+      title: (e) => (e.overrideHours != null ? "Ore trecute manual" : "Ore întregi sau cu minute: 8 · 7:30 · 730 · 7,30 (se rotunjește la jumătate de oră)"),
       commit: (patch) => ctx.onDayEdit(ei, di, patch),
     }))));
 
@@ -182,7 +182,7 @@ export function renderDaily(container, ctx, ei) {
   const intro = h("div", { class: "view-intro" },
     h("div", {},
       h("b", {}, "Pontajul pe zile"),
-      h("span", { class: "muted" }, " · scrie ore întregi sau jumătăți (8 · 7,5 · 7:30 · 730) sau cod (CO, CM…), orele de început/sfârșit și orele de noapte; gol = calcul automat. Portocaliu = trecut manual.")));
+      h("span", { class: "muted" }, " · scrie ore întregi sau cu minute (8 · 7:30 · 730 · 7,30; se rotunjește la jumătate de oră) sau cod (CO, CM…), orele de început/sfârșit și orele de noapte; gol = calcul automat. Portocaliu = trecut manual.")));
 
   container.replaceChildren(intro, h("div", { class: "table-scroll" }, table));
   const refresh = () => updaters.forEach((fn) => fn());

@@ -27,22 +27,30 @@ export function signed(min) {
   return `${min > 0 ? "+" : "−"}${duration(min)}`;
 }
 
-/** Hours as written in the sheet: whole or half hours ("8", "7,5"). */
-export const hoursText = (hours) => String(hours).replace(".", ",");
+/** Hours as shown everywhere: whole hours as "8", with minutes as "7:30" (never "7,5"). */
+export function hoursText(hours) {
+  const total = Math.round(hours * 60);
+  const [h, m] = [Math.floor(total / 60), total % 60];
+  return m === 0 ? String(h) : `${h}:${two(m)}`;
+}
 
 /**
- * Hours typed by hand, whole or half: "8", "7,5", "7.5", "7:30" or "730" (7 h 30).
+ * Hours typed by hand, written the way people say them: "8", "7:30", "730", "7,30", "7 30" or "7h30"
+ * all mean 7 h 30 min; one digit after the comma is a decimal ("7,5" = 7 h 30 min).
  * Empty → null, not a number of hours → undefined. The sheet rounds the result to the half hour.
  */
 export function parseHours(text) {
   const value = String(text ?? "").trim();
   if (value === "") return null;
+  const whole = value.match(/^(\d{1,2})$/);
+  const tenth = value.match(/^(\d{1,2})[.,](\d)$/);
+  const clock = value.match(/^(\d{1,2})\s*(?:[:.,hH]\s*|\s)(\d{2})$/) ?? value.match(/^(\d{1,2})(\d{2})$/);
+  const hundredth = value.match(/^(\d{1,2})[.,](\d{2})$/);
   let hours;
-  const decimal = value.match(/^(\d{1,2})[.,](\d{1,2})$/);
-  const clock = value.match(/^(\d{1,2})\s*:\s*(\d{2})$/) ?? value.match(/^(\d{1,2})(\d{2})$/);
-  if (/^\d{1,2}$/.test(value)) hours = Number(value);
-  else if (decimal) hours = Number(`${decimal[1]}.${decimal[2]}`);
+  if (whole) hours = Number(whole[1]);
+  else if (tenth) hours = Number(`${tenth[1]}.${tenth[2]}`);
   else if (clock && Number(clock[2]) < 60) hours = Number(clock[1]) + Number(clock[2]) / 60;
+  else if (hundredth) hours = Number(`${hundredth[1]}.${hundredth[2]}`); // "7,75": too big for minutes
   return hours !== undefined && hours <= 24 ? hours : undefined;
 }
 
