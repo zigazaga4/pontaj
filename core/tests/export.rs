@@ -6,7 +6,7 @@ use pontaj_core::timesheet::Interval;
 use pontaj_core::{process_pdfs, recompute, timesheet::CODES, write_xlsx, Settings};
 
 /// (driver index, days, absence code, hours typed by hand)
-type Edit<'a> = (usize, &'a [u32], Option<&'a str>, Option<i32>);
+type Edit<'a> = (usize, &'a [u32], Option<&'a str>, Option<f64>);
 
 #[test]
 fn export_with_absences_and_manual_hours() {
@@ -22,7 +22,7 @@ fn export_with_absences_and_manual_hours() {
     let edits: [Edit; 3] = [
         (1, &[28, 29, 30], Some("CO"), None),
         (2, &[21, 22, 23, 24, 25, 28, 29, 30], Some("CO"), None),
-        (0, &[1], None, Some(7)),
+        (0, &[1], None, Some(7.5)),
     ];
     for (idx, days, code, hours) in edits {
         let emp = &mut sheet.employees[idx];
@@ -38,19 +38,20 @@ fn export_with_absences_and_manual_hours() {
     let olp = CODES.iter().position(|(c, _)| *c == "OLP").unwrap();
     for emp in &sheet.employees {
         let t = &emp.totals;
-        let worked: i32 = emp.days.iter().filter_map(|d| d.hours).sum();
+        let worked: f64 = emp.days.iter().filter_map(|d| d.hours).sum();
         assert_eq!(t.worked, worked, "{}", emp.name);
-        assert_eq!(t.not_worked, (sheet.norm_hours - worked).max(0), "{}", emp.name);
-        let absences: i32 = t.code_hours.iter().enumerate().filter(|(i, _)| *i != olp).map(|(_, h)| h).sum();
-        assert_eq!(t.code_hours[olp], (t.not_worked - absences).max(0), "{}", emp.name);
-        assert_eq!(t.overtime, (worked + absences - sheet.norm_hours).max(0), "{}", emp.name);
+        let norm = f64::from(sheet.norm_hours);
+        assert_eq!(t.not_worked, (norm - worked).max(0.0), "{}", emp.name);
+        let absences: f64 = t.code_hours.iter().enumerate().filter(|(i, _)| *i != olp).map(|(_, h)| h).sum();
+        assert_eq!(t.code_hours[olp], (t.not_worked - absences).max(0.0), "{}", emp.name);
+        assert_eq!(t.overtime, (worked + absences - norm).max(0.0), "{}", emp.name);
         for d in &emp.days {
             let span: i32 = d.intervals.iter().map(|i| i.end - i.start).sum();
-            assert_eq!(span, d.hours.unwrap_or(0) * 60, "{} day {}", emp.name, d.day);
+            assert_eq!(span, (d.hours.unwrap_or(0.0) * 60.0).round() as i32, "{} day {}", emp.name, d.day);
         }
     }
-    assert_eq!(sheet.employees[1].totals.code_hours[co], 24);
-    assert_eq!(sheet.employees[2].totals.code_hours[co], 64);
+    assert_eq!(sheet.employees[1].totals.code_hours[co], 24.0);
+    assert_eq!(sheet.employees[2].totals.code_hours[co], 64.0);
 
     let out = std::env::var("PONTAJ_XLSX").map(Into::into).unwrap_or_else(|_| std::env::temp_dir().join("pontaj_verify.xlsx"));
     write_xlsx(&sheet, &settings, &out).expect("workbook written");
@@ -75,13 +76,13 @@ fn export_in_card_mode_with_hand_edits() {
     let mut sheet = process_pdfs(&[pdf], &settings).expect("PDF parsed");
     let day = &mut sheet.employees[0].days[0];
     day.override_intervals = Some(vec![Interval { start: 6 * 60, end: 14 * 60 }]);
-    day.override_night = Some(2);
+    day.override_night = Some(2.5);
     sheet.employees[0].activities[1].driving += 30; // a scanned row edited by hand
     recompute(&mut sheet, &settings);
 
     let day = &sheet.employees[0].days[0];
     assert_eq!(day.intervals, vec![Interval { start: 6 * 60, end: 14 * 60 }]);
-    assert_eq!(day.night_hours, Some(2));
+    assert_eq!(day.night_hours, Some(2.5));
     assert!(sheet.employees.iter().all(|e| e.totals.card_min > 0));
 
     let out = std::env::temp_dir().join("pontaj_verify_card.xlsx");

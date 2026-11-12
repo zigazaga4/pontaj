@@ -11,7 +11,17 @@ export const api = {
   recalculate: (timesheet, settings) => invoke("recalculate", { timesheet, settings }),
   exportExcel: (timesheet, settings) => invoke("export_excel", { timesheet, settings }),
   openFile: (path) => invoke("open_file", { path }),
+  appVersion: () => invoke("app_version"),
+  /** { version, notes } of a newer release, or null. Rejects when GitHub cannot be reached. */
+  checkUpdate: () => invoke("check_update"),
+  /** Downloads and installs the newer release; the app restarts when it is done. */
+  installUpdate: () => invoke("install_update"),
 };
+
+/** Calls `handler({ downloaded, total })` while an update downloads. */
+export function onUpdateProgress(handler) {
+  window.__TAURI__.event.listen("update-progress", (e) => handler(e.payload));
+}
 
 /** Subscribes to native file drag & drop. `handlers`: { enter, leave, drop(paths) }. */
 export function onFileDrop(handlers) {

@@ -27,6 +27,25 @@ export function signed(min) {
   return `${min > 0 ? "+" : "−"}${duration(min)}`;
 }
 
+/** Hours as written in the sheet: whole or half hours ("8", "7,5"). */
+export const hoursText = (hours) => String(hours).replace(".", ",");
+
+/**
+ * Hours typed by hand, whole or half: "8", "7,5", "7.5", "7:30" or "730" (7 h 30).
+ * Empty → null, not a number of hours → undefined. The sheet rounds the result to the half hour.
+ */
+export function parseHours(text) {
+  const value = String(text ?? "").trim();
+  if (value === "") return null;
+  let hours;
+  const decimal = value.match(/^(\d{1,2})[.,](\d{1,2})$/);
+  const clock = value.match(/^(\d{1,2})\s*:\s*(\d{2})$/) ?? value.match(/^(\d{1,2})(\d{2})$/);
+  if (/^\d{1,2}$/.test(value)) hours = Number(value);
+  else if (decimal) hours = Number(`${decimal[1]}.${decimal[2]}`);
+  else if (clock && Number(clock[2]) < 60) hours = Number(clock[1]) + Number(clock[2]) / 60;
+  return hours !== undefined && hours <= 24 ? hours : undefined;
+}
+
 /** Parses "7:39", "07:39", "7.39", "739" or "0730". Empty → null, invalid → NaN. */
 export function parseHm(text) {
   const value = String(text ?? "").trim();

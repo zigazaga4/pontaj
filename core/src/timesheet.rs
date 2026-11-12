@@ -97,13 +97,14 @@ pub struct DayEntry {
     /// The blocks joined into the periods actually worked (what the card shows for the day).
     pub card_intervals: Vec<Interval>,
     // --- Manual edits (kept when the activities change) ---
-    pub override_hours: Option<i32>,
-    pub override_night: Option<i32>,
+    /// Hours typed by hand: whole or half hours.
+    pub override_hours: Option<f64>,
+    pub override_night: Option<f64>,
     pub override_intervals: Option<Vec<Interval>>,
     pub code: Option<String>,
     // --- Computed by `rules::recompute` ---
-    pub hours: Option<i32>,
-    pub night_hours: Option<i32>,
+    pub hours: Option<f64>,
+    pub night_hours: Option<f64>,
     pub night_min: i32,
     pub intervals: Vec<Interval>,
     /// Grid mode only: the intervals do not add up to the hours (hand-edited day).
@@ -113,14 +114,14 @@ pub struct DayEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Totals {
-    pub worked: i32,
+    pub worked: f64,
     /// Working minutes on the tachograph for the days written in the sheet.
     pub card_min: i32,
-    pub night: i32,
-    pub not_worked: i32,
+    pub night: f64,
+    pub not_worked: f64,
     /// Hours per code, aligned with [`CODES`].
-    pub code_hours: Vec<i32>,
-    pub overtime: i32,
+    pub code_hours: Vec<f64>,
+    pub overtime: f64,
 }
 
 /// Name as the payroll team writes it: "Popescu, Ion" → "POPESCU ION".
@@ -275,7 +276,7 @@ mod tests {
     fn merging_keeps_edits_and_skips_repeated_rows() {
         let s = Settings::default();
         let mut sheet = build(vec![report("a.pdf", "Popescu, Ion", &[(9, 1, 480, 960)])], &s).unwrap();
-        sheet.employees[0].days[0].override_hours = Some(9);
+        sheet.employees[0].days[0].override_hours = Some(9.0);
 
         // The same driver in a second file: one repeated row, one new row; plus a new driver.
         let fresh = build(
@@ -291,8 +292,8 @@ mod tests {
         assert_eq!(merged.employees.len(), 2);
         let popescu = merged.employees.iter().find(|e| e.name == "POPESCU ION").unwrap();
         assert_eq!(popescu.activities.len(), 2, "the repeated row is not added twice");
-        assert_eq!(popescu.days[0].override_hours, Some(9), "manual hours survive");
-        assert_eq!(popescu.days[1].hours, Some(4));
+        assert_eq!(popescu.days[0].override_hours, Some(9.0), "manual hours survive");
+        assert_eq!(popescu.days[1].hours, Some(4.0));
         assert_eq!(merged.sources, vec!["a.pdf".to_string(), "b.pdf".to_string()]);
     }
 

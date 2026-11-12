@@ -1,6 +1,6 @@
 // Editable monthly grid: one hours row + one night row per driver.
 import { h } from "./dom.js";
-import { clock, duration } from "./time.js";
+import { clock, duration, hoursText } from "./time.js";
 import { KNOWN_CODES, parseCellInput } from "./table.js";
 
 // Total columns, pinned to the right edge of the grid.
@@ -15,8 +15,10 @@ const SUM_WIDTH = 50;
 const sumStyle = (i) => `right:${(SUMS.length - 1 - i) * SUM_WIDTH}px`;
 
 function cellText(entry) {
-  return entry.code ?? (entry.hours != null ? String(entry.hours) : "");
+  return entry.code ?? (entry.hours != null ? hoursText(entry.hours) : "");
 }
+
+const nightText = (entry) => (entry.nightHours != null ? hoursText(entry.nightHours) : "");
 
 function cellClass(info, entry) {
   const auto = entry.workedMin > 0;
@@ -60,14 +62,14 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction }) {
         class: cellClass(info, entry),
         value: cellText(entry),
         dataset: { e: ei, d: di },
-        maxlength: 4,
+        maxlength: 5,
         spellcheck: "false",
         onfocus: (e) => { e.target.select(); onSelect(ei, di); },
         onchange: (e) => onEdit(ei, di, parseCellInput(e.target.value)),
         onkeydown: (e) => navigate(e, container, ei, di),
       });
       hoursRow.append(h("td", { class: info.weekend || info.holiday ? "off" : "" }, input));
-      nightRow.append(h("td", { class: `night ${info.weekend || info.holiday ? "off" : ""}`, dataset: { ne: ei, nd: di } }, entry.nightHours ?? ""));
+      nightRow.append(h("td", { class: `night ${info.weekend || info.holiday ? "off" : ""}`, dataset: { ne: ei, nd: di } }, nightText(entry)));
     });
 
     SUMS.forEach(({ key }, i) => {
@@ -83,9 +85,10 @@ function totalValue(emp, key) {
   const t = emp.totals;
   if (key === "absences") {
     // OLP is the computed remainder, not an absence typed in the grid.
-    return t.codeHours.reduce((sum, v, i) => (KNOWN_CODES[i] === "OLP" ? sum : sum + v), 0) || "";
+    const absences = t.codeHours.reduce((sum, v, i) => (KNOWN_CODES[i] === "OLP" ? sum : sum + v), 0);
+    return absences ? hoursText(absences) : "";
   }
-  return t[key] || "";
+  return t[key] ? hoursText(t[key]) : "";
 }
 
 /** Refreshes values/classes in place (keeps focus and scroll position). */
@@ -97,7 +100,7 @@ export function refreshGrid(container, sheet) {
     input.className = cellClass(info, entry);
   });
   container.querySelectorAll("td.night").forEach((td) => {
-    td.textContent = sheet.employees[td.dataset.ne].days[td.dataset.nd].nightHours ?? "";
+    td.textContent = nightText(sheet.employees[td.dataset.ne].days[td.dataset.nd]);
   });
   container.querySelectorAll("td.sum[data-sum]").forEach((td) => {
     td.textContent = totalValue(sheet.employees[td.dataset.se], td.dataset.sum);
@@ -133,9 +136,9 @@ export function renderDetails(target, sheet, ei, di) {
   if (entry.code) parts.push(h("span", { class: "pill code" }, `Absență: ${entry.code}`));
   if (entry.hours != null) {
     const ivs = entry.intervals.map((i) => `${clock(i.start)}–${clock(i.end)}`).join(" · ");
-    parts.push(h("span", {}, `Pontaj: ${entry.hours} ore${entry.overrideHours != null ? " (manual)" : ""} → ${ivs}`));
+    parts.push(h("span", {}, `Pontaj: ${hoursText(entry.hours)} ore${entry.overrideHours != null ? " (manual)" : ""} → ${ivs}`));
     parts.push(h("span", { class: "muted" },
-      entry.nightHours ? `Noapte: ${entry.nightHours} ore` : entry.nightMin > 0 ? `Noapte: ${duration(entry.nightMin)} (sub prag, nu se trece)` : "Fără ore de noapte"));
+      entry.nightHours ? `Noapte: ${hoursText(entry.nightHours)} ore` : entry.nightMin > 0 ? `Noapte: ${duration(entry.nightMin)} (sub prag, nu se trece)` : "Fără ore de noapte"));
   }
   target.replaceChildren(...parts);
 }

@@ -36,7 +36,7 @@ fn main() {
             .filter(|d| d.hours.is_some() || d.worked_min > 0)
             .map(|d| {
                 let night = d.night_hours.map(|n| format!("/n{n}")).unwrap_or_default();
-                format!("{}:{}({}){night}", d.day, d.hours.unwrap_or(0), fmt_duration(d.worked_min))
+                format!("{}:{}({}){night}", d.day, d.hours.unwrap_or(0.0), fmt_duration(d.worked_min))
             })
             .collect();
         println!("\n{} — {} ore, {} noapte\n  {}", emp.name, emp.totals.worked, emp.totals.night, days.join("  "));

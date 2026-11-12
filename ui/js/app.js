@@ -5,7 +5,8 @@ import { renderGrid, refreshGrid, renderDetails } from "./grid.js";
 import { renderScanned } from "./scanned.js";
 import { renderDaily } from "./daily.js";
 import { renderSettings } from "./settings.js";
-import { signed } from "./time.js";
+import { checkForUpdates } from "./updater.js";
+import { hoursText, signed } from "./time.js";
 
 const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
 
@@ -127,7 +128,7 @@ function renderDrivers() {
       const edited = emp.activities.filter((a) => a.manual).length + emp.days.filter((d) => d.overrideHours != null || d.overrideNight != null || d.overrideIntervals || d.code).length;
       return h("button", { class: `driver ${i === state.emp ? "active" : ""}`, onclick: () => selectDriver(i) },
         h("b", {}, emp.name),
-        h("small", {}, `${emp.totals.worked} ore · ${emp.days.filter((d) => d.hours != null).length} zile`, edited ? h("span", { class: "edited" }, ` · ✎ ${edited}`) : null));
+        h("small", {}, `${hoursText(emp.totals.worked)} ore · ${emp.days.filter((d) => d.hours != null).length} zile`, edited ? h("span", { class: "edited" }, ` · ✎ ${edited}`) : null));
     }));
 }
 
@@ -175,9 +176,9 @@ function renderSummary() {
     chip("Zile lucrătoare", s.workingDays),
     chip("Normă", `${s.normHours} ore`),
     chip("Șoferi", s.employees.length),
-    chip("Total ore lucrate", sum("worked")),
+    chip("Total ore lucrate", hoursText(sum("worked"))),
     chip("Față de tahograf", signed(gap), "Orele din pontaj minus timpul lucrat pe card (rotunjiri și ore trecute manual)"),
-    chip("Ore de noapte", sum("night")),
+    chip("Ore de noapte", hoursText(sum("night"))),
   );
 }
 
@@ -231,6 +232,9 @@ async function init() {
   $("#btn-export").addEventListener("click", exportExcel);
   $("#btn-settings").addEventListener("click", () => openSettings($("#settings-panel").hidden));
   $("#btn-close-settings").addEventListener("click", () => openSettings(false));
+  const idle = () => !state.sheet && $("#overlay").hidden; // nothing open, nothing loading: safe to restart
+  $("#btn-update").addEventListener("click", () => checkForUpdates({ manual: true, canInstallNow: idle }));
+  api.appVersion().then((v) => ($("#app-version").textContent = `Versiunea ${v}`)).catch(() => {});
   $("#btn-clear").addEventListener("click", () => {
     Object.assign(state, { sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null });
     render();
@@ -246,6 +250,7 @@ async function init() {
   render();
   const startup = await api.startupFiles();
   if (startup.length) await loadFiles(startup);
+  checkForUpdates({ canInstallNow: idle });
 }
 
 init().catch((err) => toast(String(err), { kind: "error", timeout: 0 }));

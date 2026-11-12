@@ -36,6 +36,12 @@ pub fn round_hours(min: i32, round_up_from: i32) -> i32 {
     if rest > 0 && rest >= round_up_from { h + 1 } else { h }
 }
 
+/// Rounds hours to the nearest half hour, ties going up (7.2 → 7, 7.25 → 7.5, 7.7 → 7.5).
+/// Hours typed by hand use half hours; the automatic hours stay whole.
+pub fn round_to_half(hours: f64) -> f64 {
+    ((hours.max(0.0) * 2.0) + 0.5).floor() / 2.0
+}
+
 /// Rounds a clock time to the nearest multiple of `slot` minutes.
 pub fn round_to_slot(min: i32, slot: i32) -> i32 {
     let slot = slot.max(1);
@@ -66,6 +72,13 @@ mod tests {
         // Pairs observed in the September 2026 timesheet.
         for (pdf, xl) in [("6:12", 6), ("6:25", 7), ("5:21", 6), ("3:23", 4), ("8:13", 8), ("7:16", 7), ("5:59", 6), ("2:12", 2)] {
             assert_eq!(round_hours(parse_hm(pdf).unwrap(), 20), xl, "{pdf}");
+        }
+    }
+
+    #[test]
+    fn rounds_hours_to_the_half_hour() {
+        for (typed, rounded) in [(7.0, 7.0), (7.2, 7.0), (7.25, 7.5), (7.5, 7.5), (7.7, 7.5), (7.75, 8.0), (-1.0, 0.0)] {
+            assert_eq!(round_to_half(typed), rounded, "{typed}");
         }
     }
 

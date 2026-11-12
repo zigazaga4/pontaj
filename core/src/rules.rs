@@ -20,7 +20,7 @@ use chrono::NaiveDate;
 
 use crate::pdf::Segment;
 use crate::settings::{IntervalMode, NightSource, Settings};
-use crate::time::{floor_to_slot, round_hours, round_to_slot, DAY};
+use crate::time::{floor_to_slot, round_hours, round_to_half, round_to_slot, DAY};
 use crate::timesheet::{DayEntry, Employee, Interval, Timesheet, Totals, CODES, OLP};
 
 #[derive(Debug, Clone)]
@@ -81,9 +81,13 @@ pub fn shifts(segments: &[Segment], merge_gap_min: i32) -> Vec<Shift> {
         .collect()
 }
 
+fn hours_to_min(hours: f64) -> i32 {
+    (hours * 60.0).round() as i32
+}
+
 /// Two work intervals covering `hours`, anchored to the real start and end.
-pub fn make_intervals(start: i32, end: i32, hours: i32, s: &Settings) -> Vec<Interval> {
-    let total = hours * 60;
+pub fn make_intervals(start: i32, end: i32, hours: f64, s: &Settings) -> Vec<Interval> {
+    let total = hours_to_min(hours);
     if total <= 0 {
         return Vec::new();
     }
@@ -146,12 +150,12 @@ pub fn normalize_code(code: &str) -> Option<String> {
 }
 
 /// Start/end times of a day with `hours` worked, in the configured style.
-fn day_intervals(entry: &DayEntry, hours: i32, s: &Settings) -> Vec<Interval> {
+fn day_intervals(entry: &DayEntry, hours: f64, s: &Settings) -> Vec<Interval> {
     if s.interval_mode == IntervalMode::Card && entry.worked_min > 0 {
         return card_intervals(&entry.card_intervals, 0, 2);
     }
     let start = entry.first_start.unwrap_or_else(|| s.default_start_min());
-    let end = entry.last_end.unwrap_or(start + hours * 60 + s.break_min);
+    let end = entry.last_end.unwrap_or(start + hours_to_min(hours) + s.break_min);
     make_intervals(start, end, hours, s)
 }
 
@@ -160,6 +164,9 @@ fn recompute_day(entry: &mut DayEntry, s: &Settings) {
     entry.code = entry.code.as_deref().and_then(normalize_code);
     entry.override_intervals = entry.override_intervals.take().filter(|v| !v.is_empty());
     entry.intervals_off = false;
+    // Hours typed by hand are whole or half hours, whatever the caller sent.
+    entry.override_hours = entry.override_hours.map(round_to_half);
+    entry.override_night = entry.override_night.map(round_to_half);
     if entry.code.is_some() {
         entry.hours = None;
         entry.night_hours = None;
@@ -167,13 +174,10 @@ fn recompute_day(entry: &mut DayEntry, s: &Settings) {
         entry.intervals.clear();
         return;
     }
-    let auto = (entry.worked_min > 0).then(|| round_hours(entry.worked_min, s.round_up_from_min));
-    // Typing start/end times on an empty day is enough to give it hours.
-    let typed = entry
-        .override_intervals
-        .as_ref()
-        .map(|v| round_hours(v.iter().map(|i| i.end - i.start).sum(), s.round_up_from_min));
-    let hours = entry.override_hours.or(auto).or(typed).filter(|h| *h > 0);
+    let auto = (entry.worked_min > 0).then(|| f64::from(round_hours(entry.worked_min, s.round_up_from_min)));
+    // Typing start/end times on an empty day is enough to give it hours (to the half hour).
+    let typed = entry.override_intervals.as_ref().map(|v| round_to_half(f64::from(v.iter().map(|i| i.end - i.start).sum::<i32>()) / 60.0));
+    let hours = entry.override_hours.or(auto).or(typed).filter(|h| *h > 0.0);
     entry.hours = hours;
     entry.intervals = match (&entry.override_intervals, hours) {
         (Some(typed), _) => typed.clone(),
@@ -181,15 +185,15 @@ fn recompute_day(entry: &mut DayEntry, s: &Settings) {
         (None, None) => Vec::new(),
     };
     entry.intervals_off = s.interval_mode == IntervalMode::Grid
-        && hours.is_some_and(|h| entry.intervals.iter().map(|i| i.end - i.start).sum::<i32>() != h * 60);
+        && hours.is_some_and(|h| entry.intervals.iter().map(|i| i.end - i.start).sum::<i32>() != hours_to_min(h));
     entry.night_min = match (s.night_source, entry.worked_min > 0) {
         (NightSource::Card, true) => entry.pdf_night_min,
         _ => night_minutes(&entry.intervals, s.night_window()),
     };
     let auto_night = (entry.night_min > 0 && entry.night_min >= s.night_threshold_min)
-        .then(|| round_hours(entry.night_min, s.round_up_from_min))
-        .filter(|h| *h > 0);
-    entry.night_hours = entry.override_night.map(|n| n.max(0)).map_or(auto_night, |n| (n > 0).then_some(n));
+        .then(|| f64::from(round_hours(entry.night_min, s.round_up_from_min)))
+        .filter(|h| *h > 0.0);
+    entry.night_hours = entry.override_night.map_or(auto_night, |n| (n > 0.0).then_some(n));
 }
 
 /// Day the activity rows land on, shift by shift; shifts outside the month are reported.
@@ -222,24 +226,25 @@ fn place_activities(employee: &mut Employee, first: NaiveDate, merge_gap_min: i3
 
 /// Mirrors the formulas written in the Excel file.
 fn compute_totals(employee: &Employee, norm: i32, hours_per_day: i32) -> Totals {
-    let worked = employee.days.iter().filter_map(|d| d.hours).sum::<i32>();
+    let worked = employee.days.iter().filter_map(|d| d.hours).sum::<f64>();
     let card_min = employee.days.iter().filter(|d| d.hours.is_some()).map(|d| d.worked_min).sum::<i32>();
-    let night = employee.days.iter().filter_map(|d| d.night_hours).sum::<i32>();
-    let not_worked = (norm - worked).max(0);
-    let mut code_hours: Vec<i32> = CODES
+    let night = employee.days.iter().filter_map(|d| d.night_hours).sum::<f64>();
+    let norm = f64::from(norm);
+    let not_worked = (norm - worked).max(0.0);
+    let mut code_hours: Vec<f64> = CODES
         .iter()
         .map(|(code, _)| {
             if *code == OLP {
-                return 0;
+                return 0.0;
             }
-            employee.days.iter().filter(|d| d.code.as_deref() == Some(code)).count() as i32 * hours_per_day
+            employee.days.iter().filter(|d| d.code.as_deref() == Some(code)).count() as f64 * f64::from(hours_per_day)
         })
         .collect();
-    let absences: i32 = code_hours.iter().sum();
+    let absences: f64 = code_hours.iter().sum();
     if let Some(i) = CODES.iter().position(|(c, _)| *c == OLP) {
-        code_hours[i] = (not_worked - absences).max(0);
+        code_hours[i] = (not_worked - absences).max(0.0);
     }
-    Totals { worked, card_min, night, not_worked, code_hours, overtime: (worked + absences - norm).max(0) }
+    Totals { worked, card_min, night, not_worked, code_hours, overtime: (worked + absences - norm).max(0.0) }
 }
 
 /// Re-applies the rules after a settings change or a manual edit (of the
@@ -301,22 +306,22 @@ mod tests {
         let s = Settings::default();
         // Driver A, 12.09: 6:29–16:05, 7h → 06:30–10:00, 12:30–16:00
         assert_eq!(
-            ivs(&make_intervals(hm("6:29"), hm("16:05"), 7, &s)),
+            ivs(&make_intervals(hm("6:29"), hm("16:05"), 7.0, &s)),
             vec![("06:30".into(), "10:00".into()), ("12:30".into(), "16:00".into())]
         );
         // Driver B, 01.09: 3h on a 1:33–5:01 shift → the break fits inside the shift.
         assert_eq!(
-            ivs(&make_intervals(hm("1:33"), hm("5:01"), 3, &s)),
+            ivs(&make_intervals(hm("1:33"), hm("5:01"), 3.0, &s)),
             vec![("01:30".into(), "03:00".into()), ("03:30".into(), "05:00".into())]
         );
         // Same shift typed as 7h by hand → second interval after the break.
         assert_eq!(
-            ivs(&make_intervals(hm("1:33"), hm("5:01"), 7, &s)),
+            ivs(&make_intervals(hm("1:33"), hm("5:01"), 7.0, &s)),
             vec![("01:30".into(), "05:00".into()), ("06:00".into(), "09:30".into())]
         );
         // Driver A, 17.09: 10:00–20:26, 9h → 10:00–14:30, 16:00–20:30
         assert_eq!(
-            ivs(&make_intervals(hm("10:00"), hm("20:26"), 9, &s)),
+            ivs(&make_intervals(hm("10:00"), hm("20:26"), 9.0, &s)),
             vec![("10:00".into(), "14:30".into()), ("16:00".into(), "20:30".into())]
         );
     }
@@ -341,7 +346,7 @@ mod tests {
         let s = Settings { night_end: "07:00".into(), ..Settings::default() };
         let w = s.night_window();
         // Driver C, 06.09: 3:49–13:34, 6h → 04:00–07:00, 10:30–13:30 → 3h of night (04–07).
-        assert_eq!(night_minutes(&make_intervals(hm("3:49"), hm("13:34"), 6, &s), w), 180);
+        assert_eq!(night_minutes(&make_intervals(hm("3:49"), hm("13:34"), 6.0, &s), w), 180);
         // Driver B, 20.09: 17:30–20:30, 23:30–02:30 → 3h.
         let iv = vec![Interval { start: hm("17:30"), end: hm("20:30") }, Interval { start: hm("23:30"), end: hm("2:30") + DAY }];
         assert_eq!(night_minutes(&iv, w), 180);
@@ -374,14 +379,14 @@ mod tests {
         let s = Settings::default();
         // 04:23–08:10, 3:14 worked, 1:22 of it at night (22–06): under the 3h threshold.
         let sheet = sheet_with(vec![seg(7, "4:23", "8:10", "3:14", "1:22")], &s);
-        assert_eq!((day(&sheet, 7).hours, day(&sheet, 7).night_min, day(&sheet, 7).night_hours), (Some(3), 82, None));
+        assert_eq!((day(&sheet, 7).hours, day(&sheet, 7).night_min, day(&sheet, 7).night_hours), (Some(3.0), 82, None));
         // 5h shift with 3:30 at night → written, rounded like the hours (3:30 → 4).
         let sheet = sheet_with(vec![seg(8, "0:00", "5:00", "5:00", "3:30")], &s);
-        assert_eq!((day(&sheet, 8).night_min, day(&sheet, 8).night_hours), (210, Some(4)));
+        assert_eq!((day(&sheet, 8).night_min, day(&sheet, 8).night_hours), (210, Some(4.0)));
         // Threshold 0 writes every night hour that survives the rounding.
         let all = Settings { night_threshold_min: 0, ..s };
         let sheet = sheet_with(vec![seg(7, "4:23", "8:10", "3:14", "1:22")], &all);
-        assert_eq!(day(&sheet, 7).night_hours, Some(2), "1:22 rounds up like the hours do");
+        assert_eq!(day(&sheet, 7).night_hours, Some(2.0), "1:22 rounds up like the hours do");
     }
 
     #[test]
@@ -390,7 +395,7 @@ mod tests {
         let s = Settings { night_source: NightSource::Intervals, night_start: "00:00".into(), night_end: "07:00".into(), ..Settings::default() };
         // 04:00–13:00, 8h → 04:00–08:00 + 09:00–13:00 → 3h inside 00–07.
         let sheet = sheet_with(vec![seg(9, "4:00", "13:00", "8:00", "2:00")], &s);
-        assert_eq!((day(&sheet, 9).night_min, day(&sheet, 9).night_hours), (180, Some(3)));
+        assert_eq!((day(&sheet, 9).night_min, day(&sheet, 9).night_hours), (180, Some(3.0)));
     }
 
     #[test]
@@ -399,7 +404,7 @@ mod tests {
         let sheet = sheet_with(vec![seg(4, "6:29", "16:05", "6:25", "0:00")], &s);
         let d = day(&sheet, 4);
         assert_eq!(ivs(&d.intervals), vec![("06:29".into(), "16:05".into())]);
-        assert_eq!(d.hours, Some(7));
+        assert_eq!(d.hours, Some(7.0));
         assert!(!d.intervals_off, "only the grid mode compares intervals with hours");
         // Two separate blocks stay two intervals; three get merged down to two.
         let blocks = [
@@ -415,9 +420,9 @@ mod tests {
     fn editing_a_scanned_row_recalculates_the_day_and_keeps_manual_edits() {
         let s = Settings::default();
         let mut sheet = sheet_with(vec![seg(2, "6:50", "17:09", "7:29", "0:00"), seg(3, "7:00", "15:00", "7:00", "0:00")], &s);
-        assert_eq!(day(&sheet, 2).hours, Some(8), "7:29 rounds up");
-        assert_eq!(day(&sheet, 3).hours, Some(7));
-        sheet.employees[0].days[2].override_hours = Some(8); // manual hours on the 3rd
+        assert_eq!(day(&sheet, 2).hours, Some(8.0), "7:29 rounds up");
+        assert_eq!(day(&sheet, 3).hours, Some(7.0));
+        sheet.employees[0].days[2].override_hours = Some(8.0); // manual hours on the 3rd
 
         // The 2nd: one more hour of other work → 8:29 worked → 9h; the row is now manual.
         let row = &mut sheet.employees[0].activities[0];
@@ -425,8 +430,8 @@ mod tests {
         row.manual = true;
         recompute(&mut sheet, &s);
         assert_eq!(day(&sheet, 2).worked_min, 8 * 60 + 29);
-        assert_eq!(day(&sheet, 2).hours, Some(9));
-        assert_eq!(day(&sheet, 3).hours, Some(8), "manual hours survive a recalculation");
+        assert_eq!(day(&sheet, 2).hours, Some(9.0));
+        assert_eq!(day(&sheet, 3).hours, Some(8.0), "manual hours survive a recalculation");
 
         // Deleting the row empties the day again.
         sheet.employees[0].activities.remove(0);
@@ -442,11 +447,11 @@ mod tests {
         sheet.employees[0].days[9].override_intervals = Some(vec![Interval { start: hm("08:00"), end: hm("12:00") }, Interval { start: hm("13:00"), end: hm("17:00") }]);
         // The 2nd keeps its hours but gets other times and a manual night.
         sheet.employees[0].days[1].override_intervals = Some(vec![Interval { start: hm("07:00"), end: hm("14:00") }]);
-        sheet.employees[0].days[1].override_night = Some(2);
+        sheet.employees[0].days[1].override_night = Some(2.0);
         recompute(&mut sheet, &s);
-        assert_eq!(day(&sheet, 10).hours, Some(8));
+        assert_eq!(day(&sheet, 10).hours, Some(8.0));
         assert_eq!(ivs(&day(&sheet, 2).intervals), vec![("07:00".into(), "14:00".into())]);
-        assert_eq!((day(&sheet, 2).hours, day(&sheet, 2).night_hours), (Some(8), Some(2)));
+        assert_eq!((day(&sheet, 2).hours, day(&sheet, 2).night_hours), (Some(8.0), Some(2.0)));
         assert!(day(&sheet, 2).intervals_off, "7h of intervals against 8h written");
         assert!(!day(&sheet, 10).intervals_off);
         // Clearing the overrides returns to the automatic values.
@@ -458,11 +463,37 @@ mod tests {
     }
 
     #[test]
+    fn hours_typed_by_hand_can_be_half_hours() {
+        let s = Settings::default();
+        let mut sheet = sheet_with(vec![seg(2, "6:50", "17:09", "7:29", "0:00")], &s);
+        // 7:40 typed → the nearest half hour; the intervals add up to it (3:30 + 4:00).
+        sheet.employees[0].days[1].override_hours = Some(7.7);
+        sheet.employees[0].days[1].override_night = Some(2.25);
+        // A day without card data gets 4.5 h.
+        sheet.employees[0].days[4].override_hours = Some(4.5);
+        recompute(&mut sheet, &s);
+        let d = day(&sheet, 2);
+        assert_eq!((d.override_hours, d.hours, d.night_hours), (Some(7.5), Some(7.5), Some(2.5)));
+        assert_eq!(d.intervals.iter().map(|i| i.end - i.start).sum::<i32>(), 450);
+        assert!(!d.intervals_off);
+        assert_eq!(day(&sheet, 5).hours, Some(4.5));
+        // Totals keep the halves; the norm and OLP follow.
+        let t = &sheet.employees[0].totals;
+        assert_eq!((t.worked, t.night), (12.0, 2.5));
+        assert_eq!(t.not_worked, sheet.norm_hours as f64 - 12.0);
+        // Typing only start/end times on an empty day: 08:00–12:00 + 13:00–16:40 → 7:40 → 7.5 h.
+        sheet.employees[0].days[9].override_intervals = Some(vec![Interval { start: hm("08:00"), end: hm("12:00") }, Interval { start: hm("13:00"), end: hm("16:40") }]);
+        recompute(&mut sheet, &s);
+        assert_eq!(day(&sheet, 10).hours, Some(7.5));
+        assert!(day(&sheet, 10).intervals_off, "7:40 of intervals against 7.5 h written");
+    }
+
+    #[test]
     fn totals_compare_with_the_card() {
         let s = Settings::default();
         let sheet = sheet_with(vec![seg(2, "6:50", "17:09", "7:29", "0:00"), seg(3, "7:00", "13:00", "6:10", "0:00")], &s);
         let t = &sheet.employees[0].totals;
         // 7:29 → 8h and 6:10 → 6h written, against 13:39 on the card.
-        assert_eq!((t.worked, t.card_min), (8 + 6, 7 * 60 + 29 + 6 * 60 + 10));
+        assert_eq!((t.worked, t.card_min), (8.0 + 6.0, 7 * 60 + 29 + 6 * 60 + 10));
     }
 }

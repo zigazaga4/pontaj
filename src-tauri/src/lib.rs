@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 
 use pontaj_core::{add_pdfs, recompute, suggested_file_name, write_xlsx, Settings, Timesheet};
-use tauri::{AppHandle, Manager};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_updater::UpdaterExt;
 
 type CmdResult<T> = Result<T, String>;
 
@@ -106,11 +108,71 @@ fn open_file(path: String) -> CmdResult<()> {
     cmd.arg(&path).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+// ---- Updates: the app looks for a newer release on GitHub (see `plugins.updater` in tauri.conf.json) ----
+
+#[derive(Serialize)]
+struct UpdateInfo {
+    version: String,
+    notes: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct UpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+/// The newer release, if there is one. No network or no published release comes back as an error string.
+#[tauri::command]
+async fn check_update(app: AppHandle) -> CmdResult<Option<UpdateInfo>> {
+    let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
+    Ok(update.map(|u| UpdateInfo { version: u.version, notes: u.body }))
+}
+
+/// Downloads the newer release (emitting `update-progress`), installs it and restarts the app.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> CmdResult<()> {
+    let Some(update) = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    let mut downloaded: u64 = 0;
+    let progress = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk as u64;
+                let _ = progress.emit("update-progress", UpdateProgress { downloaded, total });
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![load_settings, save_settings, pick_pdfs, startup_files, parse_pdfs, recalculate, export_excel, open_file])
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            load_settings,
+            save_settings,
+            pick_pdfs,
+            startup_files,
+            parse_pdfs,
+            recalculate,
+            export_excel,
+            open_file,
+            app_version,
+            check_update,
+            install_update
+        ])
         .run(tauri::generate_context!())
         .expect("eroare la pornirea aplicației");
 }

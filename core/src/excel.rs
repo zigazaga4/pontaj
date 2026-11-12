@@ -219,12 +219,12 @@ fn write_employee(
         let hours_fmt = thick_top(day.clone().set_bold());
         match (&entry.code, entry.hours) {
             (Some(code), _) => ws.write_string_with_format(row, col, code, &thick_top(st.fill(CODE_FILL).set_bold()))?,
-            (None, Some(h)) => ws.write_number_with_format(row, col, h as f64, &hours_fmt)?,
+            (None, Some(h)) => ws.write_number_with_format(row, col, h, &hours_fmt)?,
             (None, None) => ws.write_blank(row, col, &hours_fmt)?,
         };
         let night_fmt = day.clone().set_italic().set_font_color(Color::RGB(NIGHT_FONT));
         match entry.night_hours {
-            Some(n) => ws.write_number_with_format(row + 1, col, n as f64, &night_fmt)?,
+            Some(n) => ws.write_number_with_format(row + 1, col, n, &night_fmt)?,
             None => ws.write_blank(row + 1, col, &night_fmt)?,
         };
         let time_fmt = day.clone().set_num_format("hh:mm").set_font_size(9);
@@ -252,14 +252,14 @@ fn write_employee(
         range(row, cols.code(olp_idx + 1), cols.code(CODES.len() - 1))
     );
 
-    let mut formulas: Vec<(ColNum, String, i32)> = vec![
+    let mut formulas: Vec<(ColNum, String, f64)> = vec![
         (cols.worked, format!("=SUM({hours_range})"), t.worked),
         (cols.night, format!("=SUM({night_range})"), t.night),
         (cols.not_worked, format!("=MAX(0,{}-{worked_ref})", sheet.norm_hours), t.not_worked),
         (cols.overtime, format!("=MAX(0,{worked_ref}+{absences}-{})", sheet.norm_hours), t.overtime),
     ];
     for (i, (code, _)) in CODES.iter().enumerate() {
-        let value = t.code_hours.get(i).copied().unwrap_or(0);
+        let value = t.code_hours.get(i).copied().unwrap_or(0.0);
         let formula = if i == olp_idx {
             format!("=MAX(0,{not_worked_ref}-{absences})")
         } else {
@@ -278,14 +278,14 @@ fn write_employee(
 fn write_totals(ws: &mut Worksheet, sheet: &Timesheet, st: &Styles, cols: &Cols, row: RowNum) -> std::result::Result<(), XlsxError> {
     let fmt = st.fill(TOTAL_FILL).set_bold().set_border_top(FormatBorder::Medium).set_border_bottom(FormatBorder::Medium);
     ws.merge_range(row, 0, row, cols.last_day, "TOTAL", &fmt)?;
-    let mut summary: Vec<(ColNum, i32)> = vec![
-        (cols.worked, sheet.employees.iter().map(|e| e.totals.worked).sum()),
-        (cols.night, sheet.employees.iter().map(|e| e.totals.night).sum()),
-        (cols.not_worked, sheet.employees.iter().map(|e| e.totals.not_worked).sum()),
-        (cols.overtime, sheet.employees.iter().map(|e| e.totals.overtime).sum()),
+    let mut summary: Vec<(ColNum, f64)> = vec![
+        (cols.worked, sheet.employees.iter().map(|e| e.totals.worked).sum::<f64>()),
+        (cols.night, sheet.employees.iter().map(|e| e.totals.night).sum::<f64>()),
+        (cols.not_worked, sheet.employees.iter().map(|e| e.totals.not_worked).sum::<f64>()),
+        (cols.overtime, sheet.employees.iter().map(|e| e.totals.overtime).sum::<f64>()),
     ];
     for i in 0..CODES.len() {
-        summary.push((cols.code(i), sheet.employees.iter().map(|e| e.totals.code_hours.get(i).copied().unwrap_or(0)).sum()));
+        summary.push((cols.code(i), sheet.employees.iter().map(|e| e.totals.code_hours.get(i).copied().unwrap_or(0.0)).sum::<f64>()));
     }
     for (col, value) in summary {
         let formula = if row > FIRST_DATA_ROW {
@@ -478,7 +478,7 @@ fn build_audit(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> st
     let mut row = header_row + 1;
     for emp in &sheet.employees {
         let first = row;
-        let (mut card_min, mut written, mut night, mut diff) = (0, 0, 0, 0.0_f64);
+        let (mut card_min, mut written, mut night, mut diff) = (0, 0.0_f64, 0.0_f64, 0.0_f64);
         for (info, entry) in sheet.days.iter().zip(&emp.days).filter(|(_, e)| audit_has_data(e)) {
             let off = info.is_off();
             let (left, time, hours_fmt) = if off {
@@ -495,7 +495,7 @@ fn build_audit(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> st
             ws.write_string_with_format(row, 4, intervals_text(&entry.card_intervals), &left)?;
             match (&entry.code, entry.hours) {
                 (Some(code), _) => ws.write_string_with_format(row, 5, code, &hours_fmt.clone().set_background_color(Color::RGB(CODE_FILL)))?,
-                (None, Some(h)) => ws.write_number_with_format(row, 5, h as f64, &hours_fmt)?,
+                (None, Some(h)) => ws.write_number_with_format(row, 5, h, &hours_fmt)?,
                 (None, None) => ws.write_blank(row, 5, &hours_fmt)?,
             };
             for slot in 0..2 {
@@ -503,12 +503,12 @@ fn build_audit(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> st
             }
             write_duration(ws, row, 8, entry.pdf_night_min, &time)?;
             match entry.night_hours {
-                Some(n) => ws.write_number_with_format(row, 9, n as f64, &day_fmt)?,
+                Some(n) => ws.write_number_with_format(row, 9, n, &day_fmt)?,
                 None => ws.write_blank(row, 9, &day_fmt)?,
             };
             match (&entry.code, entry.hours) {
                 (None, Some(h)) => {
-                    let value = ((h as f64 - entry.worked_min as f64 / 60.0) * 100.0).round() / 100.0;
+                    let value = ((h - entry.worked_min as f64 / 60.0) * 100.0).round() / 100.0;
                     let formula = format!("=ROUND({}-{}*24,2)", cell(row, 5), cell(row, 3));
                     ws.write_formula_with_format(row, 10, Formula::new(formula).set_result(value.to_string()), &diff_fmt)?;
                     diff += value;
@@ -520,8 +520,8 @@ fn build_audit(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> st
             ws.write_string_with_format(row, 11, audit_remarks(entry), &left)?;
 
             card_min += entry.worked_min;
-            written += if entry.code.is_none() { entry.hours.unwrap_or(0) } else { 0 };
-            night += entry.night_hours.unwrap_or(0);
+            written += if entry.code.is_none() { entry.hours.unwrap_or(0.0) } else { 0.0 };
+            night += entry.night_hours.unwrap_or(0.0);
             row += 1;
         }
 
@@ -529,8 +529,8 @@ fn build_audit(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> st
         ws.merge_range(row, 0, row, 2, &format!("Total {}", emp.name), &total)?;
         let sums: [(ColNum, f64, &Format); 4] = [
             (3, card_min as f64 / DAY as f64, &total_time),
-            (5, written as f64, &total),
-            (9, night as f64, &total),
+            (5, written, &total),
+            (9, night, &total),
             (10, (diff * 100.0).round() / 100.0, &total_diff),
         ];
         for col in [4, 6, 7, 8, 11] {
@@ -601,12 +601,12 @@ mod tests {
 
     #[test]
     fn audit_remarks_name_what_was_done_by_hand() {
-        let mut entry = DayEntry { worked_min: 400, hours: Some(7), ..Default::default() };
+        let mut entry = DayEntry { worked_min: 400, hours: Some(7.0), ..Default::default() };
         assert_eq!(audit_remarks(&entry), "");
-        entry.override_hours = Some(8);
-        entry.override_night = Some(3);
+        entry.override_hours = Some(8.0);
+        entry.override_night = Some(3.0);
         assert_eq!(audit_remarks(&entry), "Ore trecute manual; noapte trecută manual");
-        let no_card = DayEntry { hours: Some(8), ..Default::default() };
+        let no_card = DayEntry { hours: Some(8.0), ..Default::default() };
         assert_eq!(audit_remarks(&no_card), "Fără date pe card");
         let absence = DayEntry { code: Some("CO".into()), ..Default::default() };
         assert_eq!(audit_remarks(&absence), "Absență trecută manual");

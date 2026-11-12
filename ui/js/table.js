@@ -1,15 +1,16 @@
 // Building blocks for the editable tables: a bound text input, keyboard
 // navigation and the cell syntax used by the hours cells.
 import { h } from "./dom.js";
+import { parseHours } from "./time.js";
 
 export const KNOWN_CODES = ["CO", "CM", "CP", "BP", "AM", "CIM", "CC", "CFP", "OLP", "N", "ZLP"];
 
 /** Turns what the user typed in an hours cell into an edit: { overrideHours, code }. */
 export function parseCellInput(text) {
-  const value = text.trim().toUpperCase();
-  if (value === "") return { overrideHours: null, code: null };
-  if (/^\d{1,2}$/.test(value)) return { overrideHours: Number(value), code: null };
-  return { overrideHours: null, code: value };
+  const hours = parseHours(text);
+  if (hours === null) return { overrideHours: null, code: null };
+  if (hours !== undefined) return { overrideHours: hours, code: null };
+  return { overrideHours: null, code: text.trim().toUpperCase() };
 }
 
 /**

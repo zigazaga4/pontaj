@@ -2,7 +2,7 @@
 // times and night hours, all editable, next to what the tachograph says.
 import { h } from "./dom.js";
 import { KNOWN_CODES, boundInput, enableKeyNav, parseCellInput } from "./table.js";
-import { DAY, duration, hhmm, parseHm, signed } from "./time.js";
+import { DAY, duration, hhmm, hoursText, parseHm, parseHours, signed } from "./time.js";
 
 const day2 = (n) => String(n).padStart(2, "0");
 
@@ -63,13 +63,13 @@ export function renderDaily(container, ctx, ei) {
     // Hours or an absence code, like the cells of the monthly sheet.
     tr.append(h("td", {}, add(boundInput({
       className: "hours",
-      maxlength: 4,
+      maxlength: 5,
       get: entry,
-      format: (e) => e.code ?? (e.hours != null ? String(e.hours) : ""),
+      format: (e) => e.code ?? (e.hours != null ? hoursText(e.hours) : ""),
       parse: (text) => parseCellInput(text),
       classes: (e) =>
         [e.code ? (KNOWN_CODES.includes(e.code) ? "code" : "code unknown") : "", e.overrideHours != null || (e.hours != null && e.workedMin === 0 && !e.code) ? "manual" : ""].join(" "),
-      title: (e) => (e.overrideHours != null ? "Ore trecute manual" : ""),
+      title: (e) => (e.overrideHours != null ? "Ore trecute manual" : "Ore întregi sau jumătăți: 8 · 7,5 · 7:30 · 730"),
       commit: (patch) => ctx.onDayEdit(ei, di, patch),
     }))));
 
@@ -127,14 +127,10 @@ export function renderDaily(container, ctx, ei) {
 
     tr.append(h("td", {}, add(boundInput({
       className: "night",
-      maxlength: 2,
+      maxlength: 5,
       get: entry,
-      format: (e) => (e.nightHours != null ? String(e.nightHours) : ""),
-      parse: (text) => {
-        const t = text.trim();
-        if (t === "") return null;
-        return /^\d{1,2}$/.test(t) ? Number(t) : undefined;
-      },
+      format: (e) => (e.nightHours != null ? hoursText(e.nightHours) : ""),
+      parse: parseHours,
       classes: (e) => (e.overrideNight != null ? "manual" : ""),
       title: (e) =>
         e.overrideNight != null
@@ -173,8 +169,8 @@ export function renderDaily(container, ctx, ei) {
   updaters.push(() => {
     const t = employee().totals;
     totals.worked.textContent = duration(employee().days.reduce((sum, d) => sum + d.workedMin, 0));
-    totals.hours.textContent = `${t.worked} ore`;
-    totals.night.textContent = t.night || "";
+    totals.hours.textContent = `${hoursText(t.worked)} ore`;
+    totals.night.textContent = t.night ? hoursText(t.night) : "";
     const diff = t.worked * 60 - t.cardMin;
     totals.diff.textContent = signed(diff);
     totals.diff.className = `calc diff strong ${diff > 0 ? "plus" : diff < 0 ? "minus" : ""}`;
@@ -186,7 +182,7 @@ export function renderDaily(container, ctx, ei) {
   const intro = h("div", { class: "view-intro" },
     h("div", {},
       h("b", {}, "Pontajul pe zile"),
-      h("span", { class: "muted" }, " · scrie ore (sau cod: CO, CM…), orele de început/sfârșit și orele de noapte; gol = calcul automat. Portocaliu = trecut manual.")));
+      h("span", { class: "muted" }, " · scrie ore întregi sau jumătăți (8 · 7,5 · 7:30 · 730) sau cod (CO, CM…), orele de început/sfârșit și orele de noapte; gol = calcul automat. Portocaliu = trecut manual.")));
 
   container.replaceChildren(intro, h("div", { class: "table-scroll" }, table));
   const refresh = () => updaters.forEach((fn) => fn());
