@@ -20,18 +20,6 @@ export function h(tag, attrs = {}, ...children) {
 
 export const $ = (selector) => document.querySelector(selector);
 
-/** Clock time from minutes relative to the day's midnight ("23:30", "+1 02:00"). */
-export function clock(min) {
-  const day = 1440;
-  const m = ((min % day) + day) % day;
-  const text = `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-  if (min < 0) return `${text} (ziua ant.)`;
-  if (min >= day) return `${text} (+1)`;
-  return text;
-}
-
-export const duration = (min) => `${Math.floor(min / 60)}:${String(min % 60).padStart(2, "0")}`;
-
 export function toast(message, { kind = "info", action, timeout = 5000 } = {}) {
   const box = h("div", { class: `toast ${kind}` }, h("span", {}, message));
   if (action) box.append(h("button", { class: "btn small", onclick: () => { action.run(); box.remove(); } }, action.label));

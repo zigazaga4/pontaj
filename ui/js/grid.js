@@ -1,7 +1,7 @@
 // Editable monthly grid: one hours row + one night row per driver.
-import { h, clock, duration } from "./dom.js";
-
-const KNOWN_CODES = ["CO", "CM", "CP", "BP", "AM", "CIM", "CC", "CFP", "OLP", "N", "ZLP"];
+import { h } from "./dom.js";
+import { clock, duration } from "./time.js";
+import { KNOWN_CODES, parseCellInput } from "./table.js";
 
 // Total columns, pinned to the right edge of the grid.
 const SUMS = [
@@ -13,14 +13,6 @@ const SUMS = [
 ];
 const SUM_WIDTH = 50;
 const sumStyle = (i) => `right:${(SUMS.length - 1 - i) * SUM_WIDTH}px`;
-
-/** Turns what the user typed into an edit: { overrideHours, code }. */
-export function parseCellInput(text) {
-  const value = text.trim().toUpperCase();
-  if (value === "") return { overrideHours: null, code: null };
-  if (/^\d{1,2}$/.test(value)) return { overrideHours: Number(value), code: null };
-  return { overrideHours: null, code: value };
-}
 
 function cellText(entry) {
   return entry.code ?? (entry.hours != null ? String(entry.hours) : "");
@@ -133,7 +125,7 @@ export function renderDetails(target, sheet, ei, di) {
   if (info.holiday) parts.push(h("span", { class: "pill holiday" }, info.holiday));
 
   if (entry.workedMin > 0) {
-    const blocks = entry.segments.map((s) => `${clock(s.start)}–${clock(s.end)}`).join(", ");
+    const blocks = entry.cardIntervals.map((s) => `${clock(s.start)}–${clock(s.end)}`).join(", ");
     parts.push(h("span", {}, `Tahograf: ${duration(entry.workedMin)} lucrat (${blocks})`));
   } else {
     parts.push(h("span", { class: "muted" }, "Fără activitate în PDF"));

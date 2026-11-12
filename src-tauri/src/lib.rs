@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use pontaj_core::{process_pdfs, recompute, suggested_file_name, write_xlsx, Settings, Timesheet};
+use pontaj_core::{add_pdfs, recompute, suggested_file_name, write_xlsx, Settings, Timesheet};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
@@ -57,9 +57,10 @@ fn startup_files() -> Vec<String> {
     std::env::args().skip(1).filter(|a| a.to_lowercase().ends_with(".pdf")).collect()
 }
 
+/// Reads PDFs; with `previous` they are added to the existing timesheet.
 #[tauri::command]
-async fn parse_pdfs(paths: Vec<String>, settings: Settings) -> CmdResult<Timesheet> {
-    blocking(move || process_pdfs(&paths, &settings).map_err(|e| e.to_string())).await
+async fn parse_pdfs(paths: Vec<String>, settings: Settings, previous: Option<Timesheet>) -> CmdResult<Timesheet> {
+    blocking(move || add_pdfs(previous, &paths, &settings).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]

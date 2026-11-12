@@ -6,7 +6,8 @@ export const api = {
   saveSettings: (settings) => invoke("save_settings", { settings }),
   pickPdfs: () => invoke("pick_pdfs"),
   startupFiles: () => invoke("startup_files"),
-  parsePdfs: (paths, settings) => invoke("parse_pdfs", { paths, settings }),
+  // `previous` (the sheet on screen) lets new PDFs be added without losing edits.
+  parsePdfs: (paths, settings, previous) => invoke("parse_pdfs", { paths, settings, previous }),
   recalculate: (timesheet, settings) => invoke("recalculate", { timesheet, settings }),
   exportExcel: (timesheet, settings) => invoke("export_excel", { timesheet, settings }),
   openFile: (path) => invoke("open_file", { path }),

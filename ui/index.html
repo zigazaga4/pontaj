@@ -33,19 +33,21 @@
         <button id="btn-add-empty" class="btn primary">Alege fișierele…</button>
         <ol class="steps">
           <li><b>1.</b> Adaugi PDF-urile</li>
-          <li><b>2.</b> Verifici orele, treci concediile (CO, CM…)</li>
-          <li><b>3.</b> Exporți Excel-ul gata formatat</li>
+          <li><b>2.</b> Verifici ce a citit</li>
+          <li><b>3.</b> Verifici pontajul pe zile</li>
+          <li><b>4.</b> Exporți Excel-ul</li>
         </ol>
       </div>
     </section>
 
     <section id="workspace" hidden>
       <div class="summary" id="summary"></div>
+      <nav class="tabs" id="tabs"></nav>
       <div class="files" id="files"></div>
       <div class="warnings" id="warnings" hidden></div>
-      <div class="grid-wrap" id="grid-wrap"></div>
-      <div class="details" id="details">
-        <span class="muted">Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP, ZLP…) pentru absențe sau lasă gol ca să revii la calculul automat.</span>
+      <div class="split">
+        <aside class="drivers" id="drivers"></aside>
+        <div class="view" id="view"></div>
       </div>
     </section>
   </main>

@@ -7,9 +7,9 @@ use std::path::Path;
 use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, FormatBorder, Formula, RowNum, Workbook, Worksheet, XlsxError};
 
 use crate::calendar::month_name;
-use crate::settings::Settings;
-use crate::time::DAY;
-use crate::timesheet::{Employee, Timesheet, CODES, OLP};
+use crate::settings::{IntervalMode, NightSource, Settings};
+use crate::time::{fmt_clock, fmt_duration, DAY};
+use crate::timesheet::{DayEntry, Employee, Interval, Timesheet, CODES, OLP};
 use crate::{Error, Result};
 
 const HEADER_ROW: RowNum = 7;
@@ -107,10 +107,12 @@ impl Styles {
     }
 }
 
+/// Writes the timesheet; a second worksheet ("Verificare") lists, day by day,
+/// what the tachograph shows next to what was written.
 pub fn write_xlsx(sheet: &Timesheet, settings: &Settings, path: &Path) -> Result<()> {
     let mut workbook = Workbook::new();
-    let ws = workbook.add_worksheet();
-    build_sheet(ws, sheet, settings).map_err(xlsx_err)?;
+    build_sheet(workbook.add_worksheet(), sheet, settings).map_err(xlsx_err)?;
+    build_audit(workbook.add_worksheet(), sheet, settings).map_err(xlsx_err)?;
     workbook.save(path).map_err(|e| Error::new(format!("Nu pot salva fișierul Excel: {e}")))
 }
 
@@ -346,9 +348,270 @@ fn layout(ws: &mut Worksheet, cols: &Cols, total_row: RowNum) -> std::result::Re
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// "Verificare" worksheet: tachograph vs. timesheet, one row per day.
+// ---------------------------------------------------------------------------
+
+const AUDIT_HEADERS: [&str; 12] = [
+    "Șofer",
+    "Data",
+    "Ziua",
+    "Pe card: lucrat (h:mm)",
+    "Pe card: program",
+    "Pontaj: ore / cod",
+    "Pontaj: interval 1",
+    "Pontaj: interval 2",
+    "Pe card: noapte (h:mm)",
+    "Pontaj: noapte (ore)",
+    "Diferență pontaj − card (ore)",
+    "Observații",
+];
+const AUDIT_WIDTHS: [f64; 12] = [24.0, 11.0, 6.0, 12.0, 24.0, 10.0, 15.0, 15.0, 12.0, 10.0, 14.0, 44.0];
+
+/// The rules the numbers were produced with, one line each.
+fn audit_rules(sheet: &Timesheet, settings: &Settings) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "Ore pe zi: timpul lucrat (condus + alte activități), rotunjit în sus de la {} minute. Legea nu impune o regulă de rotunjire: este convenția firmei.",
+            settings.round_up_from_min
+        ),
+        format!("Norma lunii: {} zile lucrătoare × {} ore = {} ore.", sheet.working_days, settings.hours_per_day, sheet.norm_hours),
+    ];
+    lines.push(match settings.interval_mode {
+        IntervalMode::Grid => format!(
+            "Ora de început și de sfârșit: pe grilă de {} minute, două intervale care însumează orele zilei (pauză de {} minute între ele).",
+            settings.slot_min, settings.break_min
+        ),
+        IntervalMode::Card => "Ora de început și de sfârșit: orele reale de pe card (primul început – ultimul sfârșit).".to_string(),
+    });
+    let source = match settings.night_source {
+        NightSource::Card => "coloana „Noapte” din raportul de tahograf (22:00–06:00)".to_string(),
+        NightSource::Intervals => format!("intervalele scrise în pontaj, între {} și {}", settings.night_start, settings.night_end),
+    };
+    let threshold = if settings.night_threshold_min > 0 {
+        format!("se trec doar nopțile de cel puțin {} (rotunjite ca orele de lucru)", fmt_duration(settings.night_threshold_min))
+    } else {
+        "se trec toate orele de noapte".to_string()
+    };
+    lines.push(format!("Ore de noapte: {source}; {threshold}."));
+    lines
+}
+
+/// What was done by hand on a day, for the "Observații" column.
+fn audit_remarks(entry: &DayEntry) -> String {
+    let mut remarks: Vec<&str> = Vec::new();
+    if entry.code.is_some() {
+        remarks.push("absență trecută manual");
+    } else if entry.override_hours.is_some() {
+        remarks.push("ore trecute manual");
+    } else if entry.worked_min == 0 && entry.hours.is_some() {
+        remarks.push("fără date pe card");
+    }
+    if entry.override_intervals.is_some() {
+        remarks.push("intervale trecute manual");
+    }
+    if entry.override_night.is_some() {
+        remarks.push("noapte trecută manual");
+    }
+    if entry.intervals_off {
+        remarks.push("intervalele nu însumează orele");
+    }
+    let mut text = remarks.join("; ");
+    if let Some(first) = text.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    text
+}
+
+fn intervals_text(intervals: &[Interval]) -> String {
+    intervals.iter().map(|i| format!("{}–{}", fmt_clock(i.start), fmt_clock(i.end))).collect::<Vec<_>>().join(", ")
+}
+
+/// A day appears in the audit when the card or the timesheet has something for it.
+fn audit_has_data(entry: &DayEntry) -> bool {
+    entry.worked_min > 0 || entry.hours.is_some() || entry.code.is_some()
+}
+
+/// A duration as an Excel time value (shown `h:mm`); nothing for zero minutes.
+fn write_duration(ws: &mut Worksheet, row: RowNum, col: ColNum, minutes: i32, fmt: &Format) -> std::result::Result<(), XlsxError> {
+    if minutes > 0 {
+        ws.write_number_with_format(row, col, minutes as f64 / DAY as f64, fmt)?;
+    } else {
+        ws.write_blank(row, col, fmt)?;
+    }
+    Ok(())
+}
+
+fn build_audit(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> std::result::Result<(), XlsxError> {
+    let st = Styles::new();
+    let plain = Styles::plain();
+    ws.set_name("Verificare")?;
+    let title = Styles::plain().set_bold().set_font_size(14);
+    ws.write_string_with_format(0, 0, "VERIFICARE PONTAJ FAȚĂ DE TAHOGRAF", &title)?;
+    ws.write_string_with_format(
+        1,
+        0,
+        format!("{} {} · pontajul din foaia colectivă, zi cu zi, față de orele lucrate pe card. Diferențele vin din rotunjire sau din valori trecute manual.", month_name(sheet.month), sheet.year),
+        &plain,
+    )?;
+    let rules = audit_rules(sheet, settings);
+    for (i, line) in rules.iter().enumerate() {
+        ws.write_string_with_format(2 + i as RowNum, 0, line, &plain)?;
+    }
+
+    let header_row = 3 + rules.len() as RowNum + 1;
+    let head = st.header();
+    for (col, text) in AUDIT_HEADERS.iter().enumerate() {
+        ws.write_string_with_format(header_row, col as ColNum, *text, &head)?;
+    }
+    ws.set_row_height(header_row, 42)?;
+
+    let left = st.base.clone().set_align(FormatAlign::Left);
+    let time = st.base.clone().set_num_format("[h]:mm");
+    let diff_fmt = st.base.clone().set_num_format("+0.00;-0.00;0.00");
+    let hours_fmt = st.base.clone().set_bold();
+    let total = st.fill(TOTAL_FILL).set_bold();
+    let total_time = total.clone().set_num_format("[h]:mm");
+    let total_diff = total.clone().set_num_format("+0.00;-0.00;0.00");
+
+    // The rows are numbered as Excel does (1-based) inside the formulas.
+    let mut row = header_row + 1;
+    for emp in &sheet.employees {
+        let first = row;
+        let (mut card_min, mut written, mut night, mut diff) = (0, 0, 0, 0.0_f64);
+        for (info, entry) in sheet.days.iter().zip(&emp.days).filter(|(_, e)| audit_has_data(e)) {
+            let off = info.is_off();
+            let (left, time, hours_fmt) = if off {
+                (left.clone().set_background_color(Color::RGB(OFF_FILL)), time.clone().set_background_color(Color::RGB(OFF_FILL)), hours_fmt.clone().set_background_color(Color::RGB(OFF_FILL)))
+            } else {
+                (left.clone(), time.clone(), hours_fmt.clone())
+            };
+            let day_fmt = if off { st.fill(OFF_FILL) } else { st.base.clone() };
+
+            ws.write_string_with_format(row, 0, &emp.name, &left)?;
+            ws.write_string_with_format(row, 1, format!("{:02}.{:02}.{}", info.day, sheet.month, sheet.year), &day_fmt)?;
+            ws.write_string_with_format(row, 2, &info.weekday, &day_fmt)?;
+            write_duration(ws, row, 3, entry.worked_min, &time)?;
+            ws.write_string_with_format(row, 4, intervals_text(&entry.card_intervals), &left)?;
+            match (&entry.code, entry.hours) {
+                (Some(code), _) => ws.write_string_with_format(row, 5, code, &hours_fmt.clone().set_background_color(Color::RGB(CODE_FILL)))?,
+                (None, Some(h)) => ws.write_number_with_format(row, 5, h as f64, &hours_fmt)?,
+                (None, None) => ws.write_blank(row, 5, &hours_fmt)?,
+            };
+            for slot in 0..2 {
+                ws.write_string_with_format(row, 6 + slot as ColNum, entry.intervals.get(slot).map(|i| intervals_text(std::slice::from_ref(i))).unwrap_or_default(), &day_fmt)?;
+            }
+            write_duration(ws, row, 8, entry.pdf_night_min, &time)?;
+            match entry.night_hours {
+                Some(n) => ws.write_number_with_format(row, 9, n as f64, &day_fmt)?,
+                None => ws.write_blank(row, 9, &day_fmt)?,
+            };
+            match (&entry.code, entry.hours) {
+                (None, Some(h)) => {
+                    let value = ((h as f64 - entry.worked_min as f64 / 60.0) * 100.0).round() / 100.0;
+                    let formula = format!("=ROUND({}-{}*24,2)", cell(row, 5), cell(row, 3));
+                    ws.write_formula_with_format(row, 10, Formula::new(formula).set_result(value.to_string()), &diff_fmt)?;
+                    diff += value;
+                }
+                _ => {
+                    ws.write_blank(row, 10, &diff_fmt)?;
+                }
+            }
+            ws.write_string_with_format(row, 11, audit_remarks(entry), &left)?;
+
+            card_min += entry.worked_min;
+            written += if entry.code.is_none() { entry.hours.unwrap_or(0) } else { 0 };
+            night += entry.night_hours.unwrap_or(0);
+            row += 1;
+        }
+
+        // One total line per driver (also for a driver without any activity).
+        ws.merge_range(row, 0, row, 2, &format!("Total {}", emp.name), &total)?;
+        let sums: [(ColNum, f64, &Format); 4] = [
+            (3, card_min as f64 / DAY as f64, &total_time),
+            (5, written as f64, &total),
+            (9, night as f64, &total),
+            (10, (diff * 100.0).round() / 100.0, &total_diff),
+        ];
+        for col in [4, 6, 7, 8, 11] {
+            ws.write_blank(row, col, &total)?;
+        }
+        for (col, value, fmt) in sums {
+            let formula = if row > first { format!("=SUM({}:{})", cell(first, col), cell(row - 1, col)) } else { "=0".to_string() };
+            ws.write_formula_with_format(row, col, Formula::new(formula).set_result(value.to_string()), fmt)?;
+        }
+        row += 2; // a blank line between drivers
+    }
+
+    let notes: Vec<&String> = sheet.warnings.iter().chain(&sheet.notices).collect();
+    if !notes.is_empty() {
+        ws.write_string_with_format(row, 0, "De reținut la citirea PDF-urilor", &Styles::plain().set_bold())?;
+        for (i, note) in notes.iter().enumerate() {
+            ws.write_string_with_format(row + 1 + i as RowNum, 0, note.as_str(), &plain)?;
+        }
+    }
+
+    for (col, width) in AUDIT_WIDTHS.iter().enumerate() {
+        ws.set_column_width(col as ColNum, *width)?;
+    }
+    ws.set_freeze_panes(header_row + 1, 3)?;
+    ws.set_repeat_rows(header_row, header_row)?;
+    ws.set_landscape();
+    ws.set_paper_size(9); // A4
+    ws.set_print_fit_to_pages(1, 0);
+    ws.set_footer("&CPagina &P din &N");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_states_the_rules_in_use() {
+        let mut settings = Settings::default();
+        let blank = Timesheet {
+            company: String::new(),
+            location: String::new(),
+            year: 2026,
+            month: 9,
+            working_days: 22,
+            norm_hours: 176,
+            days: Vec::new(),
+            employees: Vec::new(),
+            warnings: Vec::new(),
+            notices: Vec::new(),
+            sources: Vec::new(),
+        };
+        let lines = audit_rules(&blank, &settings).join("\n");
+        assert!(lines.contains("de la 20 minute"));
+        assert!(lines.contains("22 zile lucrătoare × 8 ore = 176 ore"));
+        assert!(lines.contains("pe grilă de 30 minute"));
+        assert!(lines.contains("coloana „Noapte” din raportul de tahograf") && lines.contains("cel puțin 3:00"));
+
+        settings.interval_mode = IntervalMode::Card;
+        settings.night_source = NightSource::Intervals;
+        settings.night_start = "00:00".into();
+        settings.night_end = "07:00".into();
+        settings.night_threshold_min = 0;
+        let lines = audit_rules(&blank, &settings).join("\n");
+        assert!(lines.contains("orele reale de pe card"));
+        assert!(lines.contains("între 00:00 și 07:00") && lines.contains("se trec toate orele de noapte"));
+    }
+
+    #[test]
+    fn audit_remarks_name_what_was_done_by_hand() {
+        let mut entry = DayEntry { worked_min: 400, hours: Some(7), ..Default::default() };
+        assert_eq!(audit_remarks(&entry), "");
+        entry.override_hours = Some(8);
+        entry.override_night = Some(3);
+        assert_eq!(audit_remarks(&entry), "Ore trecute manual; noapte trecută manual");
+        let no_card = DayEntry { hours: Some(8), ..Default::default() };
+        assert_eq!(audit_remarks(&no_card), "Fără date pe card");
+        let absence = DayEntry { code: Some("CO".into()), ..Default::default() };
+        assert_eq!(audit_remarks(&absence), "Absență trecută manual");
+        assert!(audit_has_data(&absence) && !audit_has_data(&DayEntry::default()));
+    }
 
     #[test]
     fn cell_names() {

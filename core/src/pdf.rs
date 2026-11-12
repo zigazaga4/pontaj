@@ -31,6 +31,55 @@ pub struct Segment {
     pub night_work: i32,
     /// Working time = driving + other work (the report's last "TOTAL" column).
     pub work: i32,
+    /// Report file the row was read from (empty for rows added by hand).
+    #[serde(default)]
+    pub source: String,
+    /// Added or edited by hand: the derived columns are recomputed from the typed ones.
+    #[serde(default)]
+    pub manual: bool,
+}
+
+impl Segment {
+    /// A row typed by hand: working time is `other_work` for the whole block.
+    pub fn manual(date: NaiveDate, start: i32, end: i32) -> Self {
+        let mut seg = Segment {
+            date,
+            start,
+            end,
+            span: 0,
+            driving: 0,
+            other_work: end - start,
+            availability: 0,
+            rest: 0,
+            day_work: 0,
+            night_work: 0,
+            work: 0,
+            source: String::new(),
+            manual: true,
+        };
+        seg.normalize();
+        seg
+    }
+
+    /// Same report row, whichever file it came from or whether it was edited.
+    pub fn same_row(&self, other: &Segment) -> bool {
+        self.date == other.date
+            && (self.start, self.end, self.driving, self.other_work, self.availability, self.rest, self.night_work)
+                == (other.start, other.end, other.driving, other.other_work, other.availability, other.rest, other.night_work)
+    }
+
+    /// A block ending at or before its start runs past midnight; edited rows
+    /// get their derived columns (duration, working time, day work) refreshed.
+    pub fn normalize(&mut self) {
+        if self.end <= self.start {
+            self.end += DAY;
+        }
+        if self.manual {
+            self.span = self.end - self.start;
+            self.work = self.driving + self.other_work;
+            self.day_work = (self.work - self.night_work).max(0);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +305,8 @@ fn parse_row(line: &Line, columns: &[(Col, f64)]) -> Option<Segment> {
         day_work: 0,
         night_work: 0,
         work: -1,
+        source: String::new(),
+        manual: false,
     };
     for w in line.words.iter().skip(date_idx + 1).filter(|w| w.x0 >= date_right) {
         let Some(value) = parse_hm(&w.text) else { continue };
@@ -339,7 +390,8 @@ fn parse_pages(pages: impl Iterator<Item = Vec<Line>>, source: &str) -> Vec<Driv
                 }
                 continue;
             }
-            if let (Some(i), Some(seg)) = (current, parse_row(line, &columns)) {
+            if let (Some(i), Some(mut seg)) = (current, parse_row(line, &columns)) {
+                seg.source = source.to_string();
                 let segments = &mut reports[i].segments;
                 if !segments.contains(&seg) {
                     segments.push(seg);

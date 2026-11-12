@@ -6,8 +6,8 @@ use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::calendar;
-use crate::pdf::DriverReport;
-use crate::rules::{self, Shift};
+use crate::pdf::{DriverReport, Segment};
+use crate::rules;
 use crate::settings::Settings;
 
 /// Absence codes with their own column in the timesheet, in column order.
@@ -38,7 +38,11 @@ pub struct Timesheet {
     pub norm_hours: i32,
     pub days: Vec<DayInfo>,
     pub employees: Vec<Employee>,
+    /// Problems met while reading the PDFs (kept until the sheet is cleared).
     pub warnings: Vec<String>,
+    /// Observations from the last calculation (e.g. shifts outside the month).
+    #[serde(default)]
+    pub notices: Vec<String>,
     pub sources: Vec<String>,
 }
 
@@ -63,11 +67,14 @@ pub struct Employee {
     pub name: String,
     pub function: String,
     pub location: String,
+    /// The rows read from the report(s); editing them re-derives every day.
+    #[serde(default)]
+    pub activities: Vec<Segment>,
     pub days: Vec<DayEntry>,
     pub totals: Totals,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Interval {
     pub start: i32,
@@ -75,10 +82,10 @@ pub struct Interval {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct DayEntry {
     pub day: u32,
-    // --- From the PDF (read-only) ---
+    // --- Derived from the employee's activities by `rules::recompute` ---
     /// Working time (driving + other work) attributed to this day.
     pub worked_min: i32,
     pub pdf_night_min: i32,
@@ -87,20 +94,28 @@ pub struct DayEntry {
     pub last_end: Option<i32>,
     /// Raw activity blocks, for display.
     pub segments: Vec<Interval>,
-    // --- Manual edits ---
+    /// The blocks joined into the periods actually worked (what the card shows for the day).
+    pub card_intervals: Vec<Interval>,
+    // --- Manual edits (kept when the activities change) ---
     pub override_hours: Option<i32>,
+    pub override_night: Option<i32>,
+    pub override_intervals: Option<Vec<Interval>>,
     pub code: Option<String>,
     // --- Computed by `rules::recompute` ---
     pub hours: Option<i32>,
     pub night_hours: Option<i32>,
     pub night_min: i32,
     pub intervals: Vec<Interval>,
+    /// Grid mode only: the intervals do not add up to the hours (hand-edited day).
+    pub intervals_off: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Totals {
     pub worked: i32,
+    /// Working minutes on the tachograph for the days written in the sheet.
+    pub card_min: i32,
     pub night: i32,
     pub not_worked: i32,
     /// Hours per code, aligned with [`CODES`].
@@ -141,8 +156,6 @@ fn report_month(reports: &[DriverReport]) -> Option<(i32, u32)> {
 pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timesheet> {
     let (year, month) = report_month(&reports)?;
     let n_days = calendar::days_in_month(year, month);
-    let first = NaiveDate::from_ymd_opt(year, month, 1)?;
-    let mut warnings = Vec::new();
 
     let days = (1..=n_days)
         .filter_map(|d| NaiveDate::from_ymd_opt(year, month, d))
@@ -165,7 +178,7 @@ pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timeshee
         match by_name.get_mut(&key) {
             Some(existing) => {
                 for seg in report.segments {
-                    if !existing.segments.contains(&seg) {
+                    if !existing.segments.iter().any(|s| s.same_row(&seg)) {
                         existing.segments.push(seg);
                     }
                 }
@@ -181,16 +194,14 @@ pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timeshee
 
     let employees = by_name
         .into_iter()
-        .map(|(name, report)| {
-            let mut entries: Vec<DayEntry> = (1..=n_days).map(|day| DayEntry { day, ..Default::default() }).collect();
-            for shift in rules::shifts(&report.segments, settings.merge_gap_min) {
-                place_shift(&shift, first, &mut entries, &name, &mut warnings);
-            }
+        .map(|(name, mut report)| {
+            report.segments.sort_by_key(|s| (s.date, s.start));
             Employee {
                 name,
                 function: settings.default_function.clone(),
                 location: report.location,
-                days: entries,
+                activities: report.segments,
+                days: (1..=n_days).map(|day| DayEntry { day, ..Default::default() }).collect(),
                 totals: Totals::default(),
             }
         })
@@ -205,26 +216,104 @@ pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timeshee
         norm_hours: 0,
         days,
         employees,
-        warnings,
+        warnings: Vec::new(),
+        notices: Vec::new(),
         sources,
     };
     rules::recompute(&mut sheet, settings);
     Some(sheet)
 }
 
-fn place_shift(shift: &Shift, first: NaiveDate, entries: &mut [DayEntry], name: &str, warnings: &mut Vec<String>) {
-    let idx = (shift.day - first).num_days();
-    let Some(entry) = usize::try_from(idx).ok().and_then(|i| entries.get_mut(i)) else {
-        warnings.push(format!(
-            "{name}: tura din {} ({}) aparține altei luni și a fost ignorată.",
-            shift.day.format("%d.%m.%Y"),
-            crate::time::fmt_duration(shift.work)
-        ));
-        return;
-    };
-    entry.worked_min += shift.work;
-    entry.pdf_night_min += shift.night_work;
-    entry.first_start = Some(entry.first_start.map_or(shift.start, |s| s.min(shift.start)));
-    entry.last_end = Some(entry.last_end.map_or(shift.end, |e| e.max(shift.end)));
-    entry.segments.extend(shift.blocks.iter().cloned());
+/// Adds the drivers/rows of `fresh` (newly read PDFs) to `previous`, keeping
+/// every manual edit. A different month starts a new timesheet instead.
+pub fn merge(mut previous: Timesheet, fresh: Timesheet, settings: &Settings) -> Timesheet {
+    if (previous.year, previous.month) != (fresh.year, fresh.month) {
+        return fresh;
+    }
+    for employee in fresh.employees {
+        match previous.employees.iter_mut().find(|e| e.name == employee.name) {
+            Some(existing) => {
+                for seg in employee.activities {
+                    if !existing.activities.iter().any(|s| s.same_row(&seg)) {
+                        existing.activities.push(seg);
+                    }
+                }
+                existing.activities.sort_by_key(|s| (s.date, s.start));
+            }
+            None => previous.employees.push(employee),
+        }
+    }
+    previous.employees.sort_by(|a, b| a.name.cmp(&b.name));
+    for source in fresh.sources {
+        if !previous.sources.contains(&source) {
+            previous.sources.push(source);
+        }
+    }
+    previous.warnings.extend(fresh.warnings);
+    rules::recompute(&mut previous, settings);
+    previous
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(source: &str, name: &str, rows: &[(u32, u32, i32, i32)]) -> DriverReport {
+        let segments = rows
+            .iter()
+            .map(|&(month, day, start, end)| {
+                let mut seg = Segment::manual(NaiveDate::from_ymd_opt(2026, month, day).unwrap(), start, end);
+                seg.manual = false;
+                seg.source = source.to_string();
+                seg
+            })
+            .collect();
+        DriverReport { name: name.into(), company: "EXEMPLU SRL".into(), location: String::new(), period: None, segments, source: source.into() }
+    }
+
+    #[test]
+    fn merging_keeps_edits_and_skips_repeated_rows() {
+        let s = Settings::default();
+        let mut sheet = build(vec![report("a.pdf", "Popescu, Ion", &[(9, 1, 480, 960)])], &s).unwrap();
+        sheet.employees[0].days[0].override_hours = Some(9);
+
+        // The same driver in a second file: one repeated row, one new row; plus a new driver.
+        let fresh = build(
+            vec![
+                report("b.pdf", "Popescu, Ion", &[(9, 1, 480, 960), (9, 2, 480, 720)]),
+                report("b.pdf", "Ionescu, Vasile", &[(9, 3, 480, 960)]),
+            ],
+            &s,
+        )
+        .unwrap();
+        let merged = merge(sheet, fresh, &s);
+
+        assert_eq!(merged.employees.len(), 2);
+        let popescu = merged.employees.iter().find(|e| e.name == "POPESCU ION").unwrap();
+        assert_eq!(popescu.activities.len(), 2, "the repeated row is not added twice");
+        assert_eq!(popescu.days[0].override_hours, Some(9), "manual hours survive");
+        assert_eq!(popescu.days[1].hours, Some(4));
+        assert_eq!(merged.sources, vec!["a.pdf".to_string(), "b.pdf".to_string()]);
+    }
+
+    #[test]
+    fn another_month_starts_a_new_sheet() {
+        let s = Settings::default();
+        let sep = build(vec![report("a.pdf", "Popescu, Ion", &[(9, 1, 480, 960)])], &s).unwrap();
+        let oct = build(vec![report("b.pdf", "Popescu, Ion", &[(10, 1, 480, 960)])], &s).unwrap();
+        let merged = merge(sep, oct, &s);
+        assert_eq!((merged.year, merged.month), (2026, 10));
+        assert_eq!(merged.sources, vec!["b.pdf".to_string()]);
+    }
+
+    #[test]
+    fn shifts_outside_the_month_become_notices() {
+        let s = Settings::default();
+        let mut sheet = build(vec![report("a.pdf", "Popescu, Ion", &[(9, 1, 480, 960), (9, 2, 480, 960)])], &s).unwrap();
+        sheet.employees[0].activities[1].date = NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+        rules::recompute(&mut sheet, &s);
+        assert_eq!(sheet.notices.len(), 1);
+        rules::recompute(&mut sheet, &s);
+        assert_eq!(sheet.notices.len(), 1, "notices are rebuilt, not accumulated");
+    }
 }

@@ -64,6 +64,23 @@ pub fn process_pdfs<P: AsRef<Path> + Sync>(paths: &[P], settings: &Settings) -> 
     Ok(sheet)
 }
 
+/// Reads more PDFs into an existing timesheet, keeping its manual edits.
+/// Files already loaded (same name) are skipped; a PDF of another month
+/// starts a new timesheet.
+pub fn add_pdfs<P: AsRef<Path> + Sync>(previous: Option<Timesheet>, paths: &[P], settings: &Settings) -> Result<Timesheet> {
+    let Some(previous) = previous else { return process_pdfs(paths, settings) };
+    let is_new = |p: &&P| {
+        let name = p.as_ref().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        !previous.sources.contains(&name)
+    };
+    let new_paths: Vec<&P> = paths.iter().filter(is_new).collect();
+    if new_paths.is_empty() {
+        return Ok(previous);
+    }
+    let fresh = process_pdfs(&new_paths, settings)?;
+    Ok(timesheet::merge(previous, fresh, settings))
+}
+
 /// Suggested output file name, e.g. `EXEMPLU SRL_Pontaj_09_2026.xlsx`.
 pub fn suggested_file_name(sheet: &Timesheet, settings: &Settings) -> String {
     let company = if settings.company_name.trim().is_empty() { sheet.company.to_uppercase() } else { settings.company_name.trim().to_string() };
