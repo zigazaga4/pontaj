@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permisiuni pentru fereastra principală",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

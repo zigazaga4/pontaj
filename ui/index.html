@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pontaj</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icon.png" alt="" class="logo" />
+      <div>
+        <h1>Pontaj</h1>
+        <p>Din raportul de tahograf direct în foaia colectivă de prezență</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btn-add" class="btn">＋ Adaugă PDF-uri</button>
+      <button id="btn-clear" class="btn ghost" hidden>Golește</button>
+      <button id="btn-settings" class="btn ghost">⚙︎ Reguli</button>
+      <button id="btn-export" class="btn primary" disabled>⬇ Exportă Excel</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="empty" class="dropzone">
+      <div class="dropzone-inner">
+        <div class="drop-icon">📄</div>
+        <h2>Trage aici rapoartele de tahograf (PDF)</h2>
+        <p>„Șablon implicit — Protocol perioadă specială”, unul sau mai multe fișiere pentru aceeași lună.</p>
+        <button id="btn-add-empty" class="btn primary">Alege fișierele…</button>
+        <ol class="steps">
+          <li><b>1.</b> Adaugi PDF-urile</li>
+          <li><b>2.</b> Verifici orele, treci concediile (CO, CM…)</li>
+          <li><b>3.</b> Exporți Excel-ul gata formatat</li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="workspace" hidden>
+      <div class="summary" id="summary"></div>
+      <div class="files" id="files"></div>
+      <div class="warnings" id="warnings" hidden></div>
+      <div class="grid-wrap" id="grid-wrap"></div>
+      <div class="details" id="details">
+        <span class="muted">Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP, ZLP…) pentru absențe sau lasă gol ca să revii la calculul automat.</span>
+      </div>
+    </section>
+  </main>
+
+  <aside id="settings-panel" class="panel" hidden>
+    <div class="panel-head">
+      <h2>Reguli și date firmă</h2>
+      <button id="btn-close-settings" class="btn ghost small">✕</button>
+    </div>
+    <form id="settings-form" class="panel-body"></form>
+  </aside>
+
+  <div id="overlay" class="overlay" hidden><div class="spinner"></div><span id="overlay-text">Se citesc PDF-urile…</span></div>
+  <div id="drop-hint" class="drop-hint" hidden>Eliberează pentru a adăuga PDF-urile</div>
+  <div id="toasts" class="toasts"></div>
+</body>
+</html>
