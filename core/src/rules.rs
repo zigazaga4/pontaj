@@ -378,6 +378,24 @@ mod tests {
     }
 
     #[test]
+    fn default_night_window_is_00_to_07() {
+        let w = Settings::default().night_window();
+        assert_eq!(w, (0, 7 * 60));
+        let n = |a: &str, b: &str| {
+            let (start, mut end) = (hm(a), hm(b));
+            if end <= start {
+                end += 24 * 60; // the shift crosses midnight
+            }
+            night_minutes(&[Interval { start, end }], w)
+        };
+        assert_eq!(n("01:00", "05:00"), 4 * 60, "fully inside 00-07");
+        assert_eq!(n("22:00", "08:00"), 7 * 60, "crossing midnight: only 00:00-07:00 counts");
+        assert_eq!(n("06:00", "10:00"), 60, "06:00-10:00 has one night hour");
+        assert_eq!(n("07:00", "15:00"), 0, "07:00-15:00 has none");
+        assert_eq!(n("20:00", "23:59"), 0, "evening before midnight is not night");
+    }
+
+    #[test]
     fn a_driver_without_night_work_has_a_plain_zero_total() {
         let sheet = sheet_with(vec![seg(9, "8:00", "16:00", "8:00", "0:00")], &Settings::default());
         let night = sheet.employees[0].totals.night;
