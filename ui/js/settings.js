@@ -2,9 +2,9 @@
 import { h } from "./dom.js";
 
 const NIGHT_PRESETS = [
-  { label: "Codul muncii · 22:00–06:00 din raport", values: { nightSource: "card", nightStart: "22:00", nightEnd: "06:00" } },
-  { label: "HG 38/2008 · 00:00–07:00", values: { nightSource: "intervals", nightStart: "00:00", nightEnd: "07:00" } },
-  { label: "Practica anterioară · 22:00–07:00", values: { nightSource: "intervals", nightStart: "22:00", nightEnd: "07:00" } },
+  { label: "00:00–07:00 · din intervalele scrise (implicit)", values: { nightSource: "intervals", nightStart: "00:00", nightEnd: "07:00" } },
+  { label: "22:00–06:00 · din raport (Codul muncii)", values: { nightSource: "card", nightStart: "22:00", nightEnd: "06:00" } },
+  { label: "22:00–07:00 · din intervalele scrise", values: { nightSource: "intervals", nightStart: "22:00", nightEnd: "07:00" } },
 ];
 
 const FIELDS = [

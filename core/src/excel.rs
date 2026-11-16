@@ -587,16 +587,14 @@ mod tests {
         assert!(lines.contains("de la 20 minute"));
         assert!(lines.contains("22 zile lucrătoare × 8 ore = 176 ore"));
         assert!(lines.contains("pe grilă de 30 minute"));
-        assert!(lines.contains("coloana „Noapte” din raportul de tahograf") && lines.contains("cel puțin 3:00"));
+        assert!(lines.contains("intervalele scrise în pontaj, între 00:00 și 07:00") && lines.contains("cel puțin 3:00"));
 
         settings.interval_mode = IntervalMode::Card;
-        settings.night_source = NightSource::Intervals;
-        settings.night_start = "00:00".into();
-        settings.night_end = "07:00".into();
+        settings.night_source = NightSource::Card;
         settings.night_threshold_min = 0;
         let lines = audit_rules(&blank, &settings).join("\n");
         assert!(lines.contains("orele reale de pe card"));
-        assert!(lines.contains("între 00:00 și 07:00") && lines.contains("se trec toate orele de noapte"));
+        assert!(lines.contains("coloana „Noapte” din raportul de tahograf") && lines.contains("se trec toate orele de noapte"));
     }
 
     #[test]

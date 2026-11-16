@@ -6,9 +6,10 @@
 //! 3. Two work intervals on a `slot_min` grid: one from the (rounded) first
 //!    start, one ending at the (rounded) last end, each half of the hours.
 //!    (`IntervalMode::Card` writes the real first start / last end instead.)
-//! 4. Night hours come from the report's own "Noapte" column (22:00–06:00) or
-//!    from the overlap of the intervals with the night window, and are written
-//!    only from `night_threshold_min` upwards.
+//! 4. Night hours come from the overlap of the written intervals with the night
+//!    window (00:00–07:00 by default) or, if chosen, from the report's own
+//!    "Noapte" column (22:00–06:00). They are written only from
+//!    `night_threshold_min` upwards.
 //!
 //! Everything is derived from `Employee::activities`, so editing a scanned row
 //! and calling [`recompute`] updates the whole sheet; manual day edits (hours,
@@ -226,9 +227,10 @@ fn place_activities(employee: &mut Employee, first: NaiveDate, merge_gap_min: i3
 
 /// Mirrors the formulas written in the Excel file.
 fn compute_totals(employee: &Employee, norm: i32, hours_per_day: i32) -> Totals {
-    let worked = employee.days.iter().filter_map(|d| d.hours).sum::<f64>();
+    // `+ 0.0`: summing nothing gives -0.0, which would show up as "-0" in the sheet and the workbook.
+    let worked = employee.days.iter().filter_map(|d| d.hours).sum::<f64>() + 0.0;
     let card_min = employee.days.iter().filter(|d| d.hours.is_some()).map(|d| d.worked_min).sum::<i32>();
-    let night = employee.days.iter().filter_map(|d| d.night_hours).sum::<f64>();
+    let night = employee.days.iter().filter_map(|d| d.night_hours).sum::<f64>() + 0.0;
     let norm = f64::from(norm);
     let not_worked = (norm - worked).max(0.0);
     let mut code_hours: Vec<f64> = CODES
@@ -343,7 +345,8 @@ mod tests {
 
     #[test]
     fn night_hours_use_window_and_threshold() {
-        let s = Settings { night_end: "07:00".into(), ..Settings::default() };
+        // The old 22:00–07:00 window, set explicitly: the default is now 00:00–07:00.
+        let s = Settings { night_start: "22:00".into(), night_end: "07:00".into(), ..Settings::default() };
         let w = s.night_window();
         // Driver C, 06.09: 3:49–13:34, 6h → 04:00–07:00, 10:30–13:30 → 3h of night (04–07).
         assert_eq!(night_minutes(&make_intervals(hm("3:49"), hm("13:34"), 6.0, &s), w), 180);
@@ -375,8 +378,16 @@ mod tests {
     }
 
     #[test]
-    fn night_comes_from_the_report_column_by_default() {
-        let s = Settings::default();
+    fn a_driver_without_night_work_has_a_plain_zero_total() {
+        let sheet = sheet_with(vec![seg(9, "8:00", "16:00", "8:00", "0:00")], &Settings::default());
+        let night = sheet.employees[0].totals.night;
+        assert_eq!(night, 0.0);
+        assert!(night.is_sign_positive(), "an empty sum must not be -0.0");
+    }
+
+    #[test]
+    fn night_can_come_from_the_report_column() {
+        let s = Settings { night_source: NightSource::Card, night_start: "22:00".into(), night_end: "06:00".into(), ..Settings::default() };
         // 04:23–08:10, 3:14 worked, 1:22 of it at night (22–06): under the 3h threshold.
         let sheet = sheet_with(vec![seg(7, "4:23", "8:10", "3:14", "1:22")], &s);
         assert_eq!((day(&sheet, 7).hours, day(&sheet, 7).night_min, day(&sheet, 7).night_hours), (Some(3.0), 82, None));
@@ -390,12 +401,22 @@ mod tests {
     }
 
     #[test]
-    fn night_can_follow_the_written_intervals_instead() {
-        // HG 38/2008 style window 00:00–07:00, measured on the intervals.
-        let s = Settings { night_source: NightSource::Intervals, night_start: "00:00".into(), night_end: "07:00".into(), ..Settings::default() };
+    fn night_defaults_to_00_07_measured_on_the_written_intervals() {
+        let s = Settings::default();
         // 04:00–13:00, 8h → 04:00–08:00 + 09:00–13:00 → 3h inside 00–07.
         let sheet = sheet_with(vec![seg(9, "4:00", "13:00", "8:00", "2:00")], &s);
         assert_eq!((day(&sheet, 9).night_min, day(&sheet, 9).night_hours), (180, Some(3.0)));
+        // 21:30–01:30, 4h, booked on the 10th (most work before midnight). The tight shift gets the 1h break, so the
+        // written intervals are 21:30–23:30 and 00:30–02:30: the evening before midnight is no longer night, only the
+        // 2h after 00:00 count, which stays under the 3h threshold and is not written.
+        let sheet = sheet_with(vec![seg(10, "21:30", "0:00", "2:30", "2:30"), seg(11, "0:00", "1:30", "1:30", "1:30")], &s);
+        let d = day(&sheet, 10);
+        assert_eq!(ivs(&d.intervals), vec![("21:30".into(), "23:30".into()), ("00:30".into(), "02:30".into())]);
+        assert_eq!((d.hours, d.night_min, d.night_hours), (Some(4.0), 120, None));
+        // The same shift under the old 22:00–07:00 window counted 1h30 + 2h = 3h30 of night and wrote it (rounded to 4).
+        let old = Settings { night_start: "22:00".into(), ..Settings::default() };
+        let sheet = sheet_with(vec![seg(10, "21:30", "0:00", "2:30", "2:30"), seg(11, "0:00", "1:30", "1:30", "1:30")], &old);
+        assert_eq!((day(&sheet, 10).night_min, day(&sheet, 10).night_hours), (210, Some(4.0)));
     }
 
     #[test]

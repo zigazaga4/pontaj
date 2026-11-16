@@ -25,8 +25,8 @@ fn load_settings(app: AppHandle) -> Settings {
     settings_path(&app)
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default()
+        .and_then(|json| serde_json::from_str::<Settings>(&json).ok())
+        .map_or_else(Settings::default, Settings::migrated)
 }
 
 #[tauri::command]
