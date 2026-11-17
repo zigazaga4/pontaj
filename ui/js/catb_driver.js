@@ -159,6 +159,12 @@ function timeInput(trip, side, edit) {
 // Rows
 // ---------------------------------------------------------------------------------------------------------------------
 
+/** "CT-22-XDD · VITO · 8 locuri": the car as the API describes it (model and seats are what tell a category D vehicle). */
+function carText(trip) {
+  const parts = [trip.car, trip.carModel, trip.carSeats > 0 ? `${trip.carSeats} locuri` : ""];
+  return parts.filter(Boolean).join(" · ");
+}
+
 function tripRow(trip, edit) {
   const removed = trip.edit.removed;
   const counted = trip.eff.countsHours && trip.eff.minutes > 0;
@@ -178,7 +184,7 @@ function tripRow(trip, edit) {
             if (trip.manual) d.trips.splice(d.trips.findIndex((x) => x.id === trip.id), 1);
             else d.trips.find((x) => x.id === trip.id).edit.removed = true;
           }) }, "✕"),
-      trip.car ? h("small", { class: "muted car", title: "Mașina" }, trip.car) : null),
+      trip.car ? h("small", { class: "muted car", title: "Mașina, modelul și locurile din API" }, carText(trip)) : null),
   ];
   return h("tr", { class: `trip-row ${removed ? "removed" : ""} ${trip.eff.excursion ? "excursion" : ""} ${trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null ? "edited" : ""}` }, cells);
 }

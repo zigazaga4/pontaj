@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::places;
 use super::tariffs::{default_tariffs, Tariff};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +29,14 @@ pub struct CatbSettings {
     pub main_route_private_regular: bool,
     /// Amounts in the Excel file. Off: the file has hours and warnings only.
     pub show_money: bool,
+    /// A driver who drove a category D vehicle is not Categoria B: he is on the tachograph. On: such drivers are left
+    /// out of the sheet when the month is downloaded.
+    pub exclude_d_drivers: bool,
+    /// A vehicle with more passenger seats than this needs a category D licence (8 passengers + the driver is still B).
+    pub small_vehicle_max_seats: i32,
+    /// Makes/models that are category D whatever the seats say (also when the API gives no seats). Matched inside the
+    /// model name, ignoring case and diacritics.
+    pub d_models: Vec<String>,
     pub tariffs: Vec<Tariff>,
     /// Places of Constanța county that the built-in list misses (written like the ALT app writes them).
     /// A private trip to a place that is neither on the regular route nor in the county is an excursion.
@@ -47,6 +56,9 @@ impl Default for CatbSettings {
             count_other_trips: true,
             main_route_private_regular: true,
             show_money: true,
+            exclude_d_drivers: true,
+            small_vehicle_max_seats: 8,
+            d_models: ["Tourismo", "Setra", "Travego"].map(String::from).to_vec(),
             tariffs: default_tariffs(),
             extra_local_places: Vec::new(),
         }
@@ -71,11 +83,41 @@ impl CatbSettings {
     pub fn leg_pay(&self) -> f64 {
         self.pair_pay / 2.0
     }
+
+    /// Is this a category D vehicle? By its passenger seats (more than `small_vehicle_max_seats`) or by its make/model
+    /// (one of `d_models`). Unknown seats (0) and an unknown model never make a vehicle D.
+    pub fn is_d_vehicle(&self, model: &str, seats: i32) -> bool {
+        if seats > self.small_vehicle_max_seats {
+            return true;
+        }
+        let model = places::normalize(model);
+        !model.is_empty() && self.d_models.iter().map(|m| places::normalize(m)).any(|m| !m.is_empty() && model.contains(&m))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vehicle_is_category_d_by_its_seats_or_by_its_make() {
+        let cfg = CatbSettings::default();
+        // The ALT fleet: small vehicles up to 8 passengers, then 17–20 (Sprinter) and the coaches.
+        for (model, seats) in [("VITO", 8), ("Vito alb", 8), ("TRAFIC", 8), ("V-CLASS", 6), ("OCTAVIA", 3), ("PASSAT", 3), ("Touran", 4)] {
+            assert!(!cfg.is_d_vehicle(model, seats), "{model} {seats} is a small vehicle");
+        }
+        for (model, seats) in [("SPRINTER", 20), ("SPRINTER", 17), ("TOURISMO", 55), ("SETRA", 50), ("TRAVEGO", 50)] {
+            assert!(cfg.is_d_vehicle(model, seats), "{model} {seats} is category D");
+        }
+        assert!(cfg.is_d_vehicle("Tourismo RHD", 0), "a coach make counts even when the API gives no seats");
+        assert!(!cfg.is_d_vehicle("", 0) && !cfg.is_d_vehicle("SPRINTER", 0), "nothing known = not D (Sprinter is D only by its seats)");
+        assert!(!cfg.is_d_vehicle("SPRINTER", 8), "a Sprinter with 8 seats is a small vehicle");
+        let mut cfg = cfg;
+        cfg.small_vehicle_max_seats = 6;
+        assert!(cfg.is_d_vehicle("VITO", 8), "the seat limit is a setting");
+        cfg.d_models = vec!["  ".into()];
+        assert!(!cfg.is_d_vehicle("TOURISMO", 0), "an empty entry in the list matches nothing");
+    }
 
     #[test]
     fn a_key_typed_in_the_settings_wins_over_the_built_in_one() {

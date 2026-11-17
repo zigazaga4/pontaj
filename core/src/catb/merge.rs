@@ -27,6 +27,9 @@ fn from_row(row: &ApiRow) -> Trip {
         arrival: row.arrival,
         return_at: row.return_at,
         car: row.car.clone(),
+        car_model: row.car_model.clone(),
+        car_seats: row.car_seats,
+        car_category: row.car_category.clone(),
         passengers: row.passengers,
         ..Default::default()
     }
@@ -37,6 +40,11 @@ fn refresh(trip: &mut Trip, row: &ApiRow) -> bool {
     let fresh = from_row(row);
     let changed = (trip.kind, &trip.label, &trip.from, &trip.to, trip.departure, trip.arrival, trip.return_at, &trip.car, trip.passengers)
         != (fresh.kind, &fresh.label, &fresh.from, &fresh.to, fresh.departure, fresh.arrival, fresh.return_at, &fresh.car, fresh.passengers);
+    // The car's make and seats are filled in without raising a notice: a month saved before they were kept learns them now.
+    let car_details = (&trip.car_model, trip.car_seats, &trip.car_category) != (&fresh.car_model, fresh.car_seats, &fresh.car_category);
+    if car_details {
+        (trip.car_model, trip.car_seats, trip.car_category) = (fresh.car_model.clone(), fresh.car_seats, fresh.car_category.clone());
+    }
     if changed {
         *trip = Trip { edit: std::mem::take(&mut trip.edit), eff: std::mem::take(&mut trip.eff), ..fresh };
     }
@@ -144,6 +152,9 @@ mod tests {
             arrival: parse_time(arrival),
             return_at: None,
             car: "CT-22-XDD".into(),
+            car_model: "VITO".into(),
+            car_seats: 8,
+            car_category: "Microbuz 8 locuri".into(),
             passengers: 10,
         }
     }

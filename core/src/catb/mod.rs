@@ -2,6 +2,7 @@
 
 pub mod api;
 mod cap;
+mod category_d;
 mod compute;
 mod config;
 pub mod excel;
@@ -22,7 +23,16 @@ use crate::settings::Settings;
 /// Puts an answer of the API into the month's sheet (a new one when `previous` is another month) and recomputes it.
 pub fn apply_download(previous: Option<Sheet>, year: i32, month: u32, parsed: &api::Parsed, fetched_at: &str, settings: &Settings) -> Sheet {
     let mut sheet = previous.filter(|s| (s.year, s.month) == (year, month)).unwrap_or_else(|| new_sheet(year, month));
-    merge_rows(&mut sheet, &parsed.rows, parsed.skipped, fetched_at);
+    // Drivers of category D (by the make and seats of their cars) are on the tachograph: they do not enter Categoria B.
+    let (rows, excluded) = category_d::split(&parsed.rows, &settings.catb);
+    merge_rows(&mut sheet, &rows, parsed.skipped, fetched_at);
+    // One who was in the sheet with changes of the office stays; the notice says why instead of "gone from the API".
+    for notice in &mut sheet.notices {
+        if let Some(driver) = excluded.iter().find(|d| *notice == format!("{}: nu mai apare în API, dar are modificări; l-am păstrat.", d.name)) {
+            *notice = format!("{}: e de categoria D (nu intră în Categoria B), dar ai modificări la el; l-am păstrat.", driver.name);
+        }
+    }
+    sheet.notices.extend(category_d::notices(&excluded, &settings.catb));
     if parsed.rows.is_empty() {
         sheet.notices.push("API-ul nu a trimis nicio cursă pentru luna aceasta.".into());
     }

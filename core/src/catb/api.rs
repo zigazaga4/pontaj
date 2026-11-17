@@ -26,7 +26,13 @@ pub struct ApiRow {
     pub departure: NaiveDateTime,
     pub arrival: Option<NaiveDateTime>,
     pub return_at: Option<NaiveDateTime>,
+    /// Registration number of the car (`CT-22-XDD`).
     pub car: String,
+    /// Make/model as the ALT app writes it (`TOURISMO`, `VITO`), and its passenger seats: they tell a category D vehicle
+    /// from a small one. 0 seats = the API did not say.
+    pub car_model: String,
+    pub car_seats: i32,
+    pub car_category: String,
     pub passengers: i32,
 }
 
@@ -85,6 +91,12 @@ struct RawRoute {
 struct RawCar {
     #[serde(default)]
     tag: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    seats: Option<i32>,
+    #[serde(default)]
+    category: Option<String>,
 }
 
 /// `2026-10-04 00:30` (also with seconds, or with a `T`).
@@ -112,6 +124,9 @@ impl Raw {
             arrival,
             return_at: self.return_at.as_deref().and_then(parse_time),
             car: self.car.tag,
+            car_model: self.car.model.unwrap_or_default().trim().to_string(),
+            car_seats: self.car.seats.unwrap_or(0).max(0),
+            car_category: self.car.category.unwrap_or_default().trim().to_string(),
             passengers: self.passengers,
         })
     }
@@ -204,7 +219,9 @@ mod tests {
         assert_eq!((eco.driver_id, eco.trip_id.as_str(), eco.kind), (462, "eco-117599", TripKind::Eco));
         assert_eq!(eco.arrival, parse_time("2026-10-04 04:00"));
         assert_eq!(eco.car, "CT-22-XDD");
+        assert_eq!((eco.car_model.as_str(), eco.car_seats, eco.car_category.as_str()), ("TOURISMO", 55, "Autocar"));
         let private = &parsed.rows[1];
+        assert_eq!((private.car_model.as_str(), private.car_seats), ("", 0), "a car the API says little about has no model and 0 seats");
         assert_eq!((private.kind, private.arrival), (TripKind::Private, None));
         assert_eq!(private.return_at, parse_time("2026-10-06 18:00"));
     }

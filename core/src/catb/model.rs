@@ -114,6 +114,10 @@ pub struct Trip {
     pub arrival: Option<NaiveDateTime>,
     pub return_at: Option<NaiveDateTime>,
     pub car: String,
+    /// Make/model and passenger seats of the car, as the API gave them (shown next to the car; 0 seats = unknown).
+    pub car_model: String,
+    pub car_seats: i32,
+    pub car_category: String,
     pub passengers: i32,
     pub manual: bool,
     pub edit: TripEdit,
