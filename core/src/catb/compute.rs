@@ -48,6 +48,7 @@ pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &S
     }
     driver.trips.sort_by_key(|t| (t.eff.departure, t.id.clone()));
     driver.pauses = pauses(&driver.trips, &driver.pause_edits, settings);
+    take_excursions_out(&mut driver.trips, &driver.pauses);
     driver.days = days(&driver.trips, &driver.pauses, &driver.excluded_days, year, month);
     let cap_min = monthly_cap_min(year, month, settings);
     driver.totals = totals(&driver.days, cap_min);
@@ -67,11 +68,28 @@ fn effective(trip: &Trip, cfg: &CatbSettings) -> Effective {
         TripKind::Bus => false,
     };
     let (price, price_note) = price_of(trip, regular, &from, &to, cfg);
-    Effective { departure: Some(departure), arrival, from, to, minutes, regular, counts_hours: regular || cfg.count_other_trips, price, price_note }
+    Effective { departure: Some(departure), arrival, from, to, minutes, regular, counts_hours: regular || cfg.count_other_trips, excursion: false, price, price_note }
 }
 
 /// Note shown when a trip has no tariff: the office types the amount by hand.
 pub const NO_TARIFF: &str = "fără tarif";
+
+/// Note of a trip that belongs to an excursion.
+pub const EXCURSION_NOTE: &str = "excursie: se pontează din tahograf";
+
+/// An excursion is timed from the tachograph, so it leaves Categoria B: the other trips between the two regular
+/// trips of a pause marked "Excursie" (the far trip, anything done around it) count nowhere here.
+fn take_excursions_out(trips: &mut [Trip], pauses: &[Pause]) {
+    for pause in pauses.iter().filter(|p| p.state == PauseState::Excursion) {
+        let (Some(first), Some(last)) = (trips.iter().position(|t| t.id == pause.prev), trips.iter().position(|t| t.id == pause.next)) else { continue };
+        for trip in trips.iter_mut().take(last).skip(first + 1).filter(|t| !t.edit.removed && !t.eff.regular) {
+            trip.eff.excursion = true;
+            trip.eff.counts_hours = false;
+            trip.eff.price = 0.0;
+            trip.eff.price_note = EXCURSION_NOTE.into();
+        }
+    }
+}
 
 fn price_of(trip: &Trip, regular: bool, from: &str, to: &str, cfg: &CatbSettings) -> (f64, String) {
     if let Some(price) = trip.edit.price {
@@ -159,14 +177,18 @@ fn busy_minutes(start: chrono::NaiveDateTime, end: chrono::NaiveDateTime, betwee
 
 /// How much of a pause counts as waiting.
 fn counted_minutes(pause: &Pause) -> i32 {
+    // An excursion is not Categoria B: nothing of it counts here, not even hours typed by hand.
+    if pause.state == PauseState::Excursion {
+        return 0;
+    }
     if let Some(hours) = pause.hours_override {
         return (hours.max(0.0) * 60.0).round() as i32;
     }
     let gap = (pause.gap_min.max(0) - pause.busy_min).max(0);
     let by_itself = if pause.kind == PauseKind::Normal { gap } else { 0 };
     match pause.state {
-        PauseState::Off => 0,
-        PauseState::Stayed | PauseState::Excursion => gap,
+        PauseState::Off | PauseState::Excursion => 0,
+        PauseState::Stayed => gap,
         // He waited until he left; without that time, a normal pause counts whole and a long one not at all.
         PauseState::Passenger => match (pause.start, pause.left) {
             (Some(start), Some(left)) => ((left - start).num_minutes() as i32).clamp(0, gap),
@@ -187,6 +209,15 @@ fn pause_alerts(pause: &Pause, between: &[&Trip], settings: &Settings) -> Vec<Al
     let mut alerts = Vec::new();
     if pause.kind == PauseKind::Overlap {
         alerts.push(Alert::new("overlap", Level::Warn, format!("Cursele se suprapun cu {}.", fmt_duration(-pause.gap_min))));
+        return alerts;
+    }
+    if pause.state == PauseState::Excursion {
+        let place = between.iter().find(|t| is_far(t, cfg)).or(between.first()).map_or_else(|| pause.place_to.clone(), |t| t.eff.to.clone());
+        let dates = match (pause.start, pause.end) {
+            (Some(start), Some(end)) => format!(", {} – {}", start.format("%d.%m"), end.format("%d.%m")),
+            _ => String::new(),
+        };
+        alerts.push(Alert::new("excursion_done", Level::Info, format!("Excursie ({place}{dates}): nu intră în Categoria B, se pontează din tahograf. Pauza și cursele din ea nu se numără aici.")));
         return alerts;
     }
     if pause.counted_min >= cfg.station_warn_min {
@@ -214,7 +245,7 @@ fn pause_alerts(pause: &Pause, between: &[&Trip], settings: &Settings) -> Vec<Al
             Some(trip) => format!("între ele: cursă {} {} → {}, în afara județului Constanța", trip.kind.label().to_lowercase(), trip.eff.from, trip.eff.to),
             None => format!("pauză de {}", fmt_duration(pause.gap_min)),
         };
-        alerts.push(Alert::new("to_confirm", Level::Info, format!("De confirmat ({why}): timpul dintre curse nu intră în ore până alegi ce a fost: a stat, întors ca pasager, zi liberă sau excursie.")));
+        alerts.push(Alert::new("to_confirm", Level::Info, format!("De confirmat ({why}): timpul dintre curse nu intră în ore până alegi ce a fost: a stat, întors ca pasager, zi liberă sau excursie (iese din Categoria B, se pontează din tahograf).")));
         if let Some(trip) = far {
             alerts.push(Alert::new("excursion", Level::Info, format!("Probabilă excursie: {} → {}.", trip.eff.from, trip.eff.to)));
         } else if !differs && places::area(&pause.place_from) == places::Area::Bucuresti {
@@ -234,7 +265,7 @@ fn days(trips: &[Trip], pauses: &[Pause], excluded: &[NaiveDate], year: i32, mon
     let mut rows: BTreeMap<NaiveDate, DayRow> = BTreeMap::new();
 
     // A trip belongs to the day it departs, a pause to the day it starts.
-    for trip in trips.iter().filter(|t| !t.edit.removed) {
+    for trip in trips.iter().filter(|t| !t.edit.removed && !t.eff.excursion) {
         let eff = &trip.eff;
         let Some(row) = eff.departure.and_then(|d| day_row(&mut rows, d.date(), year, month)) else { continue };
         row.trips += 1;
@@ -376,8 +407,8 @@ mod tests {
         assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Confirm, 0));
         assert!(d.pauses[0].alerts.iter().any(|a| a.code == "to_confirm"));
         assert!(d.pauses[0].alerts.iter().any(|a| a.code == "stays_bucharest"));
-        // The office says it was an excursion: the whole pause counts, 30 h.
-        d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Excursion, ..Default::default() });
+        // The office says he stayed there: the whole pause counts, 30 h.
+        d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Stayed, ..Default::default() });
         run(&mut d);
         assert_eq!(d.pauses[0].counted_min, 30 * 60);
         assert_eq!(d.pauses[0].extra_pay, 270.0, "27 h beyond the included 3");
@@ -483,6 +514,41 @@ mod tests {
         settings.catb.extra_local_places = vec!["Chitila".into()];
         recompute_driver(&mut d, 2026, 10, &settings);
         assert_eq!(d.pauses[0].kind, PauseKind::Normal);
+    }
+
+    #[test]
+    fn an_excursion_leaves_categoria_b_completely() {
+        // Back from Otopeni at 08:00; a private trip to Albac (no tariff, no duration); the next regular trip 4 days later.
+        let mut d = driver(vec![
+            trip("eco-1", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 05:00", Some("2026-10-05 08:00")),
+            trip("private-9", TripKind::Private, "Constanta", "Albac", "2026-10-06 06:00", None),
+            trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-10 09:30", Some("2026-10-10 12:30")),
+        ]);
+        run(&mut d);
+        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Confirm, 0), "undecided: nothing counted yet");
+        assert!(d.days.iter().any(|day| day.alerts.iter().any(|a| a.code == "no_tariff")), "the Albac trip has no tariff yet");
+        let before = d.totals.total_min;
+
+        d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Excursion, ..Default::default() });
+        run(&mut d);
+        let pause = &d.pauses[0];
+        assert_eq!((pause.counted_min, pause.extra_pay), (0, 0.0), "the whole pause stays out");
+        assert!(pause.alerts.iter().any(|a| a.code == "excursion_done" && a.text.contains("Albac") && a.text.contains("tahograf")), "{:?}", pause.alerts);
+        let albac = d.trips.iter().find(|t| t.id == "private-9").unwrap();
+        assert!(albac.eff.excursion && !albac.eff.counts_hours);
+        assert_eq!((albac.eff.price, albac.eff.price_note.as_str()), (0.0, EXCURSION_NOTE));
+        assert!(d.days.iter().all(|day| day.alerts.is_empty()), "an excursion trip raises no 'fără tarif'");
+        assert_eq!(d.totals.total_min, before, "the excursion adds nothing");
+        assert_eq!(d.totals.pay_exterior, 0.0);
+
+        // Hours typed by hand do not bring it back in.
+        d.pause_edits[0].hours = Some(20.0);
+        run(&mut d);
+        assert_eq!(d.pauses[0].counted_min, 0);
+        // Choosing something else puts the trip back.
+        d.pause_edits[0].state = PauseState::Stayed;
+        run(&mut d);
+        assert!(!d.trips.iter().find(|t| t.id == "private-9").unwrap().eff.excursion);
     }
 
     #[test]

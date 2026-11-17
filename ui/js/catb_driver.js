@@ -12,7 +12,7 @@ const PAUSE_STATES = [
   ["stayed", "A stat acolo"],
   ["passenger", "S-a întors ca pasager"],
   ["off", "Zi liberă"],
-  ["excursion", "Excursie"],
+  ["excursion", "Excursie (iese din Categoria B)"],
 ];
 const PAUSE_BADGES = { normal: "Staționare", confirm: "De decis", rest: "Pauză lungă", overlap: "Suprapunere" };
 
@@ -20,8 +20,9 @@ const PAUSE_BADGES = { normal: "Staționare", confirm: "De decis", rest: "Pauză
 function pauseHint(pause) {
   switch (pause.state) {
     case "stayed":
-    case "excursion":
       return "Se numără toată pauza de mai sus (sau scrie tu orele).";
+    case "excursion":
+      return "Excursia se pontează din tahograf, deci iese din Categoria B: nu se numără nimic aici, nici pauza, nici cursele din ea, nici banii.";
     case "passenger":
       return "Se numără de la sosire până la ora la care a plecat. Completează „A plecat la” după foaia șoferului; fără ea se numără ca în starea automată.";
     case "off":
@@ -86,7 +87,7 @@ function bound(options) {
 }
 
 function alertList(alerts) {
-  return h("ul", { class: "alerts" }, alerts.map((a) => h("li", { class: `alert ${a.level}` }, a.text)));
+  return h("ul", { class: "alerts" }, alerts.map((a) => h("li", { class: `alert level-${a.level}` }, a.text)));
 }
 
 export const chip = (label, value, { title, tone, onclick } = {}) => h("div", { class: `chip ${tone ?? ""} ${onclick ? "clickable" : ""}`, title, onclick }, h("small", {}, label), h("b", {}, value));
@@ -169,7 +170,7 @@ function tripRow(trip, edit) {
     h("td", {}, placeInput(trip, "from", edit)),
     h("td", {}, placeInput(trip, "to", edit)),
     h("td", { class: `calc ${counted ? "strong" : ""}`, title: counted ? "" : trip.eff.arrival ? "" : "Sosire necunoscută: durata nu se numără" }, counted ? duration(trip.eff.minutes) : "–"),
-    h("td", { class: "money" }, regular ? lei(trip.eff.price) : priceInput(trip, edit)),
+    h("td", { class: "money" }, trip.eff.excursion ? h("small", { class: "muted", title: trip.eff.priceNote }, "tahograf") : regular ? lei(trip.eff.price) : priceInput(trip, edit)),
     h("td", { class: "actions" },
       removed
         ? h("button", { class: "icon-btn", title: "Pune cursa la loc", onclick: () => edit((d) => (d.trips.find((x) => x.id === trip.id).edit.removed = false)) }, "↺")
@@ -179,7 +180,7 @@ function tripRow(trip, edit) {
           }) }, "✕"),
       trip.car ? h("small", { class: "muted car", title: "Mașina" }, trip.car) : null),
   ];
-  return h("tr", { class: `trip-row ${removed ? "removed" : ""} ${trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null ? "edited" : ""}` }, cells);
+  return h("tr", { class: `trip-row ${removed ? "removed" : ""} ${trip.eff.excursion ? "excursion" : ""} ${trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null ? "edited" : ""}` }, cells);
 }
 
 /** A caption above a control, so nobody has to guess what an empty box is for. */
@@ -234,12 +235,13 @@ function pauseControls(driver, pause, edit) {
   const open = opened.has(id);
   const decided = state !== "auto";
   const fields = [labelled("Ce a fost?", select)];
-  if (state === "passenger" || state === "excursion" || pause.left || pause.back) {
+  if (state === "passenger" || pause.left || pause.back) {
     fields.push(labelled("A plecat la", when("left", "ex. 11:00"), "Ora la care a plecat, după foaia șoferului"));
     fields.push(labelled("S-a întors la", when("back", "ex. 17:00"), "Ora la care s-a întors, după foaia șoferului (doar pentru evidență)"));
   }
   // Hours and note are always there once the controls are open; before that a button opens them.
-  if (decided || open || pause.hoursOverride != null) fields.push(labelled("Ore de staționare", hours));
+  // An excursion counts nothing here, so hours typed for it would mean nothing.
+  if (state !== "excursion" && (decided || open || pause.hoursOverride != null)) fields.push(labelled("Ore de staționare", hours));
   if (decided || open || pause.note) fields.push(labelled("Notă", note));
   if (!decided && !open && pause.hoursOverride == null && !pause.note) {
     fields.push(h("button", { class: "btn small ghost", title: "Scrie orele singur sau adaugă o notă", onclick: () => { opened.add(id); edit(() => {}); } }, "✎ Ore sau notă"));
@@ -284,7 +286,8 @@ const dayStat = (label, value, tone = "") => h("div", { class: `day-stat ${tone}
 function dayRows(driver, sheet, date, trips, edit) {
   const row = driver.days.find((d) => d.date === date);
   const info = sheet.days.find((d) => `${sheet.year}-${String(sheet.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}` === date);
-  const outside = !row;
+  const outside = !info;
+  const excursionOnly = trips.length > 0 && trips.every((t) => t.eff.excursion);
   const excluded = !!row?.excluded;
   const head = h("tr", { class: `day-head ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${excluded ? "excluded" : ""}` },
     h("td", { colspan: 8 },
@@ -294,6 +297,7 @@ function dayRows(driver, sheet, date, trips, edit) {
           h("span", { class: "day-date" }, shortDate(date)),
           info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
           outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
+          excursionOnly ? h("span", { class: "pill excursion" }, "excursie · se pontează din tahograf") : null,
           excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null),
         row
           ? h("div", { class: "day-stats" },
@@ -393,6 +397,7 @@ export function renderCatbDriver(container, ctx) {
   const sheet = ctx.sheet();
   const edit = ctx.edit;
   const t = driver.totals;
+  const excursions = driver.pauses.filter((p) => p.state === "excursion").length;
 
   const proposals = driver.proposals.length
     ? h("div", { class: "proposals" },
@@ -414,6 +419,7 @@ export function renderCatbDriver(container, ctx) {
       chip("Curse regulate", t.legs),
       chip("Ore curse", duration(t.tripMin)),
       chip("Ore staționare", duration(t.stationMin), { title: "Dedusă: plecarea cursei următoare minus sosirea celei dinainte" }),
+      excursions ? chip("Excursii (tahograf)", excursions, { title: "Ies din Categoria B: se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
       chip("Total ore", duration(t.totalMin), { tone: t.overMin > 0 ? "bad" : "" }),
       chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
       t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,

@@ -66,7 +66,7 @@ fn driver_remarks(driver: &Driver) -> Vec<(Option<NaiveDate>, &Alert)> {
 }
 
 /// Remark codes in the order the short summary lists them, with their singular and plural.
-const PIECES: [(&str, &str, &str); 7] = [
+const PIECES: [(&str, &str, &str); 8] = [
     ("station_long", "staționare lungă", "staționări lungi"),
     ("place_differs", "loc diferit între curse", "locuri diferite între curse"),
     ("to_confirm", "pauză de confirmat", "pauze de confirmat"),
@@ -74,6 +74,7 @@ const PIECES: [(&str, &str, &str); 7] = [
     ("overlap", "suprapunere", "suprapuneri"),
     ("no_tariff", "cursă fără tarif", "curse fără tarif"),
     ("excursion", "probabilă excursie", "probabile excursii"),
+    ("excursion_done", "excursie în tahograf", "excursii în tahograf"),
 ];
 
 fn warning_summary(driver: &Driver) -> String {
@@ -353,7 +354,7 @@ fn pause_state_text(pause: &Pause) -> String {
         (PauseState::Stayed, _) => "a stat".to_string(),
         (PauseState::Passenger, _) => "întors ca pasager".to_string(),
         (PauseState::Off, _) => "zi liberă".to_string(),
-        (PauseState::Excursion, _) => "excursie".to_string(),
+        (PauseState::Excursion, _) => "excursie: nu intră în Categoria B (tahograf)".to_string(),
         (PauseState::Auto, PauseKind::Normal) => "numărată automat".to_string(),
         (PauseState::Auto, PauseKind::Confirm) => "nehotărâtă: nu se numără".to_string(),
         (PauseState::Auto, PauseKind::Rest) => "pauză între ture".to_string(),
@@ -406,7 +407,7 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
         let eff = &trip.eff;
         let Some(departure) = eff.departure else { continue };
         let date = departure.date();
-        let counted = !trip.edit.removed && counts(date);
+        let counted = !trip.edit.removed && !eff.excursion && counts(date);
         let mut notes: Vec<String> = Vec::new();
         if trip.edit.removed {
             notes.push("scoasă din pontaj".into());
@@ -585,6 +586,7 @@ fn remark_label(code: &str) -> &'static str {
         "place_differs" => "Loc diferit între curse",
         "to_confirm" => "De confirmat",
         "excursion" => "Probabilă excursie",
+        "excursion_done" => "Excursie (în tahograf)",
         "stays_bucharest" => "A rămas în București",
         "overlap" => "Curse suprapuse",
         "no_tariff" => "Fără tarif",

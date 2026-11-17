@@ -93,6 +93,8 @@ pub struct Effective {
     /// A leg of the regular route: paid per leg and followed by waiting time.
     pub regular: bool,
     pub counts_hours: bool,
+    /// Part of an excursion the office marked: it counts nowhere in Categoria B (the tachograph has it).
+    pub excursion: bool,
     /// Estimated amount for this trip (leg price or exterior tariff).
     pub price: f64,
     /// Why the amount is what it is: "cursă", "exterior: Tulcea", "fără tarif"…
@@ -131,7 +133,8 @@ pub enum PauseState {
     Passenger,
     /// Day off / rest: no waiting time.
     Off,
-    /// Excursion: the whole pause is waiting time, however long.
+    /// Excursion: it leaves Categoria B (excursions are timed from the tachograph). The pause and the other trips
+    /// inside it count nowhere here: no hours, no waiting, no money.
     Excursion,
 }
 
