@@ -24,9 +24,6 @@ const attention = (driver) => worryingAlerts(driver).length;
 /** Red ones: things to decide, errors and missing values (the rest are orange warnings). */
 const urgent = (driver) => worryingAlerts(driver).filter((alert) => alert.level === "alert").length;
 
-/** A pause waiting for the office: not counted until somebody says what it was. */
-const needsDecision = (pause) => pause.kind === "confirm" && pause.state === "auto" && pause.hoursOverride == null;
-
 const untariffed = (driver) => driver.trips.filter((t) => !t.edit.removed && t.eff.priceNote === "fără tarif").length;
 
 /**
@@ -127,7 +124,6 @@ export function createCatb({ getSettings }) {
     const drivers = sheet.drivers;
     const sum = (pick) => drivers.reduce((acc, d) => acc + pick(d), 0);
     const over = drivers.filter((d) => d.totals.overMin > 0).length;
-    const confirm = sum((d) => d.pauses.filter(needsDecision).length);
     const noTariff = sum(untariffed);
     box.replaceChildren(
       h("div", { class: "title" }, h("h2", {}, `${MONTHS[sheet.month - 1]} ${sheet.year}`), h("span", {}, "Categoria B · curse din API")),
@@ -136,7 +132,6 @@ export function createCatb({ getSettings }) {
       chip("Total ore", duration(sum((d) => d.totals.totalMin))),
       chip("Din care staționare", duration(sum((d) => d.totals.stationMin))),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),
-      chip("Pauze de confirmat", confirm, { tone: confirm ? "bad" : "", title: "Pauze lungi sau cu altă cursă între ele: nu se numără până nu spui ce au fost" }),
       chip("Curse fără tarif", noTariff, { tone: noTariff ? "bad" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
       chip("Estimare plată", `~${lei(sum((d) => d.totals.payTotal))} lei`, { title: "Orientativ" }));
   }
@@ -266,8 +261,7 @@ export function createCatb({ getSettings }) {
   /** What the office should still look at before the file goes out (the decision stays theirs). */
   function exportWarning() {
     const over = state.sheet.drivers.filter((d) => d.totals.overMin > 0);
-    const open = state.sheet.drivers.reduce((n, d) => n + d.pauses.filter(needsDecision).length, 0);
-    if (!over.length && !open) return null;
+    if (!over.length) return null;
     return h("div", { class: "export-warning" },
       over.length
         ? [
@@ -277,8 +271,7 @@ export function createCatb({ getSettings }) {
               h("tbody", {}, over.map((d) => h("tr", {}, h("td", { class: "left" }, d.name), h("td", {}, duration(d.totals.totalMin)), h("td", { class: "bad" }, `+${duration(d.totals.overMin)}`), h("td", {}, `${d.proposals.length}`))))),
             h("p", { class: "muted" }, "Fiecare șofer are sugestii (staționări de scurtat sau zile de scos). Tu hotărăști; Excel-ul se poate exporta și așa."),
           ]
-        : null,
-      open ? h("p", {}, `${open} pauze lungi sunt încă nehotărâte: nu se numără în ore.`) : null);
+        : null);
   }
 
   async function exportExcel() {

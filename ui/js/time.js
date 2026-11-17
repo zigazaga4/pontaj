@@ -71,25 +71,6 @@ export function formatWhen(iso, reference) {
   return isoDate(iso) === isoDate(reference) ? isoClock(iso) : `${shortDate(iso)} ${isoClock(iso)}`;
 }
 
-/**
- * A moment typed as "11:00" (the first time at or after `reference`) or "07.10 11:00".
- * Empty → null, not a moment → undefined.
- */
-export function parseWhen(text, reference) {
-  const value = String(text ?? "").trim();
-  if (value === "") return null;
-  const match = value.match(/^(?:(\d{1,2})[./](\d{1,2})\s+)?(\S+)$/);
-  const min = match ? parseHm(match[3]) : NaN;
-  if (!match || min === null || Number.isNaN(min)) return undefined;
-  if (match[1]) {
-    const [day, month] = [Number(match[1]), Number(match[2])];
-    if (day < 1 || day > 31 || month < 1 || month > 12) return undefined;
-    return isoAt(`${reference.slice(0, 4)}-${two(month)}-${two(day)}`, min);
-  }
-  const same = isoAt(isoDate(reference), min);
-  return same >= reference ? same : isoAt(addDays(isoDate(reference), 1), min);
-}
-
 // ---- Date-times as the Rust side sends them: "2026-10-05T08:00:00" ----
 
 /** "08:00" of a date-time. */

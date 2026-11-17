@@ -124,22 +124,20 @@ pub struct Trip {
     pub eff: Effective,
 }
 
-/// What the office decided about the time between two regular trips.
+/// What the office decided about the time between two regular trips: a *staționare* (waiting at Otopeni, it counts) or
+/// a *pauză* (the driver is at home, it counts nothing). Without a decision the rules choose by where he waits.
+/// (Months saved with the older choices keep opening: "passenger" and "excursion" are read as a pause.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PauseState {
-    /// Nothing decided: short pauses count as waiting, long ones wait for a decision.
+    /// Nothing decided: the rules choose (see [`PauseKind`]).
     #[default]
     Auto,
-    /// He stayed there: the whole pause is waiting time.
+    /// Staționare: the whole pause is waiting time.
     Stayed,
-    /// He came back as a passenger: waiting counts until he left (if the time is known).
-    Passenger,
-    /// Day off / rest: no waiting time.
+    /// Pauză: no waiting time.
+    #[serde(alias = "passenger", alias = "excursion")]
     Off,
-    /// Excursion: it leaves Categoria B (excursions are timed from the tachograph). The pause and the other trips
-    /// inside it count nowhere here: no hours, no waiting, no money.
-    Excursion,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -151,22 +149,19 @@ pub struct PauseEdit {
     pub state: PauseState,
     /// Waiting time typed by hand, in hours (half hours or minutes allowed).
     pub hours: Option<f64>,
-    /// When he left / came back, as the driver wrote on his sheet.
-    pub left: Option<NaiveDateTime>,
-    pub back: Option<NaiveDateTime>,
     pub note: String,
 }
 
+/// What the rules make of the time between two regular trips, before any decision of the office.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PauseKind {
-    /// Between two regular trips, within the usual limit: counted as waiting.
+    /// Staționare: he waits at Otopeni (Bucharest side) for less than the long limit: counted as waiting.
     #[default]
     Normal,
-    /// Another kind of trip lies in between, or a long stay in Bucharest: waits for the office to say what it was.
-    Confirm,
-    /// Longer than the usual limit with nothing odd about it (a day off between shifts): counts nothing, asks nothing.
-    /// The office can still mark it as waiting.
+    /// Pauză: he is at home (Constanța and the county), or the break is longer than the long limit, or an excursion lies
+    /// inside it: counts nothing. The office can still mark it as a staționare.
+    #[serde(alias = "confirm")]
     Rest,
     /// The next trip starts before the previous one ends.
     Overlap,
@@ -188,8 +183,6 @@ pub struct Pause {
     pub kind: PauseKind,
     pub state: PauseState,
     pub hours_override: Option<f64>,
-    pub left: Option<NaiveDateTime>,
-    pub back: Option<NaiveDateTime>,
     pub note: String,
     /// Minutes that count as waiting (in the hours and in the amount).
     pub counted_min: i32,

@@ -12,7 +12,7 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, Formula, RowNum, Workbook, Worksheet, XlsxError};
 
 use super::model::*;
-use super::compute::NO_TARIFF;
+use super::compute::{is_station, NO_TARIFF};
 use crate::calendar::{month_name, weekday_short};
 use crate::excel::{cell, range, write_duration, xlsx_err, Styles, OFF_FILL, TOTAL_FILL};
 use crate::settings::Settings;
@@ -66,13 +66,11 @@ fn driver_remarks(driver: &Driver) -> Vec<(Option<NaiveDate>, &Alert)> {
 }
 
 /// Remark codes in the order the short summary lists them, with their singular and plural.
-const PIECES: [(&str, &str, &str); 7] = [
+const PIECES: [(&str, &str, &str); 5] = [
     ("station_long", "staționare lungă", "staționări lungi"),
     ("place_differs", "loc diferit între curse", "locuri diferite între curse"),
-    ("to_confirm", "pauză de confirmat", "pauze de confirmat"),
     ("overlap", "suprapunere", "suprapuneri"),
     ("no_tariff", "cursă fără tarif", "curse fără tarif"),
-    ("excursion", "probabilă excursie", "probabile excursii"),
     ("excursion_done", "excursie în tahograf", "excursii în tahograf"),
 ];
 
@@ -116,7 +114,7 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings) -> Done {
         },
         format!("Plafon lunar: {} ore × {} zile (luni–vineri, sărbătorile legale incluse) = {}.", settings.hours_per_day, sheet.weekdays, fmt_duration(sheet.cap_min)),
         format!(
-            "Staționarea (timpul dintre două curse regulate) intră în ore. De la {} se avertizează că probabil a plecat și s-a întors mai târziu.",
+            "Staționarea (așteptarea la Otopeni între două curse regulate) intră în ore; pauza (șoferul e acasă, în Constanța) nu. De la {} de staționare se avertizează că probabil a plecat și s-a întors mai târziu.",
             fmt_duration(cfg.station_warn_min)
         ),
     ];
@@ -349,25 +347,16 @@ struct DetailRow {
 }
 
 fn pause_state_text(pause: &Pause) -> String {
-    let state = match (pause.state, pause.kind) {
-        (PauseState::Stayed, _) => "a stat".to_string(),
-        (PauseState::Passenger, _) => "întors ca pasager".to_string(),
-        (PauseState::Off, _) => "zi liberă".to_string(),
-        (PauseState::Excursion, _) => "excursie: nu intră în Categoria B (tahograf)".to_string(),
-        (PauseState::Auto, PauseKind::Normal) => "numărată automat".to_string(),
-        (PauseState::Auto, PauseKind::Confirm) => "nehotărâtă: nu se numără".to_string(),
-        (PauseState::Auto, PauseKind::Rest) => "pauză lungă: întors ca pasager sau altfel, nu se plătește".to_string(),
-        (PauseState::Auto, PauseKind::Overlap) => String::new(),
+    let state = match (pause.state, is_station(pause)) {
+        _ if pause.kind == PauseKind::Overlap => String::new(),
+        (PauseState::Auto, true) => "staționare, după reguli (la Otopeni)".to_string(),
+        (PauseState::Auto, false) => "pauză, după reguli: acasă în Constanța sau peste limita pauzei lungi, nu se numără".to_string(),
+        (_, true) => "staționare, aleasă în aplicație".to_string(),
+        (_, false) => "pauză, aleasă în aplicație: nu se numără".to_string(),
     };
     let mut parts = vec![state];
-    if let Some(hours) = pause.hours_override {
+    if let Some(hours) = pause.hours_override.filter(|_| is_station(pause)) {
         parts.push(format!("ore trecute manual: {}", fmt_duration((hours * 60.0).round() as i32)));
-    }
-    if let Some(left) = pause.left {
-        parts.push(format!("a plecat {}", left.format("%d.%m %H:%M")));
-    }
-    if let Some(back) = pause.back {
-        parts.push(format!("s-a întors {}", back.format("%d.%m %H:%M")));
     }
     if !pause.note.trim().is_empty() {
         parts.push(pause.note.trim().to_string());
@@ -380,7 +369,6 @@ fn pause_state_text(pause: &Pause) -> String {
 fn worth_listing(pause: &Pause) -> bool {
     pause.counted_min > 0
         || !pause.alerts.is_empty()
-        || pause.kind == PauseKind::Confirm
         || pause.kind == PauseKind::Overlap
         || pause.state != PauseState::Auto
         || pause.hours_override.is_some()
@@ -446,7 +434,12 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
             }
             rows.push(DetailRow {
                 date: start.date(),
-                kind: "Staționare".into(),
+                kind: match (pause.kind, is_station(pause)) {
+                    (PauseKind::Overlap, _) => "Suprapunere",
+                    (_, true) => "Staționare",
+                    (_, false) => "Pauză",
+                }
+                .into(),
                 start: pause.start,
                 end: pause.end,
                 from: pause.place_from.clone(),
@@ -583,8 +576,6 @@ fn remark_label(code: &str) -> &'static str {
         "over_cap" => "Peste plafon",
         "station_long" => "Staționare lungă",
         "place_differs" => "Loc diferit între curse",
-        "to_confirm" => "De confirmat",
-        "excursion" => "Probabilă excursie",
         "excursion_done" => "Excursie (în tahograf)",
         "overlap" => "Curse suprapuse",
         "no_tariff" => "Fără tarif",

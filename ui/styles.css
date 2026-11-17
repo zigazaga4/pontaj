@@ -307,8 +307,7 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .trip-row.excursion td input { color: var(--muted); }
 .pill.excursion { background: #e6e8ef; color: #4b5266; }
 .pause-row td { background: #fbfaf3; }
-.pause-row.quiet td { background: #fafbfd; color: var(--muted); }
-.pause-row.confirm td { background: #fdeeee; }
+.pause-row.rest td, .pause-row.quiet td { background: #fafbfd; color: var(--muted); }
 .pause-row.overlap td { background: #fde9e9; }
 .alert-row td { border-bottom: 1px solid var(--border); padding-top: 0; }
 .alert-row .alerts { margin-bottom: 4px; }
@@ -317,17 +316,16 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .badge.bus { background: #dcf3e2; color: #166534; }
 .badge.passenger { background: #fdebd2; color: #92400e; }
 .badge.pause { background: #ececf2; color: #52586a; }
-.badge.pause.confirm { background: #fbd0d0; color: #8e1b1b; }
+.badge.pause.normal { background: #f6ebc9; color: #6b4e00; }
 .badge.pause.overlap { background: #fbd0d0; color: #8e1b1b; }
 .catb-table td.pause-what, .catb-table td.pause-cell { text-align: left; }
 .pause-what > * { margin-right: 12px; }
 .pause-span { font-weight: 600; }
 .pause-row.with-controls td { border-bottom: 0; }
 .pause-ctl-row td { padding-top: 0; }
-.pause-ctl-row.confirm td { background: #fdeeee; }
 .pause-ctl-row.overlap td { background: #fde9e9; }
-.pause-ctl-row.quiet td { background: #fafbfd; }
-.pause-ctl-row.normal td, .pause-ctl-row.rest td { background: #fbfaf3; }
+.pause-ctl-row.normal td { background: #fbfaf3; }
+.pause-ctl-row.rest td, .pause-ctl-row.quiet td { background: #fafbfd; }
 .pause-ctl { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .pause-fields { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
 .pause-ctl .ctl { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 11px; font-weight: 600; }
@@ -335,7 +333,6 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .pause-ctl select.manual { border-color: var(--manual); color: var(--manual); font-weight: 600; }
 .pause-ctl .cellin { border-color: var(--border); background: #fff; }
 .pause-ctl .cellin.pause-hours { width: 84px; }
-.pause-ctl .cellin.pause-when { width: 96px; }
 .pause-ctl .cellin.pause-note { width: 260px; text-align: left; padding-left: 6px; }
 .pause-hint { margin: 0; color: var(--muted); font-size: 11.5px; }
 .bad { color: var(--danger); font-weight: 700; }

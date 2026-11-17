@@ -20,7 +20,9 @@ pub fn normalize(text: &str) -> String {
     out.trim_end().to_string()
 }
 
-const BUCHAREST: [&str; 6] = ["otopeni", "bucuresti", "bucharest", "baneasa", "banea", "henri coanda"];
+/// Names that put a place at the Bucharest end: the city, the airports and the hotel next to Otopeni airport (the API
+/// sometimes writes only "Hilton Garden Inn", without the town).
+const BUCHAREST: [&str; 7] = ["otopeni", "bucuresti", "bucharest", "baneasa", "banea", "henri coanda", "hilton garden"];
 const CONSTANTA: [&str; 2] = ["constanta", "mamaia"];
 
 /// Where a place is, as far as "did the driver stay where he arrived" is concerned.
@@ -168,6 +170,10 @@ mod tests {
             ("Aeroport Otopeni Bucuresti", "Brasov"),
             ("Chisinau", "Otopeni"),
             ("Cernavoda", "Hilton Garden Inn Bucharest Airport"),
+            // The hotel at Otopeni: a run to or from it is a regular leg, even when the name says no town.
+            ("Constanta", "Hotel Hilton Garden Inn"),
+            ("Hotel Hilton Garden Inn, Aeroport Otopeni", "Agigea"),
+            ("Constanta", "Bucuresti Otp ( Hilton Garden Inn)"),
         ] {
             assert!(is_regular_route(from, to), "{from} → {to}");
         }
