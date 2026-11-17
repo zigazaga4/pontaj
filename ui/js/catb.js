@@ -13,12 +13,16 @@ const COMMON_PLACES = ["Constanta", "Aeroport Otopeni Bucuresti", "Bucuresti"];
 /** Remarks that ask for a look (information-level ones do not count as attention). */
 const worrying = (alert) => alert.level !== "info";
 
-function attention(driver) {
-  const pauseAlerts = driver.pauses.flatMap((p) => p.alerts);
-  const dayAlerts = driver.days.filter((d) => !d.excluded).flatMap((d) => d.alerts);
-  const open = driver.pauses.filter(needsDecision).length;
-  return [...driver.alerts, ...pauseAlerts, ...dayAlerts].filter(worrying).length + open;
-}
+const worryingAlerts = (driver) => [
+  ...driver.alerts,
+  ...driver.pauses.flatMap((p) => p.alerts),
+  ...driver.days.filter((d) => !d.excluded).flatMap((d) => d.alerts),
+].filter(worrying);
+
+const attention = (driver) => worryingAlerts(driver).length;
+
+/** Red ones: things to decide, errors and missing values (the rest are orange warnings). */
+const urgent = (driver) => worryingAlerts(driver).filter((alert) => alert.level === "alert").length;
 
 /** A pause waiting for the office: not counted until somebody says what it was. */
 const needsDecision = (pause) => pause.kind === "confirm" && pause.state === "auto" && pause.hoursOverride == null;
@@ -114,8 +118,8 @@ export function createCatb({ getSettings }) {
       chip("Total ore", duration(sum((d) => d.totals.totalMin))),
       chip("Din care staționare", duration(sum((d) => d.totals.stationMin))),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),
-      chip("Pauze de confirmat", confirm, { tone: confirm ? "warn" : "", title: "Pauze lungi sau cu altă cursă între ele: nu se numără până nu spui ce au fost" }),
-      chip("Curse fără tarif", noTariff, { tone: noTariff ? "warn" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
+      chip("Pauze de confirmat", confirm, { tone: confirm ? "bad" : "", title: "Pauze lungi sau cu altă cursă între ele: nu se numără până nu spui ce au fost" }),
+      chip("Curse fără tarif", noTariff, { tone: noTariff ? "bad" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
       chip("Estimare plată", `~${lei(sum((d) => d.totals.payTotal))} lei`, { title: "Orientativ" }));
   }
 
@@ -149,7 +153,7 @@ export function createCatb({ getSettings }) {
           h("b", {}, d.name),
           h("small", {}, `${duration(d.totals.totalMin)} ore · ${d.totals.days} zile`,
             d.totals.overMin > 0 ? h("span", { class: "flag bad" }, ` · +${duration(d.totals.overMin)}`) : null,
-            flags ? h("span", { class: "flag warn" }, ` · ⚠ ${flags}`) : null));
+            flags ? h("span", { class: `flag ${urgent(d) ? "bad" : "warn"}` }, ` · ⚠ ${flags}`) : null));
       }));
   }
 

@@ -29,7 +29,7 @@ function pauseHint(pause) {
       return "Nu se numără nimic din această pauză.";
     default:
       if (pause.kind === "confirm") return "Nu intră în ore până alegi ce a fost.";
-      if (pause.kind === "rest") return "Pauză lungă între două ture: nu intră în ore. Alege „A stat acolo” sau „Excursie” dacă a stat acolo.";
+      if (pause.kind === "rest") return "Pauză lungă între două ture: se socotește că s-a întors ca pasager sau altfel, deci nu se plătește. Dacă a stat acolo, alege „A stat acolo”.";
       if (pause.kind === "overlap") return "Cursele se suprapun: verifică orele lor.";
       return "Toată așteptarea dintre cele două curse se numără ca staționare.";
   }

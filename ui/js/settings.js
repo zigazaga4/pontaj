@@ -54,7 +54,7 @@ const FIELDS = [
   { key: "catb.stationIncludedMin", label: "Staționare inclusă în preț (ore)", type: "number", scale: 60, min: 0, step: 0.5 },
   { key: "catb.stationRate", label: "Lei pe oră de staționare peste cele incluse", type: "number", min: 0, step: 1 },
   { key: "catb.stationWarnMin", label: "Avertizează de la staționare de (ore)", type: "number", scale: 60, min: 0, step: 0.5, hint: "Staționare mare = probabil a plecat și s-a întors mai târziu." },
-  { key: "catb.longPauseMin", label: "Pauză lungă de la (ore)", type: "number", scale: 60, min: 1, step: 1, hint: "O pauză mai lungă e zi liberă între ture: nu se numără ca staționare până nu spui tu că a fost (excursie, a stat)." },
+  { key: "catb.longPauseMin", label: "Pauză lungă de la (ore)", type: "number", scale: 60, min: 1, step: 1, hint: "O pauză mai lungă se socotește automat că s-a întors ca pasager sau altfel: nu se plătește ca staționare și nu cere confirmare. Pe fiecare pauză poți schimba în „A stat acolo”." },
   { key: "catb.countOtherTrips", label: "Cursele private și autocarele intră în ore", type: "checkbox", hint: "Doar durata lor cunoscută; nu devin niciodată staționare." },
   { key: "catb.mainRoutePrivateRegular", label: "Privatele Constanța–Otopeni sunt curse regulate", type: "checkbox" },
   { key: "catb.showMoney", label: "Sumele apar în Excel", type: "checkbox", hint: "Oprit = Excel-ul are doar ore și avertizări (pe ecran estimarea se vede oricum)." },

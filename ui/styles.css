@@ -10,7 +10,7 @@
   --holiday: #fde7d8;
   --code: #dcf3e2;
   --code-text: #166534;
-  --manual: #b45309;
+  --manual: #1d4ed8;
   --night: #1f4e79;
   --total: #fff4cf;
   --danger: #b91c1c;
@@ -204,7 +204,7 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .cellin.zero { color: #b3bac8; }
 .cellin.invalid { background: #fde2e2; border-color: var(--danger); }
 .cellin.manual { color: var(--manual); font-weight: 700; box-shadow: inset 0 -2px 0 var(--manual); }
-.cellin.warn { box-shadow: inset 0 -2px 0 #d97706; }
+.cellin.warn { box-shadow: inset 0 -2px 0 var(--danger); }
 .cellin.hours, .cellin.night { width: 46px; font-weight: 700; }
 .cellin.hours.code { background: var(--code); color: var(--code-text); font-size: 11px; }
 .cellin.hours.unknown { background: #fde2e2; color: var(--danger); }
@@ -284,7 +284,7 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .catb-table .cellin.place { width: 178px; text-align: left; padding-left: 5px; font-size: 12px; }
 .catb-table .cellin.clock { width: 54px; }
 .catb-table .cellin.price { width: 56px; font-weight: 700; }
-.catb-table .cellin.warn { background: #fff4d6; }
+.catb-table .cellin.warn { background: #fde2e2; color: var(--danger); }
 .day-gap td { height: 18px; padding: 0; background: var(--bg); border: 0; }
 .day-head td { background: #dfe7f6; text-align: left; padding: 8px 12px; border-top: 2px solid #b9c6e0; }
 .day-head.off td { background: #e1e4ea; border-top-color: #c3c8d3; }
@@ -308,7 +308,7 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .pill.excursion { background: #e6e8ef; color: #4b5266; }
 .pause-row td { background: #fbfaf3; }
 .pause-row.quiet td { background: #fafbfd; color: var(--muted); }
-.pause-row.confirm td { background: #fff7e6; }
+.pause-row.confirm td { background: #fdeeee; }
 .pause-row.overlap td { background: #fde9e9; }
 .alert-row td { border-bottom: 1px solid var(--border); padding-top: 0; }
 .alert-row .alerts { margin-bottom: 4px; }
@@ -317,14 +317,14 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .badge.bus { background: #dcf3e2; color: #166534; }
 .badge.passenger { background: #fdebd2; color: #92400e; }
 .badge.pause { background: #ececf2; color: #52586a; }
-.badge.pause.confirm { background: #ffe9ad; color: #7a4a05; }
+.badge.pause.confirm { background: #fbd0d0; color: #8e1b1b; }
 .badge.pause.overlap { background: #fbd0d0; color: #8e1b1b; }
 .catb-table td.pause-what, .catb-table td.pause-cell { text-align: left; }
 .pause-what > * { margin-right: 12px; }
 .pause-span { font-weight: 600; }
 .pause-row.with-controls td { border-bottom: 0; }
 .pause-ctl-row td { padding-top: 0; }
-.pause-ctl-row.confirm td { background: #fff7e6; }
+.pause-ctl-row.confirm td { background: #fdeeee; }
 .pause-ctl-row.overlap td { background: #fde9e9; }
 .pause-ctl-row.quiet td { background: #fafbfd; }
 .pause-ctl-row.normal td, .pause-ctl-row.rest td { background: #fbfaf3; }

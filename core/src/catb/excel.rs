@@ -66,11 +66,10 @@ fn driver_remarks(driver: &Driver) -> Vec<(Option<NaiveDate>, &Alert)> {
 }
 
 /// Remark codes in the order the short summary lists them, with their singular and plural.
-const PIECES: [(&str, &str, &str); 8] = [
+const PIECES: [(&str, &str, &str); 7] = [
     ("station_long", "staționare lungă", "staționări lungi"),
     ("place_differs", "loc diferit între curse", "locuri diferite între curse"),
     ("to_confirm", "pauză de confirmat", "pauze de confirmat"),
-    ("stays_bucharest", "rămas în București", "rămas în București"),
     ("overlap", "suprapunere", "suprapuneri"),
     ("no_tariff", "cursă fără tarif", "curse fără tarif"),
     ("excursion", "probabilă excursie", "probabile excursii"),
@@ -357,7 +356,7 @@ fn pause_state_text(pause: &Pause) -> String {
         (PauseState::Excursion, _) => "excursie: nu intră în Categoria B (tahograf)".to_string(),
         (PauseState::Auto, PauseKind::Normal) => "numărată automat".to_string(),
         (PauseState::Auto, PauseKind::Confirm) => "nehotărâtă: nu se numără".to_string(),
-        (PauseState::Auto, PauseKind::Rest) => "pauză între ture".to_string(),
+        (PauseState::Auto, PauseKind::Rest) => "pauză lungă: întors ca pasager sau altfel, nu se plătește".to_string(),
         (PauseState::Auto, PauseKind::Overlap) => String::new(),
     };
     let mut parts = vec![state];
@@ -587,7 +586,6 @@ fn remark_label(code: &str) -> &'static str {
         "to_confirm" => "De confirmat",
         "excursion" => "Probabilă excursie",
         "excursion_done" => "Excursie (în tahograf)",
-        "stays_bucharest" => "A rămas în București",
         "overlap" => "Curse suprapuse",
         "no_tariff" => "Fără tarif",
         _ => "Observație",
@@ -651,7 +649,7 @@ fn remarks(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings) -> Done {
         2 => st.fill(AMBER_FILL),
         _ => st.base.clone(),
     };
-    let level_text = |rank: u8| ["Depășire", "Propunere", "Atenție", "Informare"][rank as usize];
+    let level_text = |rank: u8| ["De rezolvat", "Propunere", "Atenție", "Informare"][rank as usize];
 
     let rows = remark_rows(sheet, settings);
     let mut row = header_row + 1;

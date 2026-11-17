@@ -5,9 +5,10 @@
 //! - A day's hours are the known driving time of its trips plus the waiting time of the pauses that start that day.
 //! - Waiting is only measured between two *regular* trips (Constanța ↔ Otopeni; private/VIP trips on the same route
 //!   count as regular). It is inferred from the API (next departure − previous arrival), never read from it.
-//! - A pause up to `long_pause_min` counts by itself. A longer one is a day off (`Rest`: counts nothing, asks nothing),
-//!   unless he stayed in Bucharest, or another kind of trip lies in between (`Confirm`): then it waits for the office
-//!   to say what it was (stayed, passenger, day off, excursion).
+//! - A pause up to `long_pause_min` counts by itself. A longer one is taken as "came back as a passenger or some other
+//!   way" (`Rest`: counts nothing, asks nothing); the office can still say he stayed there. Only when another kind of
+//!   trip lies in between, beyond the county (`Confirm`), the pause waits for the office to say what it was
+//!   (stayed, passenger, day off, excursion).
 //! - The estimate is `pair_pay / 2` per regular leg, the exterior tariff for the other trips, and `station_rate` for every
 //!   started hour of waiting beyond `station_included_min` (started = from `round_up_from_min`, like the firm's hours).
 
@@ -128,12 +129,11 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
             pause.back = edit.back;
             pause.note = edit.note.clone();
         }
-        let stays_in_bucharest = places::area(&pause.place_from) == places::Area::Bucuresti && places::same_area(&pause.place_from, &pause.place_to);
         // Only a trip that goes beyond Constanța county (or the regular route) can be an excursion; a private job in a resort is just work.
         let far_trip = between.iter().any(|t| is_far(t, cfg));
         pause.kind = if gap_min < 0 {
             PauseKind::Overlap
-        } else if far_trip || (gap_min > cfg.long_pause_min && stays_in_bucharest) {
+        } else if far_trip {
             PauseKind::Confirm
         } else if gap_min > cfg.long_pause_min {
             PauseKind::Rest
@@ -208,7 +208,7 @@ fn pause_alerts(pause: &Pause, between: &[&Trip], settings: &Settings) -> Vec<Al
     let cfg = &settings.catb;
     let mut alerts = Vec::new();
     if pause.kind == PauseKind::Overlap {
-        alerts.push(Alert::new("overlap", Level::Warn, format!("Cursele se suprapun cu {}.", fmt_duration(-pause.gap_min))));
+        alerts.push(Alert::new("overlap", Level::Alert, format!("Cursele se suprapun cu {}.", fmt_duration(-pause.gap_min))));
         return alerts;
     }
     if pause.state == PauseState::Excursion {
@@ -240,16 +240,10 @@ fn pause_alerts(pause: &Pause, between: &[&Trip], settings: &Settings) -> Vec<Al
         alerts.push(Alert::new("place_differs", level, format!("Loc diferit între curse. {text}")));
     }
     if pause.kind == PauseKind::Confirm && undecided {
-        let far = between.iter().find(|t| is_far(t, cfg));
-        let why = match far {
-            Some(trip) => format!("între ele: cursă {} {} → {}, în afara județului Constanța", trip.kind.label().to_lowercase(), trip.eff.from, trip.eff.to),
-            None => format!("pauză de {}", fmt_duration(pause.gap_min)),
-        };
-        alerts.push(Alert::new("to_confirm", Level::Info, format!("De confirmat ({why}): timpul dintre curse nu intră în ore până alegi ce a fost: a stat, întors ca pasager, zi liberă sau excursie (iese din Categoria B, se pontează din tahograf).")));
-        if let Some(trip) = far {
+        if let Some(trip) = between.iter().find(|t| is_far(t, cfg)) {
+            let why = format!("între ele: cursă {} {} → {}, în afara județului Constanța", trip.kind.label().to_lowercase(), trip.eff.from, trip.eff.to);
+            alerts.push(Alert::new("to_confirm", Level::Alert, format!("De confirmat ({why}): timpul dintre curse nu intră în ore până alegi ce a fost: a stat, întors ca pasager, zi liberă sau excursie (iese din Categoria B, se pontează din tahograf).")));
             alerts.push(Alert::new("excursion", Level::Info, format!("Probabilă excursie: {} → {}.", trip.eff.from, trip.eff.to)));
-        } else if !differs && places::area(&pause.place_from) == places::Area::Bucuresti {
-            alerts.push(Alert::new("stays_bucharest", Level::Info, format!("A rămas în București {}.", fmt_duration(pause.gap_min))));
         }
     }
     alerts
@@ -279,7 +273,7 @@ fn days(trips: &[Trip], pauses: &[Pause], excluded: &[NaiveDate], year: i32, mon
             row.pay_exterior += eff.price;
         }
         if eff.price_note == NO_TARIFF {
-            row.alerts.push(Alert::new("no_tariff", Level::Warn, format!("Cursă fără tarif: {} → {}. Trece prețul în dreptul cursei.", eff.from, eff.to)));
+            row.alerts.push(Alert::new("no_tariff", Level::Alert, format!("Cursă fără tarif: {} → {}. Trece prețul în dreptul cursei.", eff.from, eff.to)));
         }
     }
     for pause in pauses {
@@ -400,13 +394,12 @@ mod tests {
     }
 
     #[test]
-    fn a_long_pause_waits_for_the_office_and_then_counts_without_limit() {
-        // Arrives in Bucharest at 08:00, the next trip leaves 30 h later.
+    fn a_long_pause_is_taken_as_a_passenger_return_and_the_office_can_still_change_it() {
+        // Arrives in Bucharest at 08:00, the next trip leaves 30 h later: unpaid, and nobody is asked.
         let mut d = round_trip("2026-10-06 14:00", "2026-10-06 17:00");
         run(&mut d);
-        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Confirm, 0));
-        assert!(d.pauses[0].alerts.iter().any(|a| a.code == "to_confirm"));
-        assert!(d.pauses[0].alerts.iter().any(|a| a.code == "stays_bucharest"));
+        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Rest, 0));
+        assert!(d.pauses[0].alerts.is_empty(), "{:?}", d.pauses[0].alerts);
         // The office says he stayed there: the whole pause counts, 30 h.
         d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Stayed, ..Default::default() });
         run(&mut d);
