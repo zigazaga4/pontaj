@@ -9,7 +9,8 @@ use super::tariffs::{default_tariffs, Tariff};
 pub struct CatbSettings {
     /// `https://api.alt-go.ro/api`; the trips are read from `{api_base}/external/driver-trips`.
     pub api_base: String,
-    /// Key of the ALT API. Kept only in this computer's settings file, never in the code.
+    /// A key typed by hand. Optional: the program is built with the key of the ALT API inside (see `build.rs`),
+    /// and this one, when filled in, is used instead.
     pub api_key: String,
     /// What a pair of regular trips (Constanța → Otopeni and back) pays; each trip counts half.
     pub pair_pay: f64,
@@ -48,9 +49,37 @@ impl Default for CatbSettings {
     }
 }
 
+/// The key put into the program when it was built; empty if the build had none.
+const BUILT_IN_KEY: &str = env!("PONTAJ_BUILT_IN_ALT_KEY");
+
 impl CatbSettings {
+    /// The key the requests use: the one typed in the settings, otherwise the one built into the program.
+    pub fn effective_key(&self) -> &str {
+        let own = self.api_key.trim();
+        if own.is_empty() {
+            BUILT_IN_KEY
+        } else {
+            own
+        }
+    }
+
     /// Price of one regular leg.
     pub fn leg_pay(&self) -> f64 {
         self.pair_pay / 2.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_typed_in_the_settings_wins_over_the_built_in_one() {
+        let mut cfg = CatbSettings::default();
+        assert_eq!(cfg.effective_key(), BUILT_IN_KEY);
+        cfg.api_key = "  cheie-proprie  ".into();
+        assert_eq!(cfg.effective_key(), "cheie-proprie");
+        cfg.api_key = "   ".into();
+        assert_eq!(cfg.effective_key(), BUILT_IN_KEY);
     }
 }

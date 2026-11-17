@@ -151,7 +151,7 @@ fn get(url: &str, key: &str) -> Result<String> {
         .map_err(|e| Error::new(format!("Răspunsul API-ului s-a întrerupt: {e}")))?;
     match status {
         200 => Ok(body),
-        401 => Err(Error::new("Cheia API este greșită sau lipsește. Verific-o în Reguli → Categoria B.")),
+        401 => Err(Error::new("Cheia API este greșită sau a fost schimbată. Anunță administratorul aplicației ALT; o cheie nouă se poate trece în Reguli → Categoria B.")),
         404 => Err(Error::new("Accesul la API nu este activat pe server. Anunță administratorul aplicației ALT.")),
         422 => Err(Error::new(format!("API-ul a refuzat cererea: {}", refusal(&body)))),
         429 => Err(Error::new(format!("Prea multe cereri către API (maxim 30 pe minut). Încearcă din nou peste {} secunde.", retry.as_deref().unwrap_or("60")))),
@@ -162,13 +162,17 @@ fn get(url: &str, key: &str) -> Result<String> {
 
 /// Downloads all the trips of a month with one request.
 pub fn fetch_month(cfg: &CatbSettings, year: i32, month: u32) -> Result<Parsed> {
-    if cfg.api_key.trim().is_empty() {
-        return Err(Error::new("Lipsește cheia API. Trec-o în Reguli → Categoria B."));
+    fetch_month_with_key(cfg, cfg.effective_key(), year, month)
+}
+
+fn fetch_month_with_key(cfg: &CatbSettings, key: &str, year: i32, month: u32) -> Result<Parsed> {
+    if key.is_empty() {
+        return Err(Error::new("Această versiune a aplicației nu are cheia API încorporată. O poți trece în Reguli → Categoria B."));
     }
     let first = NaiveDate::from_ymd_opt(year, month, 1).ok_or_else(|| Error::new("Luna aleasă nu este validă."))?;
     let last = first.with_day(days_in_month(year, month)).unwrap_or(first);
     let url = format!("{}/external/driver-trips?date_from={first}&date_to={last}", cfg.api_base.trim().trim_end_matches('/'));
-    parse_rows(&get(&url, &cfg.api_key)?)
+    parse_rows(&get(&url, key)?)
 }
 
 #[cfg(test)]
@@ -214,7 +218,7 @@ mod tests {
 
     #[test]
     fn a_missing_key_is_reported_before_any_request() {
-        let error = fetch_month(&CatbSettings::default(), 2026, 10).unwrap_err().to_string();
+        let error = fetch_month_with_key(&CatbSettings::default(), "", 2026, 10).unwrap_err().to_string();
         assert!(error.contains("cheia API"), "{error}");
     }
 

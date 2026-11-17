@@ -25,7 +25,7 @@ const TAGLINES = {
 
 const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null, mode: "pdf" };
 
-const catb = createCatb({ getSettings: () => state.settings, openSettings: () => openSettings(true) });
+const catb = createCatb({ getSettings: () => state.settings });
 
 const basename = (path) => path.split(/[\\/]/).pop();
 

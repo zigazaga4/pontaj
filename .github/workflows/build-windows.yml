@@ -33,6 +33,7 @@ jobs:
       - name: Build the installer (NSIS .exe) and sign it for the updater
         run: npx tauri build --bundles nsis
         env:
+          PONTAJ_ALT_API_KEY: ${{ secrets.ALT_API_KEY }} # built into the program (core/build.rs); never in the source code
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 

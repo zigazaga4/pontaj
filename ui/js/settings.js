@@ -48,7 +48,7 @@ const FIELDS = [
   { key: "nightEnd", label: "Noaptea se termină la", type: "time" },
   { key: "nightThresholdMin", label: "Se trec doar de la (minute)", type: "number", min: 0, max: 600, hint: "180 = minim 3 ore (pragul pentru compensare, art. 125–126). 0 = se trec toate orele de noapte." },
   { section: "Categoria B (cursele din API)" },
-  { key: "catb.apiKey", label: "Cheia API", type: "password", hint: "O dă administratorul aplicației ALT. Rămâne doar pe acest calculator." },
+  { key: "catb.apiKey", label: "Altă cheie API (opțional)", type: "password", hint: "Aplicația are deja cheia încorporată și nu trebuie să treci nimic aici. Completează doar dacă administratorul ALT îți dă o cheie nouă." },
   { key: "catb.apiBase", label: "Adresa API", type: "text" },
   { key: "catb.pairPay", label: "Plata unei zile normale, 2 curse regulate (lei)", type: "number", min: 0, step: 10, hint: "Fiecare cursă regulată = jumătate. Este doar o estimare." },
   { key: "catb.stationIncludedMin", label: "Staționare inclusă în preț (ore)", type: "number", scale: 60, min: 0, step: 0.5 },

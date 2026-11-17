@@ -26,10 +26,10 @@ const needsDecision = (pause) => pause.kind === "confirm" && pause.state === "au
 const untariffed = (driver) => driver.trips.filter((t) => !t.edit.removed && t.eff.priceNote === "fără tarif").length;
 
 /**
- * @param {{ getSettings: () => object, openSettings: () => void }} host
+ * @param {{ getSettings: () => object }} host
  * Returns the functions the page needs: show/hide the mode, download, export, react to changed settings.
  */
-export function createCatb({ getSettings, openSettings }) {
+export function createCatb({ getSettings }) {
   const today = new Date();
   const previous = new Date(today.getFullYear(), today.getMonth() - 1, 1);
   const state = { sheet: null, year: previous.getFullYear(), month: previous.getMonth() + 1, saved: [], driverId: null, filter: "", onlyIssues: false, dirty: false, loaded: false };
@@ -175,12 +175,9 @@ export function createCatb({ getSettings, openSettings }) {
   }
 
   function emptyState() {
-    const hasKey = !!getSettings().catb?.apiKey?.trim();
     return h("div", { class: "empty-note" },
       h("p", {}, `Pentru ${MONTHS[state.month - 1]} ${state.year} nu există încă curse în aplicație.`),
-      hasKey
-        ? h("button", { class: "btn primary", onclick: fetchMonth }, "⬇ Descarcă luna din API")
-        : [h("p", {}, "Mai întâi trebuie cheia API (o dă administratorul aplicației ALT)."), h("button", { class: "btn primary", onclick: openSettings }, "Deschide Reguli → Categoria B")]);
+      h("button", { class: "btn primary", onclick: fetchMonth }, "⬇ Descarcă luna din API"));
   }
 
   function renderAll() {
@@ -226,11 +223,6 @@ export function createCatb({ getSettings, openSettings }) {
   }
 
   async function fetchMonth() {
-    if (!getSettings().catb?.apiKey?.trim()) {
-      toast("Lipsește cheia API. O treci în Reguli → Categoria B.", { kind: "warn" });
-      openSettings();
-      return;
-    }
     await flush();
     busy("Se descarcă cursele din API…");
     try {
