@@ -397,7 +397,7 @@ export function renderCatbDriver(container, ctx) {
   const sheet = ctx.sheet();
   const edit = ctx.edit;
   const t = driver.totals;
-  const excursions = driver.pauses.filter((p) => p.state === "excursion").length;
+  const excursions = driver.trips.filter((trip) => trip.eff.excursion && !trip.edit.removed).length;
 
   const proposals = driver.proposals.length
     ? h("div", { class: "proposals" },
@@ -419,7 +419,7 @@ export function renderCatbDriver(container, ctx) {
       chip("Curse regulate", t.legs),
       chip("Ore curse", duration(t.tripMin)),
       chip("Ore staționare", duration(t.stationMin), { title: "Dedusă: plecarea cursei următoare minus sosirea celei dinainte" }),
-      excursions ? chip("Excursii (tahograf)", excursions, { title: "Ies din Categoria B: se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
+      excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif și cele din pauzele marcate „Excursie” ies din Categoria B: se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
       chip("Total ore", duration(t.totalMin), { tone: t.overMin > 0 ? "bad" : "" }),
       chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
       t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,

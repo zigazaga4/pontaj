@@ -9,6 +9,8 @@
 //!   way" (`Rest`: counts nothing, asks nothing); the office can still say he stayed there. Only when another kind of
 //!   trip lies in between, beyond the county (`Confirm`), the pause waits for the office to say what it was
 //!   (stayed, passenger, day off, excursion).
+//! - A trip beyond Constanța county with no tariff is an excursion by itself (the tachograph has it): it counts nowhere
+//!   here and its pause is out too. With a tariff it is a paid trip, and the pause waits for the office.
 //! - The estimate is `pair_pay / 2` per regular leg, the exterior tariff for the other trips, and `station_rate` for every
 //!   started hour of waiting beyond `station_included_min` (started = from `round_up_from_min`, like the firm's hours).
 
@@ -68,8 +70,17 @@ fn effective(trip: &Trip, cfg: &CatbSettings) -> Effective {
         TripKind::Private | TripKind::Vip => cfg.main_route_private_regular && places::is_main_route(&from) && places::is_main_route(&to),
         TripKind::Bus => false,
     };
-    let (price, price_note) = price_of(trip, regular, &from, &to, cfg);
-    Effective { departure: Some(departure), arrival, from, to, minutes, regular, counts_hours: regular || cfg.count_other_trips, excursion: false, price, price_note }
+    let (mut price, mut price_note) = price_of(trip, regular, &from, &to, cfg);
+    let mut counts_hours = regular || cfg.count_other_trips;
+    // A trip beyond the county with no tariff (and no price typed by hand) is an excursion: the tachograph has it, so it
+    // leaves Categoria B by itself. Adding a tariff for the place (Rules) or typing a price brings it back as a paid trip.
+    let excursion = !regular && price_note == NO_TARIFF && is_far_route(&from, &to, cfg);
+    if excursion {
+        counts_hours = false;
+        price = 0.0;
+        price_note = EXCURSION_NOTE.into();
+    }
+    Effective { departure: Some(departure), arrival, from, to, minutes, regular, counts_hours, excursion, price, price_note }
 }
 
 /// Note shown when a trip has no tariff: the office types the amount by hand.
@@ -129,13 +140,15 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
             pause.back = edit.back;
             pause.note = edit.note.clone();
         }
-        // Only a trip that goes beyond Constanța county (or the regular route) can be an excursion; a private job in a resort is just work.
-        let far_trip = between.iter().any(|t| is_far(t, cfg));
+        // A far trip that has a tariff is paid work or an excursion: the office decides. One without a tariff is already an
+        // excursion (see `effective`), so the pause around it is simply out. A private job in a resort is just work.
+        let far_paid_trip = between.iter().any(|t| is_far(t, cfg) && !t.eff.excursion);
+        let excursion_inside = between.iter().any(|t| t.eff.excursion);
         pause.kind = if gap_min < 0 {
             PauseKind::Overlap
-        } else if far_trip {
+        } else if far_paid_trip {
             PauseKind::Confirm
-        } else if gap_min > cfg.long_pause_min {
+        } else if excursion_inside || gap_min > cfg.long_pause_min {
             PauseKind::Rest
         } else {
             PauseKind::Normal
@@ -150,7 +163,11 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
 
 /// Does the trip go beyond the places of an ordinary day (the regular route and Constanța county)?
 fn is_far(trip: &Trip, cfg: &CatbSettings) -> bool {
-    [&trip.eff.from, &trip.eff.to].into_iter().any(|place| !place.trim().is_empty() && !places::is_local(place, &cfg.extra_local_places))
+    is_far_route(&trip.eff.from, &trip.eff.to, cfg)
+}
+
+fn is_far_route(from: &str, to: &str, cfg: &CatbSettings) -> bool {
+    [from, to].into_iter().any(|place| !place.trim().is_empty() && !places::is_local(place, &cfg.extra_local_places))
 }
 
 /// Minutes of `start..end` taken by the known driving time of other trips (overlaps counted once). They are already
@@ -211,14 +228,17 @@ fn pause_alerts(pause: &Pause, between: &[&Trip], settings: &Settings) -> Vec<Al
         alerts.push(Alert::new("overlap", Level::Alert, format!("Cursele se suprapun cu {}.", fmt_duration(-pause.gap_min))));
         return alerts;
     }
-    if pause.state == PauseState::Excursion {
-        let place = between.iter().find(|t| is_far(t, cfg)).or(between.first()).map_or_else(|| pause.place_to.clone(), |t| t.eff.to.clone());
+    let manual_excursion = pause.state == PauseState::Excursion;
+    if manual_excursion || between.iter().any(|t| t.eff.excursion) {
+        let place = between.iter().find(|t| t.eff.excursion || is_far(t, cfg)).or(between.first()).map_or_else(|| pause.place_to.clone(), |t| t.eff.to.clone());
         let dates = match (pause.start, pause.end) {
             (Some(start), Some(end)) => format!(", {} – {}", start.format("%d.%m"), end.format("%d.%m")),
             _ => String::new(),
         };
         alerts.push(Alert::new("excursion_done", Level::Info, format!("Excursie ({place}{dates}): nu intră în Categoria B, se pontează din tahograf. Pauza și cursele din ea nu se numără aici.")));
-        return alerts;
+        if manual_excursion {
+            return alerts;
+        }
     }
     if pause.counted_min >= cfg.station_warn_min {
         alerts.push(Alert::new(
@@ -240,7 +260,7 @@ fn pause_alerts(pause: &Pause, between: &[&Trip], settings: &Settings) -> Vec<Al
         alerts.push(Alert::new("place_differs", level, format!("Loc diferit între curse. {text}")));
     }
     if pause.kind == PauseKind::Confirm && undecided {
-        if let Some(trip) = between.iter().find(|t| is_far(t, cfg)) {
+        if let Some(trip) = between.iter().find(|t| is_far(t, cfg) && !t.eff.excursion) {
             let why = format!("între ele: cursă {} {} → {}, în afara județului Constanța", trip.kind.label().to_lowercase(), trip.eff.from, trip.eff.to);
             alerts.push(Alert::new("to_confirm", Level::Alert, format!("De confirmat ({why}): timpul dintre curse nu intră în ore până alegi ce a fost: a stat, întors ca pasager, zi liberă sau excursie (iese din Categoria B, se pontează din tahograf).")));
             alerts.push(Alert::new("excursion", Level::Info, format!("Probabilă excursie: {} → {}.", trip.eff.from, trip.eff.to)));
@@ -497,12 +517,26 @@ mod tests {
     }
 
     #[test]
-    fn a_trip_beyond_the_county_is_a_probable_excursion_and_a_place_added_in_the_settings_is_not() {
+    fn a_far_trip_without_a_tariff_is_an_excursion_by_itself() {
         let mut d = with_private_trip_in_between("Constanta", "Chitila", Some("2026-10-05 11:30"));
         run(&mut d);
-        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Confirm, 0));
+        let chitila = d.trips.iter().find(|t| t.id == "private-9").unwrap();
+        assert!(chitila.eff.excursion && !chitila.eff.counts_hours, "no tariff, beyond the county: tachograph");
+        assert_eq!((chitila.eff.price, chitila.eff.price_note.as_str()), (0.0, EXCURSION_NOTE));
+        // Nothing to confirm, nothing missing, nothing counted.
+        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Rest, 0));
+        assert!(d.pauses[0].alerts.iter().all(|a| a.code == "excursion_done"), "{:?}", d.pauses[0].alerts);
+        assert!(d.pauses[0].alerts.iter().any(|a| a.text.contains("Chitila")));
+        assert!(d.days.iter().all(|day| day.alerts.is_empty()), "no 'fără tarif' for an excursion");
+        assert_eq!(d.totals.pay_exterior, 0.0);
+        // A price typed by hand makes it a paid trip: the office decides again.
+        d.trips.iter_mut().find(|t| t.id == "private-9").unwrap().edit.price = Some(100.0);
+        run(&mut d);
+        assert!(!d.trips.iter().find(|t| t.id == "private-9").unwrap().eff.excursion);
+        assert_eq!(d.pauses[0].kind, PauseKind::Confirm);
         assert!(d.pauses[0].alerts.iter().any(|a| a.code == "excursion" && a.text.contains("Chitila")));
-        // The office says Chitila is a normal place for this firm.
+        // A place the office says is normal for this firm is not far at all.
+        d.trips.iter_mut().find(|t| t.id == "private-9").unwrap().edit.price = None;
         let mut settings = Settings::default();
         settings.catb.extra_local_places = vec!["Chitila".into()];
         recompute_driver(&mut d, 2026, 10, &settings);
@@ -510,20 +544,43 @@ mod tests {
     }
 
     #[test]
+    fn a_far_trip_with_a_tariff_is_still_paid_and_asks_the_office() {
+        let mut d = with_private_trip_in_between("Constanta", "Tulcea", Some("2026-10-05 11:30"));
+        run(&mut d);
+        assert!(!d.trips.iter().find(|t| t.id == "private-9").unwrap().eff.excursion);
+        assert_eq!(d.days[0].pay_exterior, 110.0);
+        assert_eq!(d.pauses[0].kind, PauseKind::Confirm);
+    }
+
+    #[test]
+    fn a_coach_trip_abroad_alone_on_its_day_counts_nothing() {
+        // Constanța → Kalambaka by coach, no regular trip around it.
+        let mut d = driver(vec![trip("bus-1", TripKind::Bus, "Constanta", "Kalambaka", "2026-10-06 04:00", None)]);
+        run(&mut d);
+        assert!(d.trips[0].eff.excursion);
+        assert!(d.days.is_empty(), "{:?}", d.days);
+        assert_eq!((d.totals.total_min, d.totals.pay_exterior), (0, 0.0));
+        assert!(d.alerts.is_empty());
+    }
+
+    #[test]
     fn an_excursion_leaves_categoria_b_completely() {
-        // Back from Otopeni at 08:00; a private trip to Albac (no tariff, no duration); the next regular trip 4 days later.
+        // Back from Otopeni at 08:00; a private trip to Albac (no duration); the next regular trip 4 days later.
+        // Albac has a tariff here, so the trip is paid work until the office says it was an excursion.
         let mut d = driver(vec![
             trip("eco-1", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 05:00", Some("2026-10-05 08:00")),
             trip("private-9", TripKind::Private, "Constanta", "Albac", "2026-10-06 06:00", None),
             trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-10 09:30", Some("2026-10-10 12:30")),
         ]);
-        run(&mut d);
+        let mut settings = Settings::default();
+        settings.catb.tariffs.push(super::tariffs::Tariff { name: "Albac".into(), amount: 150.0 });
+        recompute_driver(&mut d, 2026, 10, &settings);
         assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Confirm, 0), "undecided: nothing counted yet");
-        assert!(d.days.iter().any(|day| day.alerts.iter().any(|a| a.code == "no_tariff")), "the Albac trip has no tariff yet");
+        assert_eq!(d.days.iter().map(|day| day.pay_exterior).sum::<f64>(), 150.0);
         let before = d.totals.total_min;
 
         d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Excursion, ..Default::default() });
-        run(&mut d);
+        recompute_driver(&mut d, 2026, 10, &settings);
         let pause = &d.pauses[0];
         assert_eq!((pause.counted_min, pause.extra_pay), (0, 0.0), "the whole pause stays out");
         assert!(pause.alerts.iter().any(|a| a.code == "excursion_done" && a.text.contains("Albac") && a.text.contains("tahograf")), "{:?}", pause.alerts);
@@ -536,11 +593,11 @@ mod tests {
 
         // Hours typed by hand do not bring it back in.
         d.pause_edits[0].hours = Some(20.0);
-        run(&mut d);
+        recompute_driver(&mut d, 2026, 10, &settings);
         assert_eq!(d.pauses[0].counted_min, 0);
         // Choosing something else puts the trip back.
         d.pause_edits[0].state = PauseState::Stayed;
-        run(&mut d);
+        recompute_driver(&mut d, 2026, 10, &settings);
         assert!(!d.trips.iter().find(|t| t.id == "private-9").unwrap().eff.excursion);
     }
 
