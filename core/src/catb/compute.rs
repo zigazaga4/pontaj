@@ -4,7 +4,9 @@
 //! Rules (all numbers come from [`CatbSettings`]):
 //! - A day's hours are the known driving time of its trips plus the waiting time of the pauses that start that day.
 //! - Waiting is only measured between two *regular* trips (Constanța ↔ Otopeni; private/VIP trips on the same route
-//!   count as regular). It is inferred from the API (next departure − previous arrival), never read from it.
+//!   count as regular, and so does any private/VIP "Otopeni run": a trip with the Otopeni/Bucharest end on one side and
+//!   any place on the other, even outside the county, e.g. Otopeni → Năvodari, Mamaia → Otopeni, Tulcea → Otopeni).
+//!   It is inferred from the API (next departure − previous arrival), never read from it.
 //! - A pause shorter than `long_pause_min` counts by itself. One of that length or longer is taken as "came back as a
 //!   passenger or some other way" (`Rest`: counts nothing, asks nothing); the office can still say he stayed there. Only when another kind of
 //!   trip lies in between, beyond the county (`Confirm`), the pause waits for the office to say what it was
@@ -67,7 +69,7 @@ fn effective(trip: &Trip, cfg: &CatbSettings) -> Effective {
     let minutes = arrival.map(|a| (a - departure).num_minutes()).filter(|m| *m >= 0).unwrap_or(0) as i32;
     let regular = match trip.kind {
         TripKind::Eco | TripKind::Passenger => true,
-        TripKind::Private | TripKind::Vip => cfg.main_route_private_regular && places::is_main_route(&from) && places::is_main_route(&to),
+        TripKind::Private | TripKind::Vip => cfg.main_route_private_regular && places::is_regular_route(&from, &to),
         TripKind::Bus => false,
     };
     let (mut price, mut price_note) = price_of(trip, regular, &from, &to, cfg);
@@ -252,7 +254,7 @@ fn pause_alerts(pause: &Pause, between: &[&Trip], settings: &Settings) -> Vec<Al
         ));
     }
     let undecided = pause.state == PauseState::Auto && pause.hours_override.is_none();
-    let differs = !places::same_area(&pause.place_from, &pause.place_to);
+    let differs = !places::same_area(&pause.place_from, &pause.place_to, &cfg.extra_local_places);
     // A day off between two shifts is not worth a remark, even if he came back some other way.
     if differs && undecided && pause.kind != PauseKind::Rest {
         let text = format!("A ajuns în {}, iar următoarea cursă pleacă din {}: probabil s-a întors ca pasager.", pause.place_from, pause.place_to);
@@ -487,7 +489,7 @@ mod tests {
     fn a_trip_in_between_sends_the_pause_to_the_office() {
         let mut d = driver(vec![
             trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 05:00", Some("2026-10-05 08:00")),
-            trip("private-9", TripKind::Private, "Aeroport Otopeni Bucuresti", "Tulcea", "2026-10-05 09:00", None),
+            trip("private-9", TripKind::Private, "Constanta", "Tulcea", "2026-10-05 09:00", None),
             trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 17:00", Some("2026-10-05 20:00")),
         ]);
         run(&mut d);
@@ -529,6 +531,81 @@ mod tests {
         let mut d = with_private_trip_in_between("Mamaia Nord", "Constanta", None);
         run(&mut d);
         assert_eq!((d.pauses[0].kind, d.pauses[0].busy_min, d.pauses[0].counted_min), (PauseKind::Normal, 0, 360));
+    }
+
+    /// Constanța → Otopeni 05:00–08:00, then a private trip Otopeni → Năvodari 09:00–13:00 (4 h), then back to Otopeni
+    /// from Constanța at 17:00–20:00: the private trip is an Otopeni run.
+    fn with_otopeni_run(kind: TripKind) -> Driver {
+        driver(vec![
+            trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 05:00", Some("2026-10-05 08:00")),
+            trip("private-9", kind, "Aeroport Otopeni Bucuresti", "Navodari", "2026-10-05 09:00", Some("2026-10-05 13:00")),
+            trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 17:00", Some("2026-10-05 20:00")),
+        ])
+    }
+
+    #[test]
+    fn a_private_run_from_otopeni_to_navodari_is_a_regular_leg() {
+        for kind in [TripKind::Private, TripKind::Vip] {
+            let mut d = with_otopeni_run(kind);
+            run(&mut d);
+            let run_trip = d.trips.iter().find(|t| t.id == "private-9").unwrap();
+            assert!(run_trip.eff.regular && run_trip.eff.counts_hours && !run_trip.eff.excursion, "{kind:?}");
+            assert_eq!((run_trip.eff.price, run_trip.eff.price_note.as_str()), (120.0, "cursă"), "a leg, not the Năvodari tariff");
+            // Three regular legs; the waiting is measured around it: 08:00→09:00 and 13:00→17:00.
+            assert_eq!(d.pauses.len(), 2);
+            assert_eq!((d.pauses[0].gap_min, d.pauses[0].kind), (60, PauseKind::Normal));
+            assert_eq!((d.pauses[1].gap_min, d.pauses[1].kind, d.pauses[1].counted_min, d.pauses[1].extra_pay), (240, PauseKind::Normal, 240, 10.0));
+            let day = &d.days[0];
+            assert_eq!((day.legs, day.pay_legs, day.pay_exterior, day.trip_min, day.station_min), (3, 360.0, 0.0, 180 + 240 + 180, 60 + 240));
+            assert_eq!(day.pay_total, 370.0);
+            // Leaving from Constanța after arriving in Năvodari is the same area: no "loc diferit". Arriving in Otopeni
+            // and leaving Constanța is, as before, only the first pause's problem (it arrives in Otopeni, next leaves Otopeni).
+            assert!(d.pauses.iter().all(|p| p.alerts.iter().all(|a| a.code != "place_differs")), "{:?}", d.pauses);
+        }
+    }
+
+    #[test]
+    fn a_private_run_toward_otopeni_from_outside_the_county_is_the_same_kind_of_run() {
+        // Tulcea → Otopeni: no tariff, not an excursion, not a question for the office: a leg like any other.
+        let mut d = driver(vec![
+            trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 05:00", Some("2026-10-05 08:00")),
+            trip("private-9", TripKind::Private, "Tulcea", "Aeroport Otopeni Bucuresti", "2026-10-05 10:00", Some("2026-10-05 14:30")),
+            trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 17:00", Some("2026-10-05 20:00")),
+        ]);
+        run(&mut d);
+        let tulcea = d.trips.iter().find(|t| t.id == "private-9").unwrap();
+        assert!(tulcea.eff.regular && tulcea.eff.counts_hours && !tulcea.eff.excursion);
+        assert_eq!((tulcea.eff.price, tulcea.eff.price_note.as_str()), (120.0, "cursă"));
+        assert_eq!(d.pauses.len(), 2);
+        assert!(d.pauses.iter().all(|p| p.kind == PauseKind::Normal), "{:?}", d.pauses);
+        // The waiting of that day applies: 08:00 → 10:00 and 14:30 → 17:00.
+        assert_eq!((d.pauses[0].counted_min, d.pauses[1].counted_min), (120, 150));
+        let day = &d.days[0];
+        assert_eq!((day.legs, day.pay_legs, day.pay_exterior), (3, 360.0, 0.0));
+        assert!(day.alerts.iter().all(|a| a.code != "no_tariff"), "{:?}", day.alerts);
+    }
+
+    #[test]
+    fn a_run_that_comes_back_to_otopeni_after_leaving_the_county_is_flagged_as_a_different_place() {
+        // The private trip Otopeni → Năvodari, then the next run leaves from Otopeni: he is in Năvodari, not in Otopeni.
+        let mut d = driver(vec![
+            trip("private-9", TripKind::Private, "Aeroport Otopeni Bucuresti", "Navodari", "2026-10-05 05:00", Some("2026-10-05 09:00")),
+            trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 12:00", Some("2026-10-05 15:00")),
+        ]);
+        run(&mut d);
+        assert_eq!(d.pauses.len(), 1);
+        assert!(d.pauses[0].alerts.iter().any(|a| a.code == "place_differs" && a.text.contains("Navodari")), "{:?}", d.pauses[0].alerts);
+    }
+
+    #[test]
+    fn the_otopeni_run_is_not_regular_when_the_setting_is_off() {
+        let mut d = with_otopeni_run(TripKind::Private);
+        let mut settings = Settings::default();
+        settings.catb.main_route_private_regular = false;
+        recompute_driver(&mut d, 2026, 10, &settings);
+        let trip = d.trips.iter().find(|t| t.id == "private-9").unwrap();
+        assert!(!trip.eff.regular);
+        assert_eq!(trip.eff.price_note, "exterior: Năvodari");
     }
 
     #[test]
@@ -620,7 +697,7 @@ mod tests {
     fn private_trips_are_priced_by_destination_and_untariffed_ones_are_flagged() {
         let mut d = driver(vec![
             trip("p1", TripKind::Private, "Constanta", "Mangalia", "2026-10-05 09:00", Some("2026-10-05 10:00")),
-            trip("p2", TripKind::Private, "Cernavoda", "Aeroport Otopeni Bucuresti", "2026-10-05 12:00", None),
+            trip("p2", TripKind::Private, "Cernavoda", "Constanta", "2026-10-05 12:00", None),
             trip("p3", TripKind::Private, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 15:00", Some("2026-10-05 18:00")),
         ]);
         run(&mut d);

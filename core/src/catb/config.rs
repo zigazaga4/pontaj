@@ -25,7 +25,9 @@ pub struct CatbSettings {
     pub long_pause_min: i32,
     /// Private/VIP/charter trips: their known driving time counts in the hours of the day (it is never counted as waiting).
     pub count_other_trips: bool,
-    /// A private/VIP trip between Constanța and Otopeni is a regular leg (same price, same waiting rules).
+    /// A private/VIP trip between Constanța and Otopeni, or any trip with the Otopeni/Bucharest end on one side and any place
+    /// on the other, even outside the county (Otopeni → Năvodari, Tulcea → Otopeni), is a regular leg (same price, same
+    /// waiting rules).
     pub main_route_private_regular: bool,
     /// Amounts in the Excel file. Off: the file has hours and warnings only.
     pub show_money: bool,

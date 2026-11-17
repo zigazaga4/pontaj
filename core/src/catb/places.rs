@@ -20,7 +20,7 @@ pub fn normalize(text: &str) -> String {
     out.trim_end().to_string()
 }
 
-const BUCHAREST: [&str; 5] = ["otopeni", "bucuresti", "baneasa", "banea", "henri coanda"];
+const BUCHAREST: [&str; 6] = ["otopeni", "bucuresti", "bucharest", "baneasa", "banea", "henri coanda"];
 const CONSTANTA: [&str; 2] = ["constanta", "mamaia"];
 
 /// Where a place is, as far as "did the driver stay where he arrived" is concerned.
@@ -31,19 +31,26 @@ pub enum Area {
     Other(String),
 }
 
-pub fn area(name: &str) -> Area {
+/// The area of a place. Anywhere in Constanța county counts as the Constanța side (`extra` are the places the office added).
+pub fn area(name: &str, extra: &[String]) -> Area {
     let normalized = normalize(name);
     if BUCHAREST.iter().any(|k| normalized.contains(k)) {
         Area::Bucuresti
-    } else if CONSTANTA.iter().any(|k| normalized.contains(k)) {
+    } else if CONSTANTA.iter().any(|k| normalized.contains(k)) || in_county(name, extra) {
         Area::Constanta
     } else {
         Area::Other(normalized)
     }
 }
 
-pub fn same_area(a: &str, b: &str) -> bool {
-    area(a) == area(b)
+pub fn same_area(a: &str, b: &str, extra: &[String]) -> bool {
+    area(a, extra) == area(b, extra)
+}
+
+/// Is the place at the Bucharest end of the regular route (the airports and the city)?
+pub fn is_bucharest(name: &str) -> bool {
+    let normalized = normalize(name);
+    BUCHAREST.iter().any(|k| normalized.contains(k))
 }
 
 /// The two ends of the regular route: Constanța itself and Bucharest (its airports included).
@@ -65,7 +72,8 @@ const COUNTY_PLACES: &[&str] = &[
     "crucea", "cumpana", "cuza voda", "deleni", "dobromir", "dumbraveni", "fantanele", "garliciu", "ghindaresti", "gradina", "horia", "independenta", "ion corvin", "istria",
     "jupiter", "lanurile", "lazu", "limanu", "lipnita", "lumina", "mereni", "mihai viteazu", "mihail kogalniceanu", "aeroport mihail kogalniceanu", "mircea voda", "negru voda",
     "nicolae balcescu", "oltina", "ostrov", "palazu mare", "pantelimon", "pecineaga", "pestera", "poarta alba", "poiana", "rasova", "sacele", "saligny", "saraiu", "seimeni",
-    "siutghiol", "targusor", "topalu", "topraisar", "tortoman", "tuzla", "valu lui traian", "vama veche", "vadu", "venus", "saturn", "aurora", "vulturu",
+    "siutghiol", "targusor", "topalu", "topraisar", "tortoman", "tuzla", "valu lui traian", "valu traian", "valu", "kogalniceanu", "vama veche", "vadu", "venus", "saturn", "aurora",
+    "vulturu",
 ];
 
 fn starts_with_entry(normalized: &str, entry: &str) -> bool {
@@ -84,6 +92,13 @@ pub fn in_county(name: &str, extra: &[String]) -> bool {
 /// or Constanța county? Anything else is far away: an excursion.
 pub fn is_local(name: &str, extra: &[String]) -> bool {
     is_main_route(name) || in_county(name, extra)
+}
+
+/// Does a trip `from → to` belong to the regular route? Constanța ↔ Bucharest, and also any "Otopeni run": a trip with
+/// the Bucharest end (Otopeni, the airports) on one side and any place on the other, even outside Constanța county
+/// (Otopeni → Năvodari, Mamaia → Otopeni, Tulcea → Otopeni): it is an airport run like the scheduled ones.
+pub fn is_regular_route(from: &str, to: &str) -> bool {
+    (is_main_route(from) && is_main_route(to)) || is_bucharest(from) || is_bucharest(to)
 }
 
 /// Edit distance between two short strings.
@@ -115,12 +130,58 @@ mod tests {
 
     #[test]
     fn areas_and_main_route() {
-        assert!(same_area("Aeroport Otopeni Bucuresti", "Bucuresti"));
-        assert!(same_area("Aeroport Banea", "Otopeni"));
-        assert!(same_area("Mamaia Nord", "Constanta"));
-        assert!(!same_area("Constanta", "Cernavoda"));
+        let none: &[String] = &[];
+        assert!(same_area("Aeroport Otopeni Bucuresti", "Bucuresti", none));
+        assert!(same_area("Aeroport Banea", "Otopeni", none));
+        assert!(same_area("Mamaia Nord", "Constanta", none));
+        assert!(same_area("Hotel Scandinavia Mamaia", "Constanta", none));
+        assert!(!same_area("Constanta", "Aeroport Otopeni Bucuresti", none));
+        assert!(!same_area("Constanta", "Tulcea", none));
         assert!(is_main_route("Constanta") && is_main_route("Aeroport Otopeni Bucuresti"));
         assert!(!is_main_route("Mamaia Nord") && !is_main_route("Tulcea") && !is_main_route("Chitila"));
+    }
+
+    #[test]
+    fn the_whole_county_is_the_constanta_side_of_a_pause() {
+        let none: &[String] = &[];
+        // He arrived in Năvodari and the next run leaves from Constanța: he did not change area.
+        assert!(same_area("Navodari", "Constanta", none));
+        assert!(same_area("Cernavoda", "Constanta", none));
+        assert!(!same_area("Navodari", "Aeroport Otopeni Bucuresti", none));
+        // The office can add a place.
+        let extra = vec!["Chitila".to_string()];
+        assert!(!same_area("Chitila", "Constanta", none));
+        assert!(same_area("Chitila", "Constanta", &extra));
+    }
+
+    #[test]
+    fn any_trip_with_the_otopeni_end_is_on_the_regular_route() {
+        for (from, to) in [
+            ("Constanta", "Aeroport Otopeni Bucuresti"),
+            ("Aeroport Otopeni Bucuresti", "Navodari"),
+            ("Aeroport Otopeni Bucuresti", "Mamaia Nord"),
+            ("Cernavoda", "Aeroport Otopeni Bucuresti"),
+            ("Valu Traian", "Otopeni"),
+            ("Aeroport Banea", "Eforie Nord-constanta"),
+            // Outside the county, toward or from Otopeni, is the same kind of run.
+            ("Tulcea", "Aeroport Otopeni Bucuresti"),
+            ("Aeroport Otopeni Bucuresti", "Brasov"),
+            ("Chisinau", "Otopeni"),
+            ("Cernavoda", "Hilton Garden Inn Bucharest Airport"),
+        ] {
+            assert!(is_regular_route(from, to), "{from} → {to}");
+        }
+        // Without the Otopeni end, only Constanța ↔ Bucharest-side pairs of the main route are regular.
+        for (from, to) in [
+            ("Constanta", "Mangalia"),
+            ("Mamaia Nord", "Constanta"),
+            ("Navodari", "Cernavoda"),
+            ("Tulcea", "Constanta"),
+            ("Constanta", "Chisinau"),
+            ("Constanta", ""),
+        ] {
+            assert!(!is_regular_route(from, to), "{from} → {to}");
+        }
     }
 
     #[test]
