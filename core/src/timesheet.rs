@@ -46,7 +46,7 @@ pub struct Timesheet {
     pub sources: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DayInfo {
     pub day: u32,
@@ -153,12 +153,9 @@ fn report_month(reports: &[DriverReport]) -> Option<(i32, u32)> {
     counts.into_iter().max_by_key(|(_, n)| *n).map(|(ym, _)| ym)
 }
 
-/// Builds the timesheet for the month covered by the reports.
-pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timesheet> {
-    let (year, month) = report_month(&reports)?;
-    let n_days = calendar::days_in_month(year, month);
-
-    let days = (1..=n_days)
+/// The days of a month, each with its weekday and whether it is a weekend or a legal holiday.
+pub fn month_days(year: i32, month: u32) -> Vec<DayInfo> {
+    (1..=calendar::days_in_month(year, month))
         .filter_map(|d| NaiveDate::from_ymd_opt(year, month, d))
         .map(|date| DayInfo {
             day: date.day(),
@@ -166,7 +163,15 @@ pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timeshee
             weekend: calendar::is_weekend(date),
             holiday: calendar::holiday_name(date).map(str::to_string),
         })
-        .collect();
+        .collect()
+}
+
+/// Builds the timesheet for the month covered by the reports.
+pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timesheet> {
+    let (year, month) = report_month(&reports)?;
+    let n_days = calendar::days_in_month(year, month);
+
+    let days = month_days(year, month);
 
     // The same driver may appear in several PDFs: merge by display name.
     let mut by_name: BTreeMap<String, DriverReport> = BTreeMap::new();

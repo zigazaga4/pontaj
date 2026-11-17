@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::catb::CatbSettings;
 use crate::time::parse_hm;
 
 /// Where the night minutes of a day come from.
@@ -69,6 +70,8 @@ pub struct Settings {
     pub default_start: String,
     pub prepared_by: String,
     pub approved_by: String,
+    /// Rules and API access of the "Categoria B" mode (trips read from the ALT API).
+    pub catb: CatbSettings,
 }
 
 impl Default for Settings {
@@ -92,6 +95,7 @@ impl Default for Settings {
             default_start: "08:00".into(),
             prepared_by: String::new(),
             approved_by: String::new(),
+            catb: CatbSettings::default(),
         }
     }
 }

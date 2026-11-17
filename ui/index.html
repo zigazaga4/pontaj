@@ -13,11 +13,15 @@
       <img src="icon.png" alt="" class="logo" />
       <div>
         <h1>Pontaj</h1>
-        <p>Din raportul de tahograf direct în foaia colectivă de prezență</p>
+        <p id="tagline">Din raportul de tahograf direct în foaia colectivă de prezență</p>
       </div>
     </div>
+    <div class="modes" id="modes" role="tablist" aria-label="Sursa datelor">
+      <button class="mode active" data-mode="pdf" role="tab">Tahograf (PDF)</button>
+      <button class="mode" data-mode="catb" role="tab">Categoria B (API)</button>
+    </div>
     <div class="actions">
-      <button id="btn-add" class="btn">＋ Adaugă PDF-uri</button>
+      <button id="btn-add" class="btn" data-for="pdf">＋ Adaugă PDF-uri</button>
       <button id="btn-clear" class="btn ghost" hidden>Golește</button>
       <button id="btn-settings" class="btn ghost">⚙︎ Reguli</button>
       <button id="btn-export" class="btn primary" disabled>⬇ Exportă Excel</button>
@@ -25,6 +29,17 @@
   </header>
 
   <main>
+    <section id="catb" hidden>
+      <div class="summary" id="catb-summary"></div>
+      <div class="catb-bar" id="catb-bar"></div>
+      <div class="warnings" id="catb-notices" hidden></div>
+      <div class="split">
+        <aside class="drivers" id="catb-drivers"></aside>
+        <div class="view" id="catb-view"></div>
+      </div>
+      <datalist id="catb-places"></datalist>
+    </section>
+
     <section id="empty" class="dropzone">
       <div class="dropzone-inner">
         <div class="drop-icon">📄</div>

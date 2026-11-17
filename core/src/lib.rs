@@ -1,6 +1,7 @@
 //! Pontaj automat din rapoartele de tahograf (PDF) → foaie colectivă de prezență (Excel).
 
 pub mod calendar;
+pub mod catb;
 pub mod excel;
 pub mod pdf;
 pub mod rules;

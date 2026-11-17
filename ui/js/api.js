@@ -11,6 +11,16 @@ export const api = {
   recalculate: (timesheet, settings) => invoke("recalculate", { timesheet, settings }),
   exportExcel: (timesheet, settings) => invoke("export_excel", { timesheet, settings }),
   openFile: (path) => invoke("open_file", { path }),
+  // Categoria B: the months are saved on this computer, so reopening one needs no download.
+  catbMonths: () => invoke("catb_months"),
+  catbOpen: (year, month, settings) => invoke("catb_open", { year, month, settings }),
+  /** Downloads the month from the API and merges it into `previous`, keeping the office's changes. */
+  catbFetch: (year, month, settings, previous) => invoke("catb_fetch", { year, month, settings, previous }),
+  catbRecalculate: (sheet, settings) => invoke("catb_recalculate", { sheet, settings }),
+  /** After an edit only that driver is sent and recomputed. */
+  catbRecalculateDriver: (driver, year, month, settings) => invoke("catb_recalculate_driver", { driver, year, month, settings }),
+  catbSave: (sheet) => invoke("catb_save", { sheet }),
+  catbExport: (sheet, settings) => invoke("catb_export", { sheet, settings }),
   appVersion: () => invoke("app_version"),
   /** { version, notes } of a newer release, or null. Rejects when GitHub cannot be reached. */
   checkUpdate: () => invoke("check_update"),

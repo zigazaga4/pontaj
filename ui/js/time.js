@@ -39,7 +39,7 @@ export function hoursText(hours) {
  * all mean 7 h 30 min; one digit after the comma is a decimal ("7,5" = 7 h 30 min).
  * Empty → null, not a number of hours → undefined. The sheet rounds the result to the half hour.
  */
-export function parseHours(text) {
+export function parseHours(text, max = 24) {
   const value = String(text ?? "").trim();
   if (value === "") return null;
   const whole = value.match(/^(\d{1,2})$/);
@@ -51,8 +51,67 @@ export function parseHours(text) {
   else if (tenth) hours = Number(`${tenth[1]}.${tenth[2]}`);
   else if (clock && Number(clock[2]) < 60) hours = Number(clock[1]) + Number(clock[2]) / 60;
   else if (hundredth) hours = Number(`${hundredth[1]}.${hundredth[2]}`); // "7,75": too big for minutes
-  return hours !== undefined && hours <= 24 ? hours : undefined;
+  return hours !== undefined && hours <= max ? hours : undefined;
 }
+
+/** "08:00" when `iso` is on the same day as `reference`, else "07.10 08:00". */
+export function formatWhen(iso, reference) {
+  if (!iso) return "";
+  return isoDate(iso) === isoDate(reference) ? isoClock(iso) : `${shortDate(iso)} ${isoClock(iso)}`;
+}
+
+/**
+ * A moment typed as "11:00" (the first time at or after `reference`) or "07.10 11:00".
+ * Empty → null, not a moment → undefined.
+ */
+export function parseWhen(text, reference) {
+  const value = String(text ?? "").trim();
+  if (value === "") return null;
+  const match = value.match(/^(?:(\d{1,2})[./](\d{1,2})\s+)?(\S+)$/);
+  const min = match ? parseHm(match[3]) : NaN;
+  if (!match || min === null || Number.isNaN(min)) return undefined;
+  if (match[1]) {
+    const [day, month] = [Number(match[1]), Number(match[2])];
+    if (day < 1 || day > 31 || month < 1 || month > 12) return undefined;
+    return isoAt(`${reference.slice(0, 4)}-${two(month)}-${two(day)}`, min);
+  }
+  const same = isoAt(isoDate(reference), min);
+  return same >= reference ? same : isoAt(addDays(isoDate(reference), 1), min);
+}
+
+// ---- Date-times as the Rust side sends them: "2026-10-05T08:00:00" ----
+
+/** "08:00" of a date-time. */
+export const isoClock = (iso) => (iso ? iso.slice(11, 16) : "");
+
+/** "2026-10-05" of a date-time. */
+export const isoDate = (iso) => (iso ? iso.slice(0, 10) : "");
+
+/** "05.10" of a date or date-time. */
+export const shortDate = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}` : "");
+
+/** The date `n` days after `date` ("2026-10-31" + 1 = "2026-11-01"). */
+export function addDays(date, n) {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** A date-time on `date` at `min` minutes from its midnight; 1440 and more roll into the next days. */
+export function isoAt(date, min) {
+  const day = Math.floor(min / DAY);
+  const rest = min - day * DAY;
+  return `${addDays(date, day)}T${hhmm(rest)}:00`;
+}
+
+/** Minutes between two date-times (`to` − `from`). */
+export const minutesBetween = (from, to) => Math.round((new Date(`${to}Z`) - new Date(`${from}Z`)) / 60000);
+
+/** "luni", "marți"… of a date. */
+export const weekdayName = (date) => new Date(`${date}T12:00:00Z`).toLocaleDateString("ro-RO", { weekday: "long", timeZone: "UTC" });
+
+/** An amount in lei with thousands separators: 1250 → "1 250". */
+export const lei = (n) => Math.round(n).toLocaleString("ro-RO");
 
 /** Parses "7:39", "07:39", "7.39", "739" or "0730". Empty → null, invalid → NaN. */
 export function parseHm(text) {

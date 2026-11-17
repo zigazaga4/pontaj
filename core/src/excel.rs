@@ -17,11 +17,11 @@ const FIRST_DATA_ROW: RowNum = 9;
 const ROWS_PER_EMPLOYEE: RowNum = 6;
 const FIRST_DAY_COL: ColNum = 3;
 
-const HEADER_FILL: u32 = 0xD9E1F2;
-const OFF_FILL: u32 = 0xEDEDED;
-const HOLIDAY_FILL: u32 = 0xFCE4D6;
+pub(crate) const HEADER_FILL: u32 = 0xD9E1F2;
+pub(crate) const OFF_FILL: u32 = 0xEDEDED;
+pub(crate) const HOLIDAY_FILL: u32 = 0xFCE4D6;
 const NAME_FILL: u32 = 0xFFF2CC;
-const TOTAL_FILL: u32 = 0xFFF2CC;
+pub(crate) const TOTAL_FILL: u32 = 0xFFF2CC;
 const CODE_FILL: u32 = 0xE2EFDA;
 const NIGHT_FONT: u32 = 0x1F4E79;
 
@@ -58,7 +58,7 @@ impl Cols {
 }
 
 /// `A1`-style reference (0-based row/col).
-fn cell(row: RowNum, col: ColNum) -> String {
+pub(crate) fn cell(row: RowNum, col: ColNum) -> String {
     let mut name = String::new();
     let mut n = col as u32 + 1;
     while n > 0 {
@@ -69,17 +69,17 @@ fn cell(row: RowNum, col: ColNum) -> String {
     format!("{name}{}", row + 1)
 }
 
-fn range(row: RowNum, from: ColNum, to: ColNum) -> String {
+pub(crate) fn range(row: RowNum, from: ColNum, to: ColNum) -> String {
     format!("{}:{}", cell(row, from), cell(row, to))
 }
 
 /// Reusable cell formats.
-struct Styles {
-    base: Format,
+pub(crate) struct Styles {
+    pub(crate) base: Format,
 }
 
 impl Styles {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let base = Format::new()
             .set_font_name("Arial Narrow")
             .set_font_size(10)
@@ -89,20 +89,20 @@ impl Styles {
             .set_border_color(Color::RGB(0x808080));
         Styles { base }
     }
-    fn fill(&self, color: u32) -> Format {
+    pub(crate) fn fill(&self, color: u32) -> Format {
         self.base.clone().set_background_color(Color::RGB(color))
     }
-    fn header(&self) -> Format {
+    pub(crate) fn header(&self) -> Format {
         self.fill(HEADER_FILL).set_font_name("Arial").set_bold().set_text_wrap()
     }
-    fn day_header(&self, off: bool, holiday: bool) -> Format {
+    pub(crate) fn day_header(&self, off: bool, holiday: bool) -> Format {
         let color = if holiday { HOLIDAY_FILL } else if off { OFF_FILL } else { HEADER_FILL };
         self.fill(color).set_bold().set_text_wrap()
     }
-    fn day(&self, off: bool) -> Format {
+    pub(crate) fn day(&self, off: bool) -> Format {
         if off { self.fill(OFF_FILL) } else { self.base.clone() }
     }
-    fn plain() -> Format {
+    pub(crate) fn plain() -> Format {
         Format::new().set_font_name("Arial").set_font_size(10)
     }
 }
@@ -116,7 +116,7 @@ pub fn write_xlsx(sheet: &Timesheet, settings: &Settings, path: &Path) -> Result
     workbook.save(path).map_err(|e| Error::new(format!("Nu pot salva fișierul Excel: {e}")))
 }
 
-fn xlsx_err(e: XlsxError) -> Error {
+pub(crate) fn xlsx_err(e: XlsxError) -> Error {
     Error::new(format!("Eroare la generarea Excel: {e}"))
 }
 
@@ -433,7 +433,7 @@ fn audit_has_data(entry: &DayEntry) -> bool {
 }
 
 /// A duration as an Excel time value (shown `h:mm`); nothing for zero minutes.
-fn write_duration(ws: &mut Worksheet, row: RowNum, col: ColNum, minutes: i32, fmt: &Format) -> std::result::Result<(), XlsxError> {
+pub(crate) fn write_duration(ws: &mut Worksheet, row: RowNum, col: ColNum, minutes: i32, fmt: &Format) -> std::result::Result<(), XlsxError> {
     if minutes > 0 {
         ws.write_number_with_format(row, col, minutes as f64 / DAY as f64, fmt)?;
     } else {

@@ -6,6 +6,7 @@ import { renderScanned } from "./scanned.js";
 import { renderDaily } from "./daily.js";
 import { renderSettings } from "./settings.js";
 import { checkForUpdates } from "./updater.js";
+import { createCatb } from "./catb.js";
 import { hoursText, signed } from "./time.js";
 
 const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
@@ -17,9 +18,35 @@ const TABS = [
   { id: "sheet", label: "Foaia colectivă", hint: "Rezultatul final, gata de export", perDriver: false },
 ];
 
-const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null };
+const TAGLINES = {
+  pdf: "Din raportul de tahograf direct în foaia colectivă de prezență",
+  catb: "Din cursele aplicației ALT direct în foaia de pontaj",
+};
+
+const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null, mode: "pdf" };
+
+const catb = createCatb({ getSettings: () => state.settings, openSettings: () => openSettings(true) });
 
 const basename = (path) => path.split(/[\\/]/).pop();
+
+/** Switches between the tachograph PDFs and the Categoria B (API) pontaj. */
+function setMode(mode) {
+  state.mode = mode;
+  localStorage.setItem("pontaj.mode", mode);
+  document.querySelectorAll("#modes .mode").forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
+  $("#tagline").textContent = TAGLINES[mode];
+  $("#btn-add").hidden = mode !== "pdf";
+  if (mode === "pdf") {
+    catb.hide();
+    render();
+  } else {
+    $("#empty").hidden = true;
+    $("#workspace").hidden = true;
+    $("#btn-clear").hidden = true;
+    $("#btn-export").disabled = false;
+    catb.show();
+  }
+}
 
 async function loadFiles(paths) {
   const pdfs = paths.filter((p) => p.toLowerCase().endsWith(".pdf"));
@@ -27,6 +54,7 @@ async function loadFiles(paths) {
     if (paths.length) toast("Se acceptă doar fișiere PDF.", { kind: "warn" });
     return;
   }
+  if (state.mode !== "pdf") setMode("pdf");
   const fresh = pdfs.filter((p) => !state.files.some((f) => basename(f) === basename(p)));
   if (!fresh.length) {
     toast("Fișierele acestea sunt deja încărcate.", { kind: "info", timeout: 2500 });
@@ -85,6 +113,7 @@ const viewContext = () => ({
 });
 
 function render() {
+  if (state.mode !== "pdf") return;
   const has = !!state.sheet;
   $("#empty").hidden = has;
   $("#workspace").hidden = !has;
@@ -217,7 +246,7 @@ async function onSettingsChange(settings) {
   } catch (err) {
     toast(`Setările nu au putut fi salvate: ${err}`, { kind: "warn" });
   }
-  if (state.sheet) await edit(null, { structural: true });
+  await Promise.all([state.sheet ? edit(null, { structural: true }) : null, catb.settingsChanged()]);
 }
 
 async function addViaDialog() {
@@ -229,10 +258,11 @@ async function init() {
   state.settings = await api.loadSettings();
   $("#btn-add").addEventListener("click", addViaDialog);
   $("#btn-add-empty").addEventListener("click", addViaDialog);
-  $("#btn-export").addEventListener("click", exportExcel);
+  $("#btn-export").addEventListener("click", () => (state.mode === "catb" ? catb.exportExcel() : exportExcel()));
   $("#btn-settings").addEventListener("click", () => openSettings($("#settings-panel").hidden));
   $("#btn-close-settings").addEventListener("click", () => openSettings(false));
-  const idle = () => !state.sheet && $("#overlay").hidden; // nothing open, nothing loading: safe to restart
+  document.querySelectorAll("#modes .mode").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+  const idle = () => state.mode === "pdf" && !state.sheet && $("#overlay").hidden; // nothing open, nothing loading: safe to restart
   $("#btn-update").addEventListener("click", () => checkForUpdates({ manual: true, canInstallNow: idle }));
   api.appVersion().then((v) => ($("#app-version").textContent = `Versiunea ${v}`)).catch(() => {});
   $("#btn-clear").addEventListener("click", () => {
@@ -247,8 +277,8 @@ async function init() {
       loadFiles(paths);
     },
   });
-  render();
   const startup = await api.startupFiles();
+  setMode(startup.length ? "pdf" : localStorage.getItem("pontaj.mode") === "catb" ? "catb" : "pdf");
   if (startup.length) await loadFiles(startup);
   checkForUpdates({ canInstallNow: idle });
 }

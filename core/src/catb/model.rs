@@ -1,0 +1,285 @@
+//! Data of the "Categoria B" mode. Everything the API says (`Trip` base fields) is kept apart from what the
+//! office changed (`TripEdit`, `PauseEdit`, `excluded_days`): a new download replaces the first and keeps the second.
+//! The derived parts (`eff`, `pauses`, `days`, `totals`, `alerts`, `proposals`) are rebuilt by [`super::recompute`].
+
+use chrono::{NaiveDate, NaiveDateTime};
+use serde::{Deserialize, Serialize};
+
+use crate::timesheet::DayInfo;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TripKind {
+    /// Regular timetable trip Constanța ↔ Otopeni.
+    #[default]
+    Eco,
+    Private,
+    Vip,
+    /// Rented coach/minibus.
+    Bus,
+    /// Added by hand: the driver came back as a passenger (counts as a regular leg).
+    Passenger,
+}
+
+impl TripKind {
+    pub fn from_api(code: &str) -> Self {
+        match code.trim().to_lowercase().as_str() {
+            "prv" | "private" => Self::Private,
+            "vip" => Self::Vip,
+            "bus" => Self::Bus,
+            _ => Self::Eco,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Eco => "Eco",
+            Self::Private => "Privată",
+            Self::Vip => "VIP",
+            Self::Bus => "Autocar",
+            Self::Passenger => "Pasager",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Level {
+    #[default]
+    Info,
+    Warn,
+    Alert,
+}
+
+/// A remark for the office, in plain Romanian. `code` lets the screen group or filter them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Alert {
+    pub code: String,
+    pub level: Level,
+    pub text: String,
+}
+
+impl Alert {
+    pub fn new(code: &str, level: Level, text: impl Into<String>) -> Self {
+        Self { code: code.into(), level, text: text.into() }
+    }
+}
+
+/// What the office changed on a trip. Empty = the trip is as the API says.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TripEdit {
+    pub departure: Option<NaiveDateTime>,
+    pub arrival: Option<NaiveDateTime>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// Price typed by hand (a private trip whose destination is not in the list, or a corrected amount).
+    pub price: Option<f64>,
+    /// The trip does not count (not made, or wrongly assigned).
+    pub removed: bool,
+}
+
+/// A trip as it counts after the office's changes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Effective {
+    pub departure: Option<NaiveDateTime>,
+    pub arrival: Option<NaiveDateTime>,
+    pub from: String,
+    pub to: String,
+    /// Known driving time (0 when the arrival is unknown).
+    pub minutes: i32,
+    /// A leg of the regular route: paid per leg and followed by waiting time.
+    pub regular: bool,
+    pub counts_hours: bool,
+    /// Estimated amount for this trip (leg price or exterior tariff).
+    pub price: f64,
+    /// Why the amount is what it is: "cursă", "exterior: Tulcea", "fără tarif"…
+    pub price_note: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Trip {
+    /// `trip.id` of the API (`eco-117599`); `manual-N` for trips added by hand.
+    pub id: String,
+    pub kind: TripKind,
+    pub label: String,
+    pub from: String,
+    pub to: String,
+    pub departure: NaiveDateTime,
+    pub arrival: Option<NaiveDateTime>,
+    pub return_at: Option<NaiveDateTime>,
+    pub car: String,
+    pub passengers: i32,
+    pub manual: bool,
+    pub edit: TripEdit,
+    pub eff: Effective,
+}
+
+/// What the office decided about the time between two regular trips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PauseState {
+    /// Nothing decided: short pauses count as waiting, long ones wait for a decision.
+    #[default]
+    Auto,
+    /// He stayed there: the whole pause is waiting time.
+    Stayed,
+    /// He came back as a passenger: waiting counts until he left (if the time is known).
+    Passenger,
+    /// Day off / rest: no waiting time.
+    Off,
+    /// Excursion: the whole pause is waiting time, however long.
+    Excursion,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PauseEdit {
+    /// Ids of the trips before and after the pause.
+    pub prev: String,
+    pub next: String,
+    pub state: PauseState,
+    /// Waiting time typed by hand, in hours (half hours or minutes allowed).
+    pub hours: Option<f64>,
+    /// When he left / came back, as the driver wrote on his sheet.
+    pub left: Option<NaiveDateTime>,
+    pub back: Option<NaiveDateTime>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PauseKind {
+    /// Between two regular trips, within the usual limit: counted as waiting.
+    #[default]
+    Normal,
+    /// Another kind of trip lies in between, or a long stay in Bucharest: waits for the office to say what it was.
+    Confirm,
+    /// Longer than the usual limit with nothing odd about it (a day off between shifts): counts nothing, asks nothing.
+    /// The office can still mark it as waiting.
+    Rest,
+    /// The next trip starts before the previous one ends.
+    Overlap,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Pause {
+    pub prev: String,
+    pub next: String,
+    /// Where he arrived / where the next trip starts.
+    pub place_from: String,
+    pub place_to: String,
+    pub start: Option<NaiveDateTime>,
+    pub end: Option<NaiveDateTime>,
+    pub gap_min: i32,
+    pub kind: PauseKind,
+    pub state: PauseState,
+    pub hours_override: Option<f64>,
+    pub left: Option<NaiveDateTime>,
+    pub back: Option<NaiveDateTime>,
+    pub note: String,
+    /// Minutes that count as waiting (in the hours and in the amount).
+    pub counted_min: i32,
+    /// Added to the estimate for the waiting beyond the included time.
+    pub extra_pay: f64,
+    pub alerts: Vec<Alert>,
+}
+
+/// One day of one driver.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DayRow {
+    pub date: Option<NaiveDate>,
+    pub trips: i32,
+    /// Regular legs made that day (what the 240 lei per pair is made of).
+    pub legs: i32,
+    pub trip_min: i32,
+    pub station_min: i32,
+    pub total_min: i32,
+    pub pay_legs: f64,
+    pub pay_exterior: f64,
+    pub pay_station: f64,
+    pub pay_total: f64,
+    /// Taken out of the pontaj by the office (it stays on screen, but counts nowhere).
+    pub excluded: bool,
+    pub alerts: Vec<Alert>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Totals {
+    pub days: i32,
+    pub legs: i32,
+    pub trip_min: i32,
+    pub station_min: i32,
+    pub total_min: i32,
+    pub pay_legs: f64,
+    pub pay_exterior: f64,
+    pub pay_station: f64,
+    pub pay_total: f64,
+    /// Minutes above the monthly ceiling (0 when within it).
+    pub over_min: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProposalKind {
+    /// Shorten the counted waiting of one pause.
+    Pause,
+    /// Take a whole day out of the pontaj.
+    Day,
+}
+
+/// A way to bring a driver under the monthly ceiling. Only a suggestion: the office applies it or not.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Proposal {
+    pub kind: ProposalKind,
+    pub date: NaiveDate,
+    /// For a pause: the trips around it, and the waiting hours it would keep.
+    pub prev: Option<String>,
+    pub next: Option<String>,
+    pub set_hours: Option<f64>,
+    /// Minutes taken out and the amount that goes with them.
+    pub minutes: i32,
+    pub pay: f64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Driver {
+    pub id: i64,
+    pub name: String,
+    /// Sorted by (effective) departure.
+    pub trips: Vec<Trip>,
+    pub pause_edits: Vec<PauseEdit>,
+    pub excluded_days: Vec<NaiveDate>,
+    // --- derived ---
+    pub pauses: Vec<Pause>,
+    pub days: Vec<DayRow>,
+    pub totals: Totals,
+    pub alerts: Vec<Alert>,
+    pub proposals: Vec<Proposal>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Sheet {
+    pub year: i32,
+    pub month: u32,
+    /// When the trips were last downloaded.
+    pub fetched_at: Option<String>,
+    pub days: Vec<DayInfo>,
+    /// Mon–Fri days of the month, holidays included.
+    pub weekdays: u32,
+    /// Monthly ceiling: 8 hours × `weekdays`, in minutes.
+    pub cap_min: i32,
+    pub drivers: Vec<Driver>,
+    /// Remarks from the last download (trips that changed or disappeared in the API).
+    pub notices: Vec<String>,
+}

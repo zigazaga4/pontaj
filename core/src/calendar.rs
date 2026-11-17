@@ -63,6 +63,14 @@ pub fn working_days(year: i32, month: u32) -> u32 {
         .count() as u32
 }
 
+/// Mon–Fri days of the month, legal holidays included. A driver's monthly hours must stay within 8 h × this.
+pub fn weekdays_in_month(year: i32, month: u32) -> u32 {
+    (1..=days_in_month(year, month))
+        .filter_map(|d| NaiveDate::from_ymd_opt(year, month, d))
+        .filter(|date| !is_weekend(*date))
+        .count() as u32
+}
+
 pub fn weekday_short(date: NaiveDate) -> &'static str {
     match date.weekday() {
         Weekday::Mon => "Lu",
@@ -72,6 +80,19 @@ pub fn weekday_short(date: NaiveDate) -> &'static str {
         Weekday::Fri => "Vi",
         Weekday::Sat => "Sâ",
         Weekday::Sun => "Du",
+    }
+}
+
+/// `luni`, `sâmbătă`… for sentences.
+pub fn weekday_long(date: NaiveDate) -> &'static str {
+    match date.weekday() {
+        Weekday::Mon => "luni",
+        Weekday::Tue => "marți",
+        Weekday::Wed => "miercuri",
+        Weekday::Thu => "joi",
+        Weekday::Fri => "vineri",
+        Weekday::Sat => "sâmbătă",
+        Weekday::Sun => "duminică",
     }
 }
 
@@ -99,5 +120,13 @@ mod tests {
         assert_eq!(working_days(2026, 8) * 8, 168);
         assert_eq!(working_days(2026, 9) * 8, 176);
         assert_eq!(days_in_month(2026, 2), 28);
+    }
+
+    #[test]
+    fn weekdays_count_the_holidays_too() {
+        assert_eq!(weekdays_in_month(2026, 10), 22);
+        // 30 November 2026 is a Monday and a holiday: it stays in the count (21), while `working_days` drops it (20).
+        assert_eq!(weekdays_in_month(2026, 11), 21);
+        assert_eq!(working_days(2026, 11), 20);
     }
 }

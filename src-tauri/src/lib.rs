@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use pontaj_core::{add_pdfs, recompute, suggested_file_name, write_xlsx, Settings, Timesheet};
+use pontaj_core::{add_pdfs, catb, recompute, suggested_file_name, write_xlsx, Settings, Timesheet};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -71,24 +71,92 @@ fn recalculate(mut timesheet: Timesheet, settings: Settings) -> Timesheet {
     timesheet
 }
 
+/// Asks where to save an Excel file (Downloads by default). `None` when the person cancels.
+fn ask_xlsx_path(app: &AppHandle, file_name: String) -> Option<PathBuf> {
+    let mut dialog = app.dialog().file().set_title("Salvează pontajul").set_file_name(file_name).add_filter("Excel", &["xlsx"]);
+    if let Ok(dir) = app.path().download_dir() {
+        dialog = dialog.set_directory(dir);
+    }
+    let path = dialog.blocking_save_file().and_then(|p| p.into_path().ok())?;
+    Some(if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xlsx")) { path } else { path.with_extension("xlsx") })
+}
+
 /// Asks where to save, writes the workbook and returns the chosen path.
 #[tauri::command]
 async fn export_excel(app: AppHandle, timesheet: Timesheet, settings: Settings) -> CmdResult<Option<String>> {
     blocking(move || {
-        let mut dialog = app
-            .dialog()
-            .file()
-            .set_title("Salvează pontajul")
-            .set_file_name(suggested_file_name(&timesheet, &settings))
-            .add_filter("Excel", &["xlsx"]);
-        if let Ok(dir) = app.path().download_dir() {
-            dialog = dialog.set_directory(dir);
-        }
-        let Some(path) = dialog.blocking_save_file().and_then(|p| p.into_path().ok()) else {
-            return Ok(None);
-        };
-        let path = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xlsx")) { path } else { path.with_extension("xlsx") };
+        let Some(path) = ask_xlsx_path(&app, suggested_file_name(&timesheet, &settings)) else { return Ok(None) };
         write_xlsx(&timesheet, &settings, &path).map_err(|e| e.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+// ---- Categoria B: drivers' trips from the ALT API ----
+
+fn catb_dir(app: &AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("catb"))
+}
+
+/// The months saved on this computer, newest first.
+#[tauri::command]
+fn catb_months(app: AppHandle) -> CmdResult<Vec<(i32, u32)>> {
+    Ok(catb::store::list(&catb_dir(&app)?))
+}
+
+/// A saved month (recomputed with the current settings), or nothing when it was never downloaded.
+#[tauri::command]
+async fn catb_open(app: AppHandle, year: i32, month: u32, settings: Settings) -> CmdResult<Option<catb::Sheet>> {
+    blocking(move || {
+        let mut sheet = catb::store::load(&catb_dir(&app)?, year, month).map_err(|e| e.to_string())?;
+        if let Some(sheet) = &mut sheet {
+            catb::recompute(sheet, &settings);
+        }
+        Ok(sheet)
+    })
+    .await
+}
+
+/// Downloads the month from the API and merges it into what is already there (the open sheet, else the saved one).
+#[tauri::command]
+async fn catb_fetch(app: AppHandle, year: i32, month: u32, settings: Settings, previous: Option<catb::Sheet>) -> CmdResult<catb::Sheet> {
+    blocking(move || {
+        let dir = catb_dir(&app)?;
+        let previous = match previous.filter(|s| (s.year, s.month) == (year, month)) {
+            Some(open) => Some(open),
+            None => catb::store::load(&dir, year, month).map_err(|e| e.to_string())?,
+        };
+        let sheet = catb::download_month(previous, year, month, &settings).map_err(|e| e.to_string())?;
+        catb::store::save(&dir, &sheet).map_err(|e| e.to_string())?;
+        Ok(sheet)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn catb_recalculate(mut sheet: catb::Sheet, settings: Settings) -> catb::Sheet {
+    catb::recompute(&mut sheet, &settings);
+    sheet
+}
+
+/// After an edit of one driver only that driver is recomputed (the whole month would be a lot to send each time).
+#[tauri::command]
+fn catb_recalculate_driver(mut driver: catb::Driver, year: i32, month: u32, settings: Settings) -> catb::Driver {
+    catb::recompute_driver(&mut driver, year, month, &settings);
+    driver
+}
+
+#[tauri::command]
+async fn catb_save(app: AppHandle, sheet: catb::Sheet) -> CmdResult<()> {
+    blocking(move || catb::store::save(&catb_dir(&app)?, &sheet).map_err(|e| e.to_string())).await
+}
+
+/// Asks where to save, writes the Categoria B workbook and returns the chosen path.
+#[tauri::command]
+async fn catb_export(app: AppHandle, sheet: catb::Sheet, settings: Settings) -> CmdResult<Option<String>> {
+    blocking(move || {
+        let Some(path) = ask_xlsx_path(&app, catb::suggested_file_name(&sheet)) else { return Ok(None) };
+        catb::excel::write_xlsx(&sheet, &settings, &path).map_err(|e| e.to_string())?;
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
@@ -168,6 +236,13 @@ pub fn run() {
             parse_pdfs,
             recalculate,
             export_excel,
+            catb_months,
+            catb_open,
+            catb_fetch,
+            catb_recalculate,
+            catb_recalculate_driver,
+            catb_save,
+            catb_export,
             open_file,
             app_version,
             check_update,
