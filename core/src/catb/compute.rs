@@ -5,8 +5,8 @@
 //! - A day's hours are the known driving time of its trips plus the waiting time of the pauses that start that day.
 //! - Waiting is only measured between two *regular* trips (Constanța ↔ Otopeni; private/VIP trips on the same route
 //!   count as regular). It is inferred from the API (next departure − previous arrival), never read from it.
-//! - A pause up to `long_pause_min` counts by itself. A longer one is taken as "came back as a passenger or some other
-//!   way" (`Rest`: counts nothing, asks nothing); the office can still say he stayed there. Only when another kind of
+//! - A pause shorter than `long_pause_min` counts by itself. One of that length or longer is taken as "came back as a
+//!   passenger or some other way" (`Rest`: counts nothing, asks nothing); the office can still say he stayed there. Only when another kind of
 //!   trip lies in between, beyond the county (`Confirm`), the pause waits for the office to say what it was
 //!   (stayed, passenger, day off, excursion).
 //! - A trip beyond Constanța county with no tariff is an excursion by itself (the tachograph has it): it counts nowhere
@@ -148,7 +148,7 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
             PauseKind::Overlap
         } else if far_paid_trip {
             PauseKind::Confirm
-        } else if excursion_inside || gap_min > cfg.long_pause_min {
+        } else if excursion_inside || gap_min >= cfg.long_pause_min {
             PauseKind::Rest
         } else {
             PauseKind::Normal
@@ -433,6 +433,21 @@ mod tests {
         d.pause_edits[0].hours = Some(4.5);
         run(&mut d);
         assert_eq!(d.pauses[0].counted_min, 270);
+    }
+
+    #[test]
+    fn a_pause_of_exactly_the_long_limit_is_a_pause_and_one_minute_less_is_waiting() {
+        // Arrives in Constanța at 21:30 and leaves from Constanța at 09:30: exactly 12 h.
+        let mut d = driver(vec![
+            trip("eco-1", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-11-02 18:30", Some("2026-11-02 21:30")),
+            trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-11-03 09:30", Some("2026-11-03 12:30")),
+        ]);
+        run(&mut d);
+        assert_eq!((d.pauses[0].gap_min, d.pauses[0].kind, d.pauses[0].counted_min), (720, PauseKind::Rest, 0));
+        assert!(d.pauses[0].alerts.iter().all(|a| a.code != "station_long"), "{:?}", d.pauses[0].alerts);
+        d.trips[1].departure = parse_time("2026-11-03 09:29").unwrap();
+        run(&mut d);
+        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Normal, 719));
     }
 
     #[test]
