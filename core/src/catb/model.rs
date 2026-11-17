@@ -176,6 +176,8 @@ pub struct Pause {
     pub start: Option<NaiveDateTime>,
     pub end: Option<NaiveDateTime>,
     pub gap_min: i32,
+    /// Minutes of the pause spent on other trips (private, charter): they count as trip hours, not as waiting.
+    pub busy_min: i32,
     pub kind: PauseKind,
     pub state: PauseState,
     pub hours_override: Option<f64>,

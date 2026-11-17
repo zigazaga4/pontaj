@@ -4,17 +4,38 @@
 import { h } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { boundInput } from "./table.js";
-import { duration, formatWhen, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, parseWhen, shortDate, weekdayName } from "./time.js";
+import { duration, formatWhen, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, parseWhen, shortDate, spanText, weekdayName } from "./time.js";
 
 export const KIND_LABELS = { eco: "Eco", private: "Privată", vip: "VIP", bus: "Autocar", passenger: "Pasager" };
 const PAUSE_STATES = [
-  ["auto", "Automat"],
+  ["auto", "Automat (după reguli)"],
   ["stayed", "A stat acolo"],
-  ["passenger", "Întors ca pasager"],
+  ["passenger", "S-a întors ca pasager"],
   ["off", "Zi liberă"],
   ["excursion", "Excursie"],
 ];
-const PAUSE_BADGES = { normal: "Staționare", confirm: "De confirmat", rest: "Pauză", overlap: "Suprapunere" };
+const PAUSE_BADGES = { normal: "Staționare", confirm: "De decis", rest: "Pauză lungă", overlap: "Suprapunere" };
+
+/** One sentence under the pause: whether it counts in the hours, and what the choice changes. */
+function pauseHint(pause) {
+  switch (pause.state) {
+    case "stayed":
+    case "excursion":
+      return "Se numără toată pauza de mai sus (sau scrie tu orele).";
+    case "passenger":
+      return "Se numără de la sosire până la ora la care a plecat. Completează „A plecat la” după foaia șoferului; fără ea se numără ca în starea automată.";
+    case "off":
+      return "Nu se numără nimic din această pauză.";
+    default:
+      if (pause.kind === "confirm") return "Nu intră în ore până alegi ce a fost.";
+      if (pause.kind === "rest") return "Pauză lungă între două ture: nu intră în ore. Alege „A stat acolo” sau „Excursie” dacă a stat acolo.";
+      if (pause.kind === "overlap") return "Cursele se suprapun: verifică orele lor.";
+      return "Toată așteptarea dintre cele două curse se numără ca staționare.";
+  }
+}
+
+/** Pauses whose optional fields (hours, note) were opened by hand although nothing was decided yet. */
+const opened = new Set();
 const NO_TARIFF = "fără tarif";
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -161,60 +182,104 @@ function tripRow(trip, edit) {
   return h("tr", { class: `trip-row ${removed ? "removed" : ""} ${trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null ? "edited" : ""}` }, cells);
 }
 
+/** A caption above a control, so nobody has to guess what an empty box is for. */
+const labelled = (text, control, title) => h("label", { class: "ctl", title }, h("span", {}, text), control);
+
+const pauseId = (pause) => `${pause.prev}>${pause.next}`;
+
+/**
+ * What the office decides about the time between two trips. The box with the hours and the two boxes taken from the
+ * driver's sheet appear only when they mean something for the chosen state.
+ */
 function pauseControls(driver, pause, edit) {
   const decide = (patch) => edit((d) => setPause(d, pause, patch));
-  const select = h("select", { class: `pause-state ${pause.state !== "auto" ? "manual" : ""}`, "data-key": `state:${pause.prev}`, onchange: (e) => decide({ state: e.target.value }) },
-    PAUSE_STATES.map(([value, label]) => h("option", { value, selected: value === pause.state }, label)));
+  const state = pause.state;
+  const select = h("select", { class: `pause-state ${state !== "auto" ? "manual" : ""}`, "data-key": `state:${pause.prev}`, onchange: (e) => decide({ state: e.target.value }) },
+    PAUSE_STATES.map(([value, label]) => h("option", { value, selected: value === state }, label)));
+
   const hours = bound({
     className: "pause-hours",
     dataset: { key: `hours:${pause.prev}` },
-    placeholder: duration(pause.gapMin),
+    placeholder: "ex. 4:30",
     get: () => pause,
     format: (p) => (p.hoursOverride != null ? hoursText(p.hoursOverride) : ""),
-    parse: (text) => parseHours(text, 99),
+    parse: (text) => parseHours(text, 999),
     classes: (p) => (p.hoursOverride != null ? "manual" : ""),
-    title: "Ore de staționare trecute de tine (ex. 4, 4:30, 30). Gol = după stare.",
+    title: "Ore de staționare scrise de tine (ex. 4, 4:30, 30). Gol = se numără după alegerea de mai sus.",
     commit: (value) => decide({ hours: value }),
   });
-  const when = (field, label) =>
+  const when = (field, placeholder) =>
     bound({
       className: "pause-when",
       dataset: { key: `${field}:${pause.prev}` },
-      placeholder: "ora",
+      placeholder,
       get: () => pause,
       format: (p) => formatWhen(p[field], p.start),
       parse: (text) => parseWhen(text, field === "back" ? pause.left ?? pause.start : pause.start),
       classes: (p) => (p[field] ? "manual" : ""),
-      title: `${label} (după foaia șoferului): "11:00" sau "07.10 11:00"`,
+      title: 'Ora de pe foaia șoferului: "11:00" sau, dacă e altă zi, "07.10 11:00".',
       commit: (value) => decide({ [field]: value }),
     });
   const note = bound({
     className: "pause-note",
     dataset: { key: `note:${pause.prev}` },
-    placeholder: "Notă (din foaia șoferului)…",
+    placeholder: "ce scrie pe foaia șoferului",
     get: () => pause,
     format: (p) => p.note,
     parse: (text) => text.trim(),
     commit: (value) => decide({ note: value }),
   });
-  return h("div", { class: "pause-ctl" }, select, h("label", {}, "ore", hours), h("label", {}, "a plecat", when("left", "a plecat")), h("label", {}, "s-a întors", when("back", "s-a întors")), note);
+
+  const id = pauseId(pause);
+  const open = opened.has(id);
+  const decided = state !== "auto";
+  const fields = [labelled("Ce a fost?", select)];
+  if (state === "passenger" || state === "excursion" || pause.left || pause.back) {
+    fields.push(labelled("A plecat la", when("left", "ex. 11:00"), "Ora la care a plecat, după foaia șoferului"));
+    fields.push(labelled("S-a întors la", when("back", "ex. 17:00"), "Ora la care s-a întors, după foaia șoferului (doar pentru evidență)"));
+  }
+  // Hours and note are always there once the controls are open; before that a button opens them.
+  if (decided || open || pause.hoursOverride != null) fields.push(labelled("Ore de staționare", hours));
+  if (decided || open || pause.note) fields.push(labelled("Notă", note));
+  if (!decided && !open && pause.hoursOverride == null && !pause.note) {
+    fields.push(h("button", { class: "btn small ghost", title: "Scrie orele singur sau adaugă o notă", onclick: () => { opened.add(id); edit(() => {}); } }, "✎ Ore sau notă"));
+  }
+  return h("div", { class: "pause-ctl" }, h("div", { class: "pause-fields" }, fields), h("p", { class: "pause-hint" }, pauseHint(pause)));
+}
+
+/** Where the driver is while he waits: "la Constanta" or "Otopeni → Constanta" when he comes back some other way. */
+const pausePlace = (pause) => (pause.placeFrom === pause.placeTo ? `la ${pause.placeFrom}` : `${pause.placeFrom} → ${pause.placeTo}`);
+
+/** A pause that needs a look or was already decided shows its controls; a routine wait shows a single line. */
+function needsControls(pause) {
+  const decided = pause.state !== "auto" || pause.hoursOverride != null || !!pause.note || !!pause.left || !!pause.back;
+  return decided || pause.kind === "confirm" || pause.kind === "overlap" || pause.alerts.some((a) => a.level !== "info") || opened.has(pauseId(pause));
 }
 
 function pauseRows(driver, pause, edit) {
   const quiet = pause.kind === "rest" && pause.state === "auto" && !pause.alerts.length;
   const counted = pause.countedMin > 0;
+  const overlap = pause.kind === "overlap";
+  const controls = needsControls(pause);
+  const change = h("button", { class: "btn small ghost", title: "Alege ce a fost, scrie orele sau o notă", onclick: () => { opened.add(pauseId(pause)); edit(() => {}); } }, "Schimbă");
   const rows = [
-    h("tr", { class: `pause-row ${pause.kind} ${quiet ? "quiet" : ""}` },
+    h("tr", { class: `pause-row ${pause.kind} ${quiet ? "quiet" : ""} ${controls ? "with-controls" : ""}` },
       h("td", { class: "kind" }, h("span", { class: `badge pause ${pause.kind}` }, PAUSE_BADGES[pause.kind])),
-      h("td", { colspan: 2, class: "calc" }, `${formatWhen(pause.start, pause.start)} → ${formatWhen(pause.end, pause.start)}`, h("small", { class: "muted" }, ` (${duration(pause.gapMin)})`)),
-      h("td", { colspan: 2, class: "calc places" }, pause.placeFrom === pause.placeTo ? pause.placeFrom : `${pause.placeFrom} → ${pause.placeTo}`),
-      h("td", { class: `calc ${counted ? "strong" : ""}` }, counted ? duration(pause.countedMin) : "–"),
+      h("td", { colspan: 4, class: "pause-what" },
+        h("b", {}, `${formatWhen(pause.start, pause.start)} → ${formatWhen(pause.end, pause.start)}`),
+        h("span", { class: "pause-span" }, overlap ? `se suprapun cu ${spanText(-pause.gapMin)}` : `pauză de ${spanText(pause.gapMin)}`),
+        h("span", { class: "muted" }, pausePlace(pause))),
+      h("td", { class: `calc ${counted ? "strong" : ""}`, title: counted ? "Cât se numără din pauză, în ore" : "Nu se numără în ore" }, counted ? duration(pause.countedMin) : "–"),
       h("td", { class: "money calc" }, pause.extraPay > 0 ? lei(pause.extraPay) : ""),
-      h("td", { class: "pause-cell" }, pauseControls(driver, pause, edit))),
+      h("td", { class: "actions" }, controls ? null : change)),
   ];
+  if (controls) rows.push(h("tr", { class: `pause-ctl-row ${pause.kind} ${quiet ? "quiet" : ""}` }, h("td"), h("td", { colspan: 7, class: "pause-cell" }, pauseControls(driver, pause, edit))));
   if (pause.alerts.length) rows.push(h("tr", { class: "alert-row" }, h("td"), h("td", { colspan: 7 }, alertList(pause.alerts))));
   return rows;
 }
+
+/** One figure of the day header with its caption under it. */
+const dayStat = (label, value, tone = "") => h("div", { class: `day-stat ${tone}` }, h("b", {}, value), h("small", {}, label));
 
 function dayRows(driver, sheet, date, trips, edit) {
   const row = driver.days.find((d) => d.date === date);
@@ -224,12 +289,19 @@ function dayRows(driver, sheet, date, trips, edit) {
   const head = h("tr", { class: `day-head ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${excluded ? "excluded" : ""}` },
     h("td", { colspan: 8 },
       h("div", { class: "day-line" },
-        h("b", {}, `${weekdayName(date)} ${shortDate(date)}`),
-        info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
-        outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
-        excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null,
+        h("div", { class: "day-title" },
+          h("b", {}, weekdayName(date)),
+          h("span", { class: "day-date" }, shortDate(date)),
+          info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
+          outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
+          excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null),
         row
-          ? h("span", { class: "day-sum" }, `${row.legs} curse regulate · ${duration(row.tripMin)} curse + ${duration(row.stationMin)} staționare = `, h("b", {}, duration(row.totalMin)), h("small", { class: "muted" }, ` · ~${lei(row.payTotal)} lei`))
+          ? h("div", { class: "day-stats" },
+              dayStat("Curse regulate", row.legs),
+              dayStat("Ore curse", duration(row.tripMin)),
+              dayStat("Staționare", duration(row.stationMin)),
+              dayStat("Total ziua", duration(row.totalMin), "total"),
+              dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted"))
           : null,
         row ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null),
       row?.alerts.length ? alertList(row.alerts) : null));
@@ -240,7 +312,7 @@ function dayRows(driver, sheet, date, trips, edit) {
     const pause = pauseOf.get(trip.id);
     if (pause) body.push(...pauseRows(driver, pause, edit));
   }
-  const group = [head, ...body];
+  const group = [h("tr", { class: "day-gap" }, h("td", { colspan: 8 })), head, ...body];
   if (excluded) group.forEach((tr) => tr.classList.add("day-excluded"));
   return group;
 }

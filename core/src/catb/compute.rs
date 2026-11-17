@@ -101,7 +101,8 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
         // Trips sorted by departure: whatever lies between the two indexes happened between the two regular trips.
         let between: Vec<&Trip> = trips[pair[0] + 1..pair[1]].iter().filter(|t| !t.edit.removed && !t.eff.regular).collect();
         let gap_min = (end - start).num_minutes() as i32;
-        let mut pause = Pause { prev: a.id.clone(), next: b.id.clone(), place_from: a.eff.to.clone(), place_to: b.eff.from.clone(), start: Some(start), end: Some(end), gap_min, ..Default::default() };
+        let busy_min = busy_minutes(start, end, &between);
+        let mut pause = Pause { prev: a.id.clone(), next: b.id.clone(), place_from: a.eff.to.clone(), place_to: b.eff.from.clone(), start: Some(start), end: Some(end), gap_min, busy_min, ..Default::default() };
         if let Some(edit) = edits.iter().find(|e| e.prev == a.id && e.next == b.id) {
             pause.state = edit.state;
             pause.hours_override = edit.hours;
@@ -110,9 +111,11 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
             pause.note = edit.note.clone();
         }
         let stays_in_bucharest = places::area(&pause.place_from) == places::Area::Bucuresti && places::same_area(&pause.place_from, &pause.place_to);
+        // Only a trip that goes beyond Constanța county (or the regular route) can be an excursion; a private job in a resort is just work.
+        let far_trip = between.iter().any(|t| is_far(t, cfg));
         pause.kind = if gap_min < 0 {
             PauseKind::Overlap
-        } else if !between.is_empty() || (gap_min > cfg.long_pause_min && stays_in_bucharest) {
+        } else if far_trip || (gap_min > cfg.long_pause_min && stays_in_bucharest) {
             PauseKind::Confirm
         } else if gap_min > cfg.long_pause_min {
             PauseKind::Rest
@@ -127,12 +130,39 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
     out
 }
 
+/// Does the trip go beyond the places of an ordinary day (the regular route and Constanța county)?
+fn is_far(trip: &Trip, cfg: &CatbSettings) -> bool {
+    [&trip.eff.from, &trip.eff.to].into_iter().any(|place| !place.trim().is_empty() && !places::is_local(place, &cfg.extra_local_places))
+}
+
+/// Minutes of `start..end` taken by the known driving time of other trips (overlaps counted once). They are already
+/// in the hours as trip time, so they must not be counted a second time as waiting.
+fn busy_minutes(start: chrono::NaiveDateTime, end: chrono::NaiveDateTime, between: &[&Trip]) -> i32 {
+    let mut spans: Vec<(chrono::NaiveDateTime, chrono::NaiveDateTime)> = between
+        .iter()
+        .filter(|t| t.eff.counts_hours)
+        .filter_map(|t| Some((t.eff.departure?.max(start), t.eff.arrival?.min(end))))
+        .filter(|(from, to)| to > from)
+        .collect();
+    spans.sort();
+    let mut total = 0;
+    let mut covered_until = start;
+    for (from, to) in spans {
+        let from = from.max(covered_until);
+        if to > from {
+            total += (to - from).num_minutes() as i32;
+            covered_until = to;
+        }
+    }
+    total
+}
+
 /// How much of a pause counts as waiting.
 fn counted_minutes(pause: &Pause) -> i32 {
     if let Some(hours) = pause.hours_override {
         return (hours.max(0.0) * 60.0).round() as i32;
     }
-    let gap = pause.gap_min.max(0);
+    let gap = (pause.gap_min.max(0) - pause.busy_min).max(0);
     let by_itself = if pause.kind == PauseKind::Normal { gap } else { 0 };
     match pause.state {
         PauseState::Off => 0,
@@ -179,12 +209,13 @@ fn pause_alerts(pause: &Pause, between: &[&Trip], settings: &Settings) -> Vec<Al
         alerts.push(Alert::new("place_differs", level, format!("Loc diferit între curse. {text}")));
     }
     if pause.kind == PauseKind::Confirm && undecided {
-        let why = match between.first() {
-            Some(trip) => format!("între ele: cursă {} {} → {}", trip.kind.label().to_lowercase(), trip.eff.from, trip.eff.to),
+        let far = between.iter().find(|t| is_far(t, cfg));
+        let why = match far {
+            Some(trip) => format!("între ele: cursă {} {} → {}, în afara județului Constanța", trip.kind.label().to_lowercase(), trip.eff.from, trip.eff.to),
             None => format!("pauză de {}", fmt_duration(pause.gap_min)),
         };
-        alerts.push(Alert::new("to_confirm", Level::Info, format!("De confirmat ({why}): nu se numără singură. Alege ce a fost: a stat, întors ca pasager, zi liberă sau excursie.")));
-        if let Some(trip) = between.first() {
+        alerts.push(Alert::new("to_confirm", Level::Info, format!("De confirmat ({why}): timpul dintre curse nu intră în ore până alegi ce a fost: a stat, întors ca pasager, zi liberă sau excursie.")));
+        if let Some(trip) = far {
             alerts.push(Alert::new("excursion", Level::Info, format!("Probabilă excursie: {} → {}.", trip.eff.from, trip.eff.to)));
         } else if !differs && places::area(&pause.place_from) == places::Area::Bucuresti {
             alerts.push(Alert::new("stays_bucharest", Level::Info, format!("A rămas în București {}.", fmt_duration(pause.gap_min))));
@@ -406,6 +437,52 @@ mod tests {
         assert!(d.pauses[0].alerts.iter().any(|a| a.code == "excursion" && a.text.contains("Tulcea")));
         // The private trip is paid by its destination: Tulcea 110, and has no duration to count.
         assert_eq!((d.days[0].pay_exterior, d.days[0].legs, d.days[0].trip_min), (110.0, 2, 360));
+    }
+
+    /// Arrives in Constanța at 08:00; a private trip `from → to` at 10:00 (40 min if `arrival` is given); leaves again at 14:00.
+    fn with_private_trip_in_between(from: &str, to: &str, arrival: Option<&str>) -> Driver {
+        driver(vec![
+            trip("eco-1", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 05:00", Some("2026-10-05 08:00")),
+            trip("private-9", TripKind::Private, from, to, "2026-10-05 10:00", arrival),
+            trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 14:00", Some("2026-10-05 17:00")),
+        ])
+    }
+
+    #[test]
+    fn a_private_trip_inside_the_county_is_work_not_an_excursion() {
+        let mut d = with_private_trip_in_between("Mamaia Nord", "Constanta", Some("2026-10-05 10:40"));
+        run(&mut d);
+        let pause = &d.pauses[0];
+        assert_eq!(pause.kind, PauseKind::Normal, "a resort is not an excursion");
+        assert!(pause.alerts.iter().all(|a| a.code != "excursion" && a.code != "to_confirm"), "{:?}", pause.alerts);
+        // 6 h between the legs, 40 min of them on the private trip: that time is trip time, the rest is waiting.
+        assert_eq!((pause.gap_min, pause.busy_min, pause.counted_min), (360, 40, 320));
+        let day = &d.days[0];
+        assert_eq!((day.trip_min, day.station_min, day.total_min), (180 + 40 + 180, 320, 720), "every minute between 05:00 and 17:00 counts once");
+        // The office saying he stayed does not count the private trip twice either.
+        d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Stayed, ..Default::default() });
+        run(&mut d);
+        assert_eq!(d.pauses[0].counted_min, 320);
+    }
+
+    #[test]
+    fn a_private_trip_without_duration_takes_nothing_from_the_waiting() {
+        let mut d = with_private_trip_in_between("Mamaia Nord", "Constanta", None);
+        run(&mut d);
+        assert_eq!((d.pauses[0].kind, d.pauses[0].busy_min, d.pauses[0].counted_min), (PauseKind::Normal, 0, 360));
+    }
+
+    #[test]
+    fn a_trip_beyond_the_county_is_a_probable_excursion_and_a_place_added_in_the_settings_is_not() {
+        let mut d = with_private_trip_in_between("Constanta", "Chitila", Some("2026-10-05 11:30"));
+        run(&mut d);
+        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Confirm, 0));
+        assert!(d.pauses[0].alerts.iter().any(|a| a.code == "excursion" && a.text.contains("Chitila")));
+        // The office says Chitila is a normal place for this firm.
+        let mut settings = Settings::default();
+        settings.catb.extra_local_places = vec!["Chitila".into()];
+        recompute_driver(&mut d, 2026, 10, &settings);
+        assert_eq!(d.pauses[0].kind, PauseKind::Normal);
     }
 
     #[test]

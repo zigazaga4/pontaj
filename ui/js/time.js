@@ -21,6 +21,17 @@ export function clock(min) {
 /** "H:MM" for a duration in minutes. */
 export const duration = (min) => `${Math.floor(Math.abs(min) / 60)}:${two(Math.abs(min) % 60)}`;
 
+/** A stretch of time in words, easy to read at a glance: "45 min", "6 h 15 min", "7 zile 20 h". */
+export function spanText(min) {
+  const total = Math.max(0, Math.round(min));
+  if (total < 60) return `${total} min`;
+  const days = Math.floor(total / DAY);
+  const hours = Math.floor((total % DAY) / 60);
+  const minutes = total % 60;
+  if (days > 0) return `${days} ${days === 1 ? "zi" : "zile"}${hours ? ` ${hours} h` : ""}`;
+  return minutes ? `${hours} h ${minutes} min` : `${hours} h`;
+}
+
 /** "+0:33" / "−1:05" / "0:00". */
 export function signed(min) {
   if (min === 0) return "0:00";

@@ -59,6 +59,7 @@ const FIELDS = [
   { key: "catb.mainRoutePrivateRegular", label: "Privatele Constanța–Otopeni sunt curse regulate", type: "checkbox" },
   { key: "catb.showMoney", label: "Sumele apar în Excel", type: "checkbox", hint: "Oprit = Excel-ul are doar ore și avertizări (pe ecran estimarea se vede oricum)." },
   { key: "catb.tariffs", label: "Tarife pentru cursele exterioare (lei)", type: "textarea", rows: 14, toText: tariffsToText, fromText: textToTariffs, hint: "Un loc pe rând, de exemplu „Mangalia 40”. Cursele private se plătesc după destinație; locurile care lipsesc apar ca „fără tarif”." },
+  { key: "catb.extraLocalPlaces", label: "Alte locuri din județul Constanța", type: "textarea", rows: 4, toText: (list) => (list ?? []).join("\n"), fromText: (text) => text.split("\n").map((line) => line.trim()).filter(Boolean), hint: "Aplicația știe localitățile județului. O cursă privată spre un loc care nu e nici pe ruta Constanța–București, nici în județ, e „probabilă excursie”. Dacă o localitate din județ e socotită greșit excursie, scrie-o aici, câte una pe rând, așa cum o scrie aplicația ALT." },
 ];
 
 /** "Mangalia 40" per line ↔ [{ name, amount }]. */

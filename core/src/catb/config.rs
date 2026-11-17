@@ -29,6 +29,9 @@ pub struct CatbSettings {
     /// Amounts in the Excel file. Off: the file has hours and warnings only.
     pub show_money: bool,
     pub tariffs: Vec<Tariff>,
+    /// Places of Constanța county that the built-in list misses (written like the ALT app writes them).
+    /// A private trip to a place that is neither on the regular route nor in the county is an excursion.
+    pub extra_local_places: Vec<String>,
 }
 
 impl Default for CatbSettings {
@@ -45,6 +48,7 @@ impl Default for CatbSettings {
             main_route_private_regular: true,
             show_money: true,
             tariffs: default_tariffs(),
+            extra_local_places: Vec::new(),
         }
     }
 }
