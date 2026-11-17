@@ -146,6 +146,12 @@ fn catb_recalculate_driver(mut driver: catb::Driver, year: i32, month: u32, sett
     driver
 }
 
+/// The "Rezolvă suprapunerea" button: moves the times of the two overlapping trips and returns the driver with a sentence about it.
+#[tauri::command]
+fn catb_resolve_overlap(driver: catb::Driver, prev: String, next: String, year: i32, month: u32, settings: Settings) -> CmdResult<catb::Resolved> {
+    catb::resolve_overlap(driver, &prev, &next, year, month, &settings).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn catb_save(app: AppHandle, sheet: catb::Sheet) -> CmdResult<()> {
     blocking(move || catb::store::save(&catb_dir(&app)?, &sheet).map_err(|e| e.to_string())).await
@@ -241,6 +247,7 @@ pub fn run() {
             catb_fetch,
             catb_recalculate,
             catb_recalculate_driver,
+            catb_resolve_overlap,
             catb_save,
             catb_export,
             open_file,

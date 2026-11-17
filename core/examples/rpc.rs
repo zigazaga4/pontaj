@@ -57,6 +57,15 @@ fn main() {
             catb::recompute_driver(&mut driver, year, month, &settings);
             json!(driver)
         }
+        "catb_resolve_overlap" => {
+            let driver: catb::Driver = serde_json::from_value(get("driver")).expect("driver");
+            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(10) as u32);
+            let (prev, next) = (get("prev").as_str().unwrap_or_default().to_string(), get("next").as_str().unwrap_or_default().to_string());
+            match catb::resolve_overlap(driver, &prev, &next, year, month, &settings) {
+                Ok(done) => json!(done),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
         _ => Value::Null,
     };
     println!("{out}");

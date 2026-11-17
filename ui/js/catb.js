@@ -65,6 +65,14 @@ export function createCatb({ getSettings }) {
 
   // ---- editing ----
 
+  /** Puts a driver recomputed in Rust back into the sheet, saves and redraws. */
+  function accept(fresh) {
+    const at = state.sheet.drivers.findIndex((d) => d.id === fresh.id);
+    if (at >= 0) state.sheet.drivers[at] = fresh;
+    markDirty();
+    renderAll();
+  }
+
   /** Applies `mutate(driver)` to the chosen driver, recomputes him in Rust and redraws. Edits run one after another. */
   function edit(mutate) {
     queue = queue
@@ -72,11 +80,21 @@ export function createCatb({ getSettings }) {
         const current = driver();
         if (!current) return;
         mutate(current);
-        const fresh = await api.catbRecalculateDriver(current, state.sheet.year, state.sheet.month, getSettings());
-        const at = state.sheet.drivers.findIndex((d) => d.id === fresh.id);
-        if (at >= 0) state.sheet.drivers[at] = fresh;
-        markDirty();
-        renderAll();
+        accept(await api.catbRecalculateDriver(current, state.sheet.year, state.sheet.month, getSettings()));
+      })
+      .catch(fail);
+    return queue;
+  }
+
+  /** The "Rezolvă suprapunerea" button: Rust moves the times of the two trips of the pause (only those) and says what it did. */
+  function resolveOverlap(pause) {
+    queue = queue
+      .then(async () => {
+        const current = driver();
+        if (!current) return;
+        const done = await api.catbResolveOverlap(current, pause.prev, pause.next, state.sheet.year, state.sheet.month, getSettings());
+        accept(done.driver);
+        toast(`Suprapunere rezolvată. ${done.summary} Dacă scrii înapoi ora din API, revine.`, { kind: "ok", timeout: 12000 });
       })
       .catch(fail);
     return queue;
@@ -172,7 +190,7 @@ export function createCatb({ getSettings }) {
     const active = document.activeElement;
     const key = view.contains(active) ? active.dataset?.key : null;
     const scroll = $("#catb-scroll")?.scrollTop ?? 0;
-    renderCatbDriver(view, { driver, sheet: () => state.sheet, edit, addTrip: () => askNewTrip(current, state.sheet) });
+    renderCatbDriver(view, { driver, sheet: () => state.sheet, edit, resolveOverlap, addTrip: () => askNewTrip(current, state.sheet) });
     const area = $("#catb-scroll");
     if (area) area.scrollTop = scroll;
     if (key) view.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();

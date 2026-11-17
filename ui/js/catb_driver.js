@@ -30,7 +30,7 @@ function pauseHint(pause) {
     default:
       if (pause.kind === "confirm") return "Nu intră în ore până alegi ce a fost.";
       if (pause.kind === "rest") return "Lăsată automat, se socotește pauză (s-a întors ca pasager sau altfel), nu staționare: nu intră în ore și nu se plătește. Dacă a stat acolo, alege „A stat acolo”.";
-      if (pause.kind === "overlap") return "Cursele se suprapun: verifică orele lor.";
+      if (pause.kind === "overlap") return "Sosirea e doar estimată (plecarea + durata fixă a traseului), plecările sunt reale. Apasă „Rezolvă suprapunerea” ca aplicația să mute orele celor două curse, sau corectează-le tu.";
       return "Toată așteptarea dintre cele două curse se numără ca staționare.";
   }
 }
@@ -264,7 +264,7 @@ function needsControls(pause) {
   return decided || pause.kind === "confirm" || pause.kind === "overlap" || pause.alerts.some((a) => a.level !== "info") || opened.has(pauseId(pause));
 }
 
-function pauseRows(driver, pause, edit) {
+function pauseRows(driver, pause, edit, resolveOverlap) {
   const quiet = pause.kind === "rest" && pause.state === "auto" && !pause.alerts.length;
   const counted = pause.countedMin > 0;
   const overlap = pause.kind === "overlap";
@@ -276,7 +276,10 @@ function pauseRows(driver, pause, edit) {
       h("td", { colspan: 4, class: "pause-what" },
         h("b", {}, `${formatWhen(pause.start, pause.start)} → ${formatWhen(pause.end, pause.start)}`),
         h("span", { class: "pause-span" }, overlap ? `se suprapun cu ${spanText(-pause.gapMin)}` : `pauză de ${spanText(pause.gapMin)}`),
-        h("span", { class: "muted" }, pausePlace(pause))),
+        h("span", { class: "muted" }, pausePlace(pause)),
+        overlap
+          ? h("button", { class: "btn small primary", title: "Ora de plecare a fiecărei curse e reală, sosirea e doar estimată. Mută sosirea cursei dinainte (iar dacă ar rămâne prea scurtă, și plecarea celei de după) ca să nu se mai suprapună. Se schimbă doar aceste două curse.", onclick: () => resolveOverlap(pause) }, "Rezolvă suprapunerea")
+          : null),
       h("td", { class: `calc ${counted ? "strong" : ""}`, title: counted ? "Cât se numără din pauză, în ore" : "Nu se numără în ore" }, counted ? duration(pause.countedMin) : "–"),
       h("td", { class: "money calc" }, pause.extraPay > 0 ? lei(pause.extraPay) : ""),
       h("td", { class: "actions" }, controls ? null : change)),
@@ -289,7 +292,7 @@ function pauseRows(driver, pause, edit) {
 /** One figure of the day header with its caption under it. */
 const dayStat = (label, value, tone = "") => h("div", { class: `day-stat ${tone}` }, h("b", {}, value), h("small", {}, label));
 
-function dayRows(driver, sheet, date, trips, edit) {
+function dayRows(driver, sheet, date, trips, edit, resolveOverlap) {
   const row = driver.days.find((d) => d.date === date);
   const info = sheet.days.find((d) => `${sheet.year}-${String(sheet.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}` === date);
   const outside = !info;
@@ -320,7 +323,7 @@ function dayRows(driver, sheet, date, trips, edit) {
   for (const trip of trips) {
     body.push(tripRow(trip, edit));
     const pause = pauseOf.get(trip.id);
-    if (pause) body.push(...pauseRows(driver, pause, edit));
+    if (pause) body.push(...pauseRows(driver, pause, edit, resolveOverlap));
   }
   const group = [h("tr", { class: "day-gap" }, h("td", { colspan: 8 })), head, ...body];
   if (excluded) group.forEach((tr) => tr.classList.add("day-excluded"));
@@ -396,7 +399,7 @@ export async function askNewTrip(driver, sheet) {
 
 /**
  * Draws a driver into `container`.
- * `ctx`: { driver(), sheet(), edit(mutate(driver)) → Promise, addTrip() → Promise }.
+ * `ctx`: { driver(), sheet(), edit(mutate(driver)) → Promise, resolveOverlap(pause) → Promise, addTrip() → Promise }.
  */
 export function renderCatbDriver(container, ctx) {
   const driver = ctx.driver();
@@ -440,7 +443,7 @@ export function renderCatbDriver(container, ctx) {
     byDate.get(date).push(trip);
   }
   const body = h("tbody");
-  for (const date of [...byDate.keys()].sort()) body.append(...dayRows(driver, sheet, date, byDate.get(date), edit));
+  for (const date of [...byDate.keys()].sort()) body.append(...dayRows(driver, sheet, date, byDate.get(date), edit, ctx.resolveOverlap));
 
   const table = h("table", { class: "data-table catb-table" },
     h("thead", {}, h("tr", {}, ["Tip", "Plecare", "Sosire", "Din", "Spre", "Ore", "Lei", ""].map((text) => h("th", {}, text)))),

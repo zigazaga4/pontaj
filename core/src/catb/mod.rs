@@ -8,6 +8,7 @@ mod config;
 pub mod excel;
 mod merge;
 mod model;
+mod overlap;
 mod places;
 pub mod store;
 pub mod tariffs;
@@ -16,6 +17,7 @@ pub use compute::{monthly_cap_min, recompute, recompute_driver};
 pub use config::CatbSettings;
 pub use merge::{merge_rows, new_sheet};
 pub use model::*;
+pub use overlap::{resolve_overlap, Resolved};
 
 use crate::Result;
 use crate::settings::Settings;

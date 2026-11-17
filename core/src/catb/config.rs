@@ -29,6 +29,9 @@ pub struct CatbSettings {
     /// on the other, even outside the county (Otopeni → Năvodari, Tulcea → Otopeni), is a regular leg (same price, same
     /// waiting rules).
     pub main_route_private_regular: bool,
+    /// "Rezolvă suprapunerea": the least a trip keeps of its (estimated) duration when its time is moved to make room
+    /// for the next one, in percent.
+    pub overlap_keep_pct: i32,
     /// Amounts in the Excel file. Off: the file has hours and warnings only.
     pub show_money: bool,
     /// A driver who drove a category D vehicle is not Categoria B: he is on the tachograph. On: such drivers are left
@@ -57,6 +60,7 @@ impl Default for CatbSettings {
             long_pause_min: 720,
             count_other_trips: true,
             main_route_private_regular: true,
+            overlap_keep_pct: 50,
             show_money: true,
             exclude_d_drivers: true,
             small_vehicle_max_seats: 8,

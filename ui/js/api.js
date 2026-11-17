@@ -19,6 +19,8 @@ export const api = {
   catbRecalculate: (sheet, settings) => invoke("catb_recalculate", { sheet, settings }),
   /** After an edit only that driver is sent and recomputed. */
   catbRecalculateDriver: (driver, year, month, settings) => invoke("catb_recalculate_driver", { driver, year, month, settings }),
+  /** Moves the times of two overlapping trips so that they no longer overlap; resolves with { driver, summary }. */
+  catbResolveOverlap: (driver, prev, next, year, month, settings) => invoke("catb_resolve_overlap", { driver, prev, next, year, month, settings }),
   catbSave: (sheet) => invoke("catb_save", { sheet }),
   catbExport: (sheet, settings) => invoke("catb_export", { sheet, settings }),
   appVersion: () => invoke("app_version"),
