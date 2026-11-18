@@ -109,9 +109,9 @@ export function createCatb({ getSettings }) {
     $("#catb-bar").replaceChildren(
       h("label", { class: "bar-field" }, "Luna", month),
       h("label", { class: "bar-field" }, "Anul", year),
-      h("button", { class: "btn primary", onclick: fetchMonth }, state.sheet ? "⟳ Descarcă din nou" : "⬇ Descarcă din API"),
+      h("button", { class: "btn primary", title: "Aduce din API doar cursele și șoferii care nu sunt încă în foaie. Nimic din ce ai deja nu se schimbă.", onclick: fetchMonth }, state.sheet ? "⟳ Descarcă din nou (doar cele noi)" : "⬇ Descarcă din API"),
       h("span", { class: "muted" },
-        state.sheet?.fetchedAt ? `Descărcat la ${state.sheet.fetchedAt}. Modificările tale rămân și după o nouă descărcare.` : saved ? "Luna este salvată pe acest calculator." : "Luna nu a fost descărcată încă."));
+        state.sheet?.fetchedAt ? `Descărcat la ${state.sheet.fetchedAt}. O nouă descărcare adaugă doar ce e nou; ce ai deja în foaie nu se schimbă.` : saved ? "Luna este salvată pe acest calculator." : "Luna nu a fost descărcată încă."));
   }
 
   function renderSummary() {
@@ -243,6 +243,8 @@ export function createCatb({ getSettings }) {
     await flush();
     busy("Se descarcă cursele din API…");
     try {
+      // A new download only adds what the sheet does not have yet: remember what it has, to say what came in.
+      const had = state.sheet ? new Set(state.sheet.drivers.flatMap((d) => d.trips.map((t) => `${d.id}|${t.id}`))) : null;
       const sheet = await api.catbFetch(state.year, state.month, getSettings(), state.sheet);
       state.sheet = sheet;
       state.saved = await api.catbMonths();
@@ -250,7 +252,15 @@ export function createCatb({ getSettings }) {
       state.dirty = false;
       renderAll();
       const trips = sheet.drivers.reduce((n, d) => n + d.trips.length, 0);
-      toast(`${sheet.drivers.length} șoferi, ${trips} curse. Verifică staționările și avertizările.`, { kind: "ok", timeout: 5000 });
+      if (!had) {
+        toast(`${sheet.drivers.length} șoferi, ${trips} curse. Verifică staționările și avertizările.`, { kind: "ok", timeout: 5000 });
+      } else {
+        const added = sheet.drivers.reduce((n, d) => n + d.trips.filter((t) => !had.has(`${d.id}|${t.id}`)).length, 0);
+        const note = sheet.notices.length ? " Vezi observațiile de sub bară." : "";
+        toast(added
+          ? `${added} ${added === 1 ? "cursă nouă adăugată" : "curse noi adăugate"}. Ce aveai deja în foaie a rămas neatins.${note}`
+          : `Nicio cursă nouă. Ce aveai deja în foaie a rămas neatins.${note}`, { kind: "ok", timeout: 6000 });
+      }
     } catch (err) {
       fail(err);
     } finally {

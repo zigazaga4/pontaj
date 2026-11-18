@@ -23,10 +23,13 @@ use crate::Result;
 use crate::settings::Settings;
 
 /// Puts an answer of the API into the month's sheet (a new one when `previous` is another month) and recomputes it.
+/// Only what the sheet does not have yet comes in: whatever is already there stays as the office left it.
 pub fn apply_download(previous: Option<Sheet>, year: i32, month: u32, parsed: &api::Parsed, fetched_at: &str, settings: &Settings) -> Sheet {
     let mut sheet = previous.filter(|s| (s.year, s.month) == (year, month)).unwrap_or_else(|| new_sheet(year, month));
     // Drivers of category D (by the make and seats of their cars) are on the tachograph: they do not enter Categoria B.
+    // One already in the sheet leaves with them, unless the office changed something about him (see the notice below).
     let (rows, excluded) = category_d::split(&parsed.rows, &settings.catb);
+    sheet.drivers.retain(|driver| !excluded.iter().any(|d| d.id == driver.id) || merge::has_decisions(driver));
     merge_rows(&mut sheet, &rows, parsed.skipped, fetched_at);
     // One who was in the sheet with changes of the office stays; the notice says why instead of "gone from the API".
     for notice in &mut sheet.notices {

@@ -97,7 +97,7 @@ fn warning_summary(driver: &Driver) -> String {
 // Sinteză
 // ---------------------------------------------------------------------------------------------------------------------
 
-const SUMMARY_HEADERS: [&str; 10] = ["Nr.", "Șofer", "Zile lucrate", "Curse regulate", "Ore curse", "Ore staționare", "Total ore", "Plafon lunar", "Depășire", "Avertizări"];
+const SUMMARY_HEADERS: [&str; 11] = ["Nr.", "Șofer", "Zile lucrate", "Curse regulate", "Ore curse", "Ore staționare", "Total ore", "Plafon lunar", "Depășire", "Concediu (zile lucrătoare)", "Avertizări"];
 const MONEY_HEADERS: [&str; 4] = ["Curse (lei)", "Exterioare (lei)", "Staționare (lei)", "Total estimat (lei)"];
 
 fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings) -> Done {
@@ -165,12 +165,13 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings) -> Done {
         ws.write_number_with_format(row, 7, time_value(sheet.cap_min), &time)?;
         let over = formula(format!("=MAX(0,{}-{})", cell(row, 6), cell(row, 7)), time_value(t.over_min));
         ws.write_formula_with_format(row, 8, over, if t.over_min > 0 { &bad } else { &time })?;
-        ws.write_string_with_format(row, 9, warning_summary(driver), &left_wrap)?;
+        ws.write_string_with_format(row, 9, leave_summary(t), &left_wrap)?;
+        ws.write_string_with_format(row, 10, warning_summary(driver), &left_wrap)?;
         if cfg.show_money {
             for (i, value) in [t.pay_legs, t.pay_exterior, t.pay_station].into_iter().enumerate() {
-                ws.write_number_with_format(row, 10 + i as ColNum, value, &money)?;
+                ws.write_number_with_format(row, 11 + i as ColNum, value, &money)?;
             }
-            ws.write_formula_with_format(row, 13, formula(format!("=SUM({})", range(row, 10, 12)), t.pay_total), &money)?;
+            ws.write_formula_with_format(row, 14, formula(format!("=SUM({})", range(row, 11, 13)), t.pay_total), &money)?;
         }
         row += 1;
     }
@@ -192,11 +193,12 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings) -> Done {
     ws.write_blank(last, 7, &total)?;
     sum(8, all(|t| time_value(t.over_min)), &total_time, ws)?;
     ws.write_blank(last, 9, &total)?;
+    ws.write_blank(last, 10, &total)?;
     if cfg.show_money {
-        sum(10, all(|t| t.pay_legs), &total_money, ws)?;
-        sum(11, all(|t| t.pay_exterior), &total_money, ws)?;
-        sum(12, all(|t| t.pay_station), &total_money, ws)?;
-        sum(13, all(|t| t.pay_total), &total_money, ws)?;
+        sum(11, all(|t| t.pay_legs), &total_money, ws)?;
+        sum(12, all(|t| t.pay_exterior), &total_money, ws)?;
+        sum(13, all(|t| t.pay_station), &total_money, ws)?;
+        sum(14, all(|t| t.pay_total), &total_money, ws)?;
     }
 
     if !sheet.notices.is_empty() {
@@ -206,7 +208,7 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings) -> Done {
         }
     }
 
-    let widths = [5.0, 28.0, 9.0, 9.0, 10.0, 11.0, 10.0, 10.0, 10.0, 60.0, 12.0, 13.0, 13.0, 15.0];
+    let widths = [5.0, 28.0, 9.0, 9.0, 10.0, 11.0, 10.0, 10.0, 10.0, 18.0, 60.0, 12.0, 13.0, 13.0, 15.0];
     for (col, width) in widths.iter().enumerate() {
         ws.set_column_width(col as ColNum, *width)?;
     }
@@ -226,6 +228,16 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings) -> Done {
 const GRID_FIRST_DAY: ColNum = 3;
 const GRID_HEADER_ROW: RowNum = 3;
 const GRID_LABELS: [&str; 3] = ["Cursă", "Staționare", "Total"];
+const LEAVE_FILL: u32 = 0xE2EFDA;
+
+/// "CO 4 zile · CM 1 zi": the working days of leave of a driver, by kind of leave (empty without leave).
+fn leave_summary(totals: &Totals) -> String {
+    let parts: Vec<String> = LEAVE_TYPES
+        .iter()
+        .filter_map(|(code, _)| totals.leave_days.get(*code).map(|n| format!("{code} {n} {}", if *n == 1 { "zi" } else { "zile" })))
+        .collect();
+    parts.join(" · ")
+}
 
 fn grid(ws: &mut Worksheet, sheet: &Sheet) -> Done {
     let st = Styles::new();
@@ -234,12 +246,12 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet) -> Done {
     ws.write_string_with_format(
         1,
         0,
-        "Cursa = durata curselor cunoscute; staționarea se trece în ziua în care începe. Zilele gri sunt weekend sau sărbătoare legală; „scos” = ziua a fost scoasă din pontaj.",
+        "Cursa = durata curselor cunoscute; staționarea se trece în ziua în care începe. Zilele gri sunt weekend sau sărbătoare legală; „scos” = ziua a fost scoasă din pontaj; CO, CM, CP, CFP = zi de concediu (odihnă, medical, parental, fără plată).",
         &Styles::plain(),
     )?;
 
     let days = sheet.days.len() as ColNum;
-    let (last_day, total_col, cap_col, over_col) = (GRID_FIRST_DAY + days - 1, GRID_FIRST_DAY + days, GRID_FIRST_DAY + days + 1, GRID_FIRST_DAY + days + 2);
+    let (last_day, total_col, cap_col, over_col, leave_col) = (GRID_FIRST_DAY + days - 1, GRID_FIRST_DAY + days, GRID_FIRST_DAY + days + 1, GRID_FIRST_DAY + days + 2, GRID_FIRST_DAY + days + 3);
     let head = st.header();
     for (col, text) in ["Nr.", "Șofer", ""].into_iter().enumerate() {
         ws.write_string_with_format(GRID_HEADER_ROW, col as ColNum, text, &head)?;
@@ -248,7 +260,7 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet) -> Done {
         let text = format!("{}\n{}", info.day, info.weekday);
         ws.write_string_with_format(GRID_HEADER_ROW, GRID_FIRST_DAY + index as ColNum, text, &st.day_header(info.is_off(), info.holiday.is_some()))?;
     }
-    for (col, text) in [(total_col, "Total"), (cap_col, "Plafon"), (over_col, "Depășire")] {
+    for (col, text) in [(total_col, "Total"), (cap_col, "Plafon"), (over_col, "Depășire"), (leave_col, "Concediu (zile lucrătoare)")] {
         ws.write_string_with_format(GRID_HEADER_ROW, col, text, &head)?;
     }
     ws.set_row_height(GRID_HEADER_ROW, 30)?;
@@ -259,6 +271,8 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet) -> Done {
     let strong = st.base.clone().set_num_format(TIME).set_bold();
     let bad = strong.clone().set_background_color(Color::RGB(RED_FILL));
     let out = st.fill(OFF_FILL).set_italic();
+    let leave = st.fill(LEAVE_FILL).set_bold();
+    let leave_total = st.base.clone().set_text_wrap();
 
     for (index, driver) in sheet.drivers.iter().enumerate() {
         let top = GRID_HEADER_ROW + 1 + (index as RowNum) * 3;
@@ -277,6 +291,9 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet) -> Done {
                     ws.write_blank(top, col, &out)?;
                     ws.write_blank(top + 1, col, &out)?;
                     ws.write_string_with_format(top + 2, col, "scos", &out)?;
+                }
+                Some(DayRow { leave: Some(code), .. }) => {
+                    ws.merge_range(top, col, top + 2, col, code, &leave)?;
                 }
                 Some(day) => {
                     write_duration(ws, top, col, day.trip_min, &fmt)?;
@@ -306,6 +323,7 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet) -> Done {
             ws.write_blank(top + r, cap_col, &st.base)?;
             ws.write_blank(top + r, over_col, &st.base)?;
         }
+        ws.merge_range(top, leave_col, top + 2, leave_col, &leave_summary(t), &leave_total)?;
     }
 
     ws.set_column_width(0, 5)?;
@@ -315,6 +333,7 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet) -> Done {
     ws.set_column_width(total_col, 9)?;
     ws.set_column_width(cap_col, 9)?;
     ws.set_column_width(over_col, 9)?;
+    ws.set_column_width(leave_col, 16)?;
     ws.set_freeze_panes(GRID_HEADER_ROW + 1, GRID_FIRST_DAY)?;
     ws.set_landscape();
     ws.set_paper_size(9);
@@ -349,6 +368,10 @@ struct DetailRow {
 fn pause_state_text(pause: &Pause) -> String {
     let state = match (pause.state, is_station(pause)) {
         _ if pause.kind == PauseKind::Overlap => String::new(),
+        _ if pause.leave.is_some() => {
+            let code = pause.leave.as_deref().unwrap_or_default();
+            format!("{} ({code}), ales în aplicație: nu se numără", leave_name(code))
+        }
         (PauseState::Auto, true) => "staționare, după reguli (la Otopeni)".to_string(),
         (PauseState::Auto, false) => "pauză, după reguli: acasă în Constanța sau peste limita pauzei lungi, nu se numără".to_string(),
         (_, true) => "staționare, aleasă în aplicație".to_string(),
@@ -371,6 +394,7 @@ fn worth_listing(pause: &Pause) -> bool {
         || !pause.alerts.is_empty()
         || pause.kind == PauseKind::Overlap
         || pause.state != PauseState::Auto
+        || pause.leave.is_some()
         || pause.hours_override.is_some()
         || !pause.note.trim().is_empty()
 }
@@ -743,6 +767,27 @@ mod tests {
             write_xlsx(&sheet, &settings, &path).unwrap();
             assert!(std::fs::metadata(&path).unwrap().len() > 3000);
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_leave_is_named_in_the_detail_and_summed_by_kind() {
+        let body = r#"{"data":[
+          {"driver_id":1,"driver_name":"Popescu Ion","trip":{"type":"eco","id":"eco-1"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-10-05 11:00","duration_minutes":180},
+          {"driver_id":1,"driver_name":"Popescu Ion","trip":{"type":"eco","id":"eco-2"},"route":{"from":"Constanta","to":"Aeroport Otopeni Bucuresti"},"departure":"2026-10-12 05:00","duration_minutes":180}
+        ]}"#;
+        let mut sheet = apply_download(None, 2026, 10, &parse_rows(body).unwrap(), "x", &Settings::default());
+        sheet.drivers[0].pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), leave: Some("CM".into()), ..Default::default() });
+        super::super::recompute(&mut sheet, &Settings::default());
+
+        let driver = &sheet.drivers[0];
+        assert_eq!(leave_summary(&driver.totals), "CM 4 zile");
+        let rows = detail_rows(driver, 2026, 10);
+        let pause = rows.iter().find(|r| r.kind == "Pauză").expect("a leave is listed");
+        assert!(pause.note.contains("Concediu medical (CM)") && pause.minutes == Some(0), "{pause:?}");
+        let dir = std::env::temp_dir().join(format!("pontaj-catb-leave-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_xlsx(&sheet, &Settings::default(), &dir.join("leave.xlsx")).unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
 

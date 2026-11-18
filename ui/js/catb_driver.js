@@ -13,6 +13,14 @@ const PAUSE_CHOICES = [
   ["rest", "Pauză"],
 ];
 const PAUSE_BADGES = { normal: "Staționare", rest: "Pauză", overlap: "Suprapunere" };
+// The kinds of leave a long pause can be (code of the timesheet, name). The first one is what "Concediu: Da" starts with.
+export const LEAVE_TYPES = [
+  ["CO", "Concediu de odihnă"],
+  ["CM", "Concediu medical"],
+  ["CP", "Concediu parental"],
+  ["CFP", "Concediu fără plată"],
+];
+const leaveName = (code) => LEAVE_TYPES.find(([c]) => c === code)?.[1] ?? code;
 
 /** Staționare as it counts now: chosen by the office, or by the rules (waiting at Otopeni). */
 const isStation = (pause) => pause.state === "stayed" || (pause.state === "auto" && pause.kind === "normal");
@@ -22,6 +30,7 @@ const pauseClass = (pause) => (pause.kind === "overlap" ? "overlap" : isStation(
 
 /** One sentence under the pause: whether it counts in the hours, and what the choice changes. */
 function pauseHint(pause) {
+  if (pause.leave) return `${leaveName(pause.leave)}: zilele lucrătoare libere din pauză se trec în pontaj cu codul ${pause.leave}. Nu se numără nimic ca staționare și nu se plătește.`;
   if (pause.kind === "overlap") return "Sosirea e doar estimată (plecarea + durata fixă a traseului), plecările sunt reale. Apasă „Rezolvă suprapunerea” ca aplicația să mute orele celor două curse, sau corectează-le tu.";
   if (isStation(pause)) {
     return pause.state === "stayed"
@@ -41,13 +50,13 @@ const NO_TARIFF = "fără tarif";
 // Changes to a driver (plain data; the caller recomputes in Rust afterwards)
 // ---------------------------------------------------------------------------------------------------------------------
 
-const emptyPauseEdit = (e) => e.state === "auto" && e.hours == null && !e.note;
+const emptyPauseEdit = (e) => e.state === "auto" && e.hours == null && !e.note && e.leave == null;
 
 /** Sets what the office decided about the pause between two trips; an edit that says nothing is dropped. */
 export function setPause(driver, pause, patch) {
   let edit = driver.pauseEdits.find((e) => e.prev === pause.prev && e.next === pause.next);
   if (!edit) {
-    edit = { prev: pause.prev, next: pause.next, state: "auto", hours: null, note: "" };
+    edit = { prev: pause.prev, next: pause.next, state: "auto", hours: null, note: "", leave: null };
     driver.pauseEdits.push(edit);
   }
   Object.assign(edit, patch);
@@ -202,7 +211,8 @@ function pauseControls(driver, pause, edit) {
   const state = pause.state;
   const station = isStation(pause);
   if (pause.kind === "overlap") return h("div", { class: "pause-ctl" }, h("p", { class: "pause-hint" }, pauseHint(pause)));
-  const select = h("select", { class: `pause-state ${state !== "auto" ? "manual" : ""}`, "data-key": `state:${pause.prev}`,
+  const select = h("select", { class: `pause-state ${state !== "auto" ? "manual" : ""}`, "data-key": `state:${pause.prev}`, disabled: !!pause.leave,
+    title: pause.leave ? "Un concediu este mereu pauză" : null,
     onchange: (e) => {
       const wantStation = e.target.value === "station";
       decide({ state: wantStation === (pause.kind === "normal") ? "auto" : wantStation ? "stayed" : "off" });
@@ -244,6 +254,33 @@ function pauseControls(driver, pause, edit) {
   return h("div", { class: "pause-ctl" }, h("div", { class: "pause-fields" }, fields), h("p", { class: "pause-hint" }, pauseHint(pause)));
 }
 
+/**
+ * "Concediu: Nu / Da" and, for "Da", which kind of leave. Only a pause with at least one free working day in it can be
+ * a leave (a weekend off cannot), so only those get the selector. The working days of the pause are then written in the
+ * pontaj with the code of the leave.
+ */
+function leaveControls(driver, pause, edit) {
+  if (!pause.freeDays?.length) return null;
+  const set = (leave) => edit((d) => setPause(d, pause, { leave }));
+  const on = pause.leave != null;
+  const days = driver.days.filter((d) => d.leave && pause.freeDays.includes(d.date)).length;
+  const yesNo = h("select", {
+    class: `leave-select ${on ? "manual" : ""}`,
+    "data-key": `leave:${pause.prev}`,
+    title: "Pauza are zile lucrătoare libere întregi. Dacă șoferul a fost în concediu, alege „Da” și apoi felul concediului.",
+    onchange: (e) => set(e.target.value === "yes" ? LEAVE_TYPES[0][0] : null),
+  }, h("option", { value: "no", selected: !on }, "Nu"), h("option", { value: "yes", selected: on }, "Da"));
+  const kind = on
+    ? h("select", { class: "leave-select manual", "data-key": `leavetype:${pause.prev}`, title: "Felul concediului", onchange: (e) => set(e.target.value) },
+        LEAVE_TYPES.map(([code, name]) => h("option", { value: code, selected: code === pause.leave }, `${name} (${code})`)))
+    : null;
+  const count = pause.freeDays.length;
+  return h("span", { class: "leave-ctl" },
+    h("label", {}, h("span", {}, "Concediu"), yesNo),
+    kind,
+    h("span", { class: "muted" }, on ? `${days} ${days === 1 ? "zi lucrătoare" : "zile lucrătoare"} în pontaj` : `${count} ${count === 1 ? "zi lucrătoare liberă" : "zile lucrătoare libere"}`));
+}
+
 /** Where the driver is while he waits: "la Constanta" or "Otopeni → Constanta" when he comes back some other way. */
 const pausePlace = (pause) => (pause.placeFrom === pause.placeTo ? `la ${pause.placeFrom}` : `${pause.placeFrom} → ${pause.placeTo}`);
 
@@ -269,7 +306,7 @@ function pauseRows(driver, pause, edit, resolveOverlap) {
         h("span", { class: "muted" }, pausePlace(pause)),
         overlap
           ? h("button", { class: "btn small primary", title: "Ora de plecare a fiecărei curse e reală, sosirea e doar estimată. Mută sosirea cursei dinainte (iar dacă ar rămâne prea scurtă, și plecarea celei de după) ca să nu se mai suprapună. Se schimbă doar aceste două curse.", onclick: () => resolveOverlap(pause) }, "Rezolvă suprapunerea")
-          : null),
+          : leaveControls(driver, pause, edit)),
       h("td", { class: `calc ${counted ? "strong" : ""}`, title: counted ? "Cât se numără din pauză, în ore" : "Nu se numără în ore" }, counted ? duration(pause.countedMin) : "–"),
       h("td", { class: "money calc" }, pause.extraPay > 0 ? lei(pause.extraPay) : ""),
       h("td", { class: "actions" }, controls ? null : change)),
@@ -419,6 +456,9 @@ export function renderCatbDriver(container, ctx) {
       chip("Ore curse", duration(t.tripMin)),
       chip("Ore staționare", duration(t.stationMin), { title: "Dedusă: plecarea cursei următoare minus sosirea celei dinainte" }),
       excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
+      Object.keys(t.leaveDays ?? {}).length
+        ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zile lucrătoare de concediu, alese la pauzele lungi" })
+        : null,
       chip("Total ore", duration(t.totalMin), { tone: t.overMin > 0 ? "bad" : "" }),
       chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
       t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,

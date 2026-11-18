@@ -2,6 +2,8 @@
 //! office changed (`TripEdit`, `PauseEdit`, `excluded_days`): a new download replaces the first and keeps the second.
 //! The derived parts (`eff`, `pauses`, `days`, `totals`, `alerts`, `proposals`) are rebuilt by [`super::recompute`].
 
+use std::collections::BTreeMap;
+
 use chrono::{NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 
@@ -140,6 +142,15 @@ pub enum PauseState {
     Off,
 }
 
+/// The kinds of leave the office can pick for a long pause: (code of the timesheet, name). Same codes as the monthly
+/// timesheet of the tachograph mode (`CO`, `CM`, `CP`, `CFP`).
+pub const LEAVE_TYPES: [(&str, &str); 4] = [("CO", "Concediu de odihnă"), ("CM", "Concediu medical"), ("CP", "Concediu parental"), ("CFP", "Concediu fără plată")];
+
+/// Name of a leave code ("CO" → "Concediu de odihnă"); the code itself when it is not known.
+pub fn leave_name(code: &str) -> &str {
+    LEAVE_TYPES.iter().find(|(c, _)| *c == code).map_or(code, |(_, name)| name)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PauseEdit {
@@ -150,6 +161,9 @@ pub struct PauseEdit {
     /// Waiting time typed by hand, in hours (half hours or minutes allowed).
     pub hours: Option<f64>,
     pub note: String,
+    /// The driver was on leave: the code of the kind of leave (see [`LEAVE_TYPES`]). Only a pause with at least one free
+    /// working day can be a leave.
+    pub leave: Option<String>,
 }
 
 /// What the rules make of the time between two regular trips, before any decision of the office.
@@ -188,6 +202,11 @@ pub struct Pause {
     pub counted_min: i32,
     /// Added to the estimate for the waiting beyond the included time.
     pub extra_pay: f64,
+    /// Working days (Mon–Fri, not legal holidays) inside the pause on which the driver had no trip at all; a pause can be
+    /// a leave only when there is at least one.
+    pub free_days: Vec<NaiveDate>,
+    /// The kind of leave the office chose (code); a leave is a pauză: nothing of it counts as waiting.
+    pub leave: Option<String>,
     pub alerts: Vec<Alert>,
 }
 
@@ -208,6 +227,8 @@ pub struct DayRow {
     pub pay_total: f64,
     /// Taken out of the pontaj by the office (it stays on screen, but counts nowhere).
     pub excluded: bool,
+    /// A working day of a leave the office chose for the pause around it: the code of the kind of leave.
+    pub leave: Option<String>,
     pub alerts: Vec<Alert>,
 }
 
@@ -225,6 +246,8 @@ pub struct Totals {
     pub pay_total: f64,
     /// Minutes above the monthly ceiling (0 when within it).
     pub over_min: i32,
+    /// Working days of leave in the month, per code of leave.
+    pub leave_days: BTreeMap<String, i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
