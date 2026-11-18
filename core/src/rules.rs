@@ -160,7 +160,7 @@ fn day_intervals(entry: &DayEntry, hours: f64, s: &Settings) -> Vec<Interval> {
     make_intervals(start, end, hours, s)
 }
 
-fn recompute_day(entry: &mut DayEntry, s: &Settings) {
+pub(crate) fn recompute_day(entry: &mut DayEntry, s: &Settings) {
     entry.card_intervals = card_intervals(&entry.segments, s.merge_gap_min, usize::MAX);
     entry.code = entry.code.as_deref().and_then(normalize_code);
     entry.override_intervals = entry.override_intervals.take().filter(|v| !v.is_empty());
@@ -226,7 +226,7 @@ fn place_activities(employee: &mut Employee, first: NaiveDate, merge_gap_min: i3
 }
 
 /// Mirrors the formulas written in the Excel file.
-fn compute_totals(employee: &Employee, norm: i32, hours_per_day: i32) -> Totals {
+pub(crate) fn compute_totals(employee: &Employee, norm: i32, hours_per_day: i32) -> Totals {
     // `+ 0.0`: summing nothing gives -0.0, which would show up as "-0" in the sheet and the workbook.
     let worked = employee.days.iter().filter_map(|d| d.hours).sum::<f64>() + 0.0;
     let card_min = employee.days.iter().filter(|d| d.hours.is_some()).map(|d| d.worked_min).sum::<i32>();

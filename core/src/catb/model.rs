@@ -143,8 +143,15 @@ pub enum PauseState {
 }
 
 /// The kinds of leave the office can pick for a day without any trip: (code of the timesheet, name). Same codes as the
-/// monthly timesheet of the tachograph mode (`CO`, `CM`, `CP`, `CFP`).
-pub const LEAVE_TYPES: [(&str, &str); 4] = [("CO", "Concediu de odihnă"), ("CM", "Concediu medical"), ("CP", "Concediu parental"), ("CFP", "Concediu fără plată")];
+/// columns of the monthly timesheet (`CO`, `CM`, `CP`, `CFP`, `CC`, `CIM`).
+pub const LEAVE_TYPES: [(&str, &str); 6] = [
+    ("CO", "Concediu de odihnă"),
+    ("CM", "Concediu medical"),
+    ("CP", "Concediu parental"),
+    ("CFP", "Concediu fără plată"),
+    ("CC", "Concediu maternal"),
+    ("CIM", "Contract individual de muncă"),
+];
 
 /// Name of a leave code ("CO" → "Concediu de odihnă"); the code itself when it is not known.
 pub fn leave_name(code: &str) -> &str {

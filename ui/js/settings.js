@@ -9,7 +9,7 @@ const NIGHT_PRESETS = [
 
 const FIELDS = [
   { section: "Firmă" },
-  { key: "companyName", label: "Denumire firmă", type: "text", hint: "Gol = numele din PDF" },
+  { key: "companyName", label: "Denumire firmă", type: "text", hint: "Gol = numele din PDF; la Categoria B (fără PDF) se scrie aici" },
   { key: "cui", label: "CUI", type: "text" },
   { key: "defaultFunction", label: "Funcția implicită", type: "text" },
   { key: "plainNames", label: "Nume cu majuscule, fără diacritice", type: "checkbox" },

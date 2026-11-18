@@ -1,9 +1,11 @@
-//! Writes the "Foaie colectivă de prezență (pontaj)" workbook, using the same
-//! layout as the payroll team's file: six rows per employee (hours, night
-//! hours, two start/end pairs) and live formulas for every total.
+//! Writes the "Foaie colectivă de prezență (pontaj)" workbook, laid out like the payroll team's own file
+//! (the October 2026 one): company and legend on top, the title, the month and the days as columns, six rows per
+//! employee (hours, night hours, two start/end pairs) and live formulas for every total.
+//! [`pontaj_sheet`] draws that one worksheet from a [`Timesheet`]; the tachograph mode and Categoria B both use it.
 
 use std::path::Path;
 
+use chrono::NaiveDate;
 use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, FormatBorder, Formula, RowNum, Workbook, Worksheet, XlsxError};
 
 use crate::calendar::month_name;
@@ -12,28 +14,40 @@ use crate::time::{fmt_clock, fmt_duration, DAY};
 use crate::timesheet::{DayEntry, Employee, Interval, Timesheet, CODES, OLP};
 use crate::{Error, Result};
 
-const HEADER_ROW: RowNum = 7;
-const FIRST_DATA_ROW: RowNum = 9;
+/// Row of the first header line (Excel row 9); the days numbers are on the next one.
+const HEADER_ROW: RowNum = 8;
+const FIRST_DATA_ROW: RowNum = 10;
 const ROWS_PER_EMPLOYEE: RowNum = 6;
-const FIRST_DAY_COL: ColNum = 3;
+/// Column E: A is the number, B the name, C the job, D the department (left empty, as in the payroll file).
+const FIRST_DAY_COL: ColNum = 4;
 
 pub(crate) const HEADER_FILL: u32 = 0xD9E1F2;
 pub(crate) const OFF_FILL: u32 = 0xEDEDED;
 pub(crate) const HOLIDAY_FILL: u32 = 0xFCE4D6;
-const NAME_FILL: u32 = 0xFFF2CC;
 pub(crate) const TOTAL_FILL: u32 = 0xFFF2CC;
+/// The green of weekends, holidays and the month header in the payroll file (theme accent 3, 40% lighter).
+const WEEKEND_FILL: u32 = 0xC3D69B;
+/// What is calculated, and the names.
+const YELLOW: u32 = 0xFFFF00;
+const CODE_FONT: u32 = 0xFF0000;
+/// Absence codes on the "Verificare" sheet.
 const CODE_FILL: u32 = 0xE2EFDA;
-const NIGHT_FONT: u32 = 0x1F4E79;
 
-const LEGEND: [&str; 8] = [
-    "CO - concediu de odihnă",
-    "CM - concediu medical",
-    "CP - concediu parental",
-    "CFP - concediu fără plată",
+/// The legend in the top right corner, word for word as in the payroll file.
+const LEGEND: [&str; 6] = [
+    "CFP- concediu fara plata",
     "OLP - ore libere plătite",
-    "N - absențe nemotivate",
-    "ZLP - zi liberă plătită",
-    "Zilele gri = weekend / sărbătoare legală",
+    "N - absente nemotivate",
+    "S - ore suplimentare",
+    "CP- concediu parental",
+    "zlp - zi libera platita",
+];
+
+const MONTH_ABBREVIATIONS: [&str; 12] = ["IAN", "FEB", "MAR", "APR", "MAI", "IUN", "IUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+/// Widths of the day columns (day 1 to 31) as the payroll file has them.
+const DAY_WIDTHS: [f64; 31] = [
+    5.57, 4.71, 5.43, 4.86, 5.57, 5.57, 5.57, 4.86, 4.86, 4.71, 4.71, 4.71, 4.71, 5.57, 5.86, 4.71, 4.71, 4.86, 5.57, 4.86, 4.86, 4.86, 4.86, 4.86, 4.86, 4.86, 5.43, 5.43, 5.43, 5.43, 5.43,
 ];
 
 /// Column positions derived from the number of days in the month.
@@ -89,6 +103,16 @@ impl Styles {
             .set_border_color(Color::RGB(0x808080));
         Styles { base }
     }
+    /// The look of the pontaj sheet: Arial Narrow 10, centered, thin black borders.
+    fn pontaj() -> Self {
+        let base = Format::new()
+            .set_font_name("Arial Narrow")
+            .set_font_size(10)
+            .set_align(FormatAlign::Center)
+            .set_align(FormatAlign::VerticalCenter)
+            .set_border(FormatBorder::Thin);
+        Styles { base }
+    }
     pub(crate) fn fill(&self, color: u32) -> Format {
         self.base.clone().set_background_color(Color::RGB(color))
     }
@@ -111,7 +135,7 @@ impl Styles {
 /// what the tachograph shows next to what was written.
 pub fn write_xlsx(sheet: &Timesheet, settings: &Settings, path: &Path) -> Result<()> {
     let mut workbook = Workbook::new();
-    build_sheet(workbook.add_worksheet(), sheet, settings).map_err(xlsx_err)?;
+    pontaj_sheet(workbook.add_worksheet(), sheet, settings, None).map_err(xlsx_err)?;
     build_audit(workbook.add_worksheet(), sheet, settings).map_err(xlsx_err)?;
     workbook.save(path).map_err(|e| Error::new(format!("Nu pot salva fișierul Excel: {e}")))
 }
@@ -120,18 +144,24 @@ pub(crate) fn xlsx_err(e: XlsxError) -> Error {
     Error::new(format!("Eroare la generarea Excel: {e}"))
 }
 
-fn build_sheet(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> std::result::Result<(), XlsxError> {
-    let st = Styles::new();
+/// Gives the hours of a day as a formula instead of a number: `(employee index, day of the month) -> "=…"`, or `None`
+/// for a day that stays a plain value. The cell keeps what the app computed as the cached result (a blank text when
+/// the day has no hours: the formula gives an empty text then, since a formula cannot return an empty cell).
+pub(crate) type HoursFormula<'a> = &'a dyn Fn(usize, u32) -> Option<String>;
+
+/// The worksheet "Pontaj MM.YYYY": the payroll team's foaie colectivă, with a formula for every total.
+pub(crate) fn pontaj_sheet(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings, hours_from: Option<HoursFormula>) -> std::result::Result<(), XlsxError> {
+    let st = Styles::pontaj();
     let cols = Cols::new(sheet.days.len());
     let month = month_name(sheet.month);
     ws.set_name(format!("Pontaj {:02}.{}", sheet.month, sheet.year))?;
 
-    write_title(ws, sheet, settings, &cols, month)?;
+    write_title(ws, sheet, settings, &cols)?;
     write_header(ws, sheet, &st, &cols, month)?;
 
     let mut row = FIRST_DATA_ROW;
     for (i, employee) in sheet.employees.iter().enumerate() {
-        write_employee(ws, sheet, settings, &st, &cols, row, i + 1, employee)?;
+        write_employee(ws, sheet, settings, &st, &cols, row, i + 1, employee, hours_from)?;
         row += ROWS_PER_EMPLOYEE;
     }
     let total_row = row;
@@ -141,50 +171,59 @@ fn build_sheet(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> st
     Ok(())
 }
 
-fn write_title(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings, cols: &Cols, month: &str) -> std::result::Result<(), XlsxError> {
+/// Excel's number for a date (days since 1899-12-30), for cells that must stay real dates.
+pub(crate) fn excel_date(year: i32, month: u32, day: u32) -> f64 {
+    let epoch = NaiveDate::from_ymd_opt(1899, 12, 30).unwrap_or_default();
+    NaiveDate::from_ymd_opt(year, month, day).map_or(0.0, |date| (date - epoch).num_days() as f64)
+}
+
+fn write_title(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings, cols: &Cols) -> std::result::Result<(), XlsxError> {
     let company = if settings.company_name.trim().is_empty() { sheet.company.to_uppercase() } else { settings.company_name.trim().to_string() };
-    let bold = Styles::plain().set_bold().set_font_size(11);
-    ws.write_string_with_format(0, 0, company, &bold)?;
+    let bold = Styles::plain().set_bold().set_align(FormatAlign::Left);
+    ws.merge_range(0, 0, 0, FIRST_DAY_COL - 1, &company, &bold)?;
     if !settings.cui.trim().is_empty() {
-        ws.write_string_with_format(1, 0, format!("CUI: {}", settings.cui.trim()), &Styles::plain())?;
+        ws.merge_range(1, 0, 1, FIRST_DAY_COL - 1, &format!("CUI: {}", settings.cui.trim()), &bold)?;
     }
     for (i, text) in LEGEND.iter().enumerate() {
-        ws.write_string_with_format(i as RowNum, cols.first_code, *text, &Styles::plain().set_font_size(9))?;
+        ws.write_string_with_format(i as RowNum, cols.night, *text, &Styles::plain())?;
     }
 
-    let title = Styles::plain().set_bold().set_font_size(14).set_align(FormatAlign::Center).set_align(FormatAlign::VerticalCenter);
-    ws.merge_range(3, FIRST_DAY_COL, 3, cols.last_day, "FOAIE COLECTIVĂ DE PREZENȚĂ (PONTAJ)", &title)?;
-    let subtitle = Styles::plain().set_align(FormatAlign::Center);
-    let mut info = format!(
-        "Luna {month} {} · {} zile lucrătoare · normă {} ore",
-        sheet.year, sheet.working_days, sheet.norm_hours
-    );
-    if !sheet.location.is_empty() {
-        info.push_str(&format!(" · {}", sheet.location));
-    }
-    ws.merge_range(4, FIRST_DAY_COL, 4, cols.last_day, &info, &subtitle)?;
+    let title = Styles::plain().set_bold().set_align(FormatAlign::Center).set_align(FormatAlign::VerticalCenter).set_text_wrap();
+    ws.merge_range(6, 0, 6, cols.overtime, "FOAIE COLECTIVA DE PREZENTA (PONTAJ)", &title)?;
+
+    // The month again, short, and as a date: the small helper line above the day columns of the payroll file.
+    let narrow = Format::new().set_font_name("Arial Narrow").set_font_size(10).set_bold();
+    ws.write_string_with_format(7, FIRST_DAY_COL, MONTH_ABBREVIATIONS[(sheet.month as usize + 11) % 12], &narrow)?;
+    let helper = narrow.clone().set_align(FormatAlign::Center).set_num_format("mmm-yy");
+    ws.merge_range(7, FIRST_DAY_COL + 1, 7, FIRST_DAY_COL + 9, "", &helper)?;
+    ws.write_number_with_format(7, FIRST_DAY_COL + 1, excel_date(sheet.year, sheet.month, 1), &helper)?;
     Ok(())
 }
 
 fn write_header(ws: &mut Worksheet, sheet: &Timesheet, st: &Styles, cols: &Cols, month: &str) -> std::result::Result<(), XlsxError> {
     let (r1, r2) = (HEADER_ROW, HEADER_ROW + 1);
-    let h = st.header();
-    ws.merge_range(r1, 0, r2, 0, "Nr crt", &h)?;
-    ws.merge_range(r1, 1, r2, 1, "Numele și prenumele", &h)?;
-    ws.merge_range(r1, 2, r2, 2, "Meseria sau funcția", &h)?;
-    ws.merge_range(r1, FIRST_DAY_COL, r1, cols.last_day, &format!("{month} {}", sheet.year), &h)?;
+    let head = st.base.clone().set_font_name("Arial").set_text_wrap();
+    let turned = head.clone().set_rotation(90);
+    let narrow_turned = st.base.clone().set_text_wrap().set_rotation(90);
+    ws.merge_range(r1, 0, r2, 0, "Nr crt", &turned)?;
+    ws.merge_range(r1, 1, r2, 1, "Numele si prenumele", &head)?;
+    ws.merge_range(r1, 2, r2, 2, "Meseria sau functia", &turned)?;
+    ws.merge_range(r1, 3, r2, 3, "Departament", &narrow_turned.clone().set_align(FormatAlign::Left))?;
+    // The month, over all the days; each day is only its number (weekends and holidays in green).
+    ws.merge_range(r1, FIRST_DAY_COL, r1, cols.last_day, &month.to_uppercase(), &st.fill(WEEKEND_FILL).set_bold().set_text_wrap())?;
     for (i, day) in sheet.days.iter().enumerate() {
-        let fmt = st.day_header(day.is_off(), day.holiday.is_some());
-        ws.write_string_with_format(r2, FIRST_DAY_COL + i as ColNum, format!("{}\n{}", day.day, day.weekday), &fmt)?;
+        let fmt = if day.is_off() { st.fill(WEEKEND_FILL) } else { st.base.clone() };
+        ws.write_number_with_format(r2, FIRST_DAY_COL + i as ColNum, f64::from(day.day), &fmt.set_text_wrap())?;
     }
-    ws.merge_range(r1, cols.worked, r2, cols.worked, "Total ore lucrate", &h)?;
-    ws.merge_range(r1, cols.night, r2, cols.night, "din care: ore de noapte", &h)?;
-    ws.merge_range(r1, cols.not_worked, r2, cols.not_worked, "Total ore nelucrate", &h)?;
-    ws.merge_range(r1, cols.first_code, r1, cols.code(CODES.len() - 1), "din care:", &h)?;
+    ws.merge_range(r1, cols.worked, r2, cols.worked, "Total ore lucrate", &narrow_turned)?;
+    ws.write_string_with_format(r1, cols.night, "din care:", &head)?;
+    ws.write_string_with_format(r2, cols.night, "ore de noapte", &turned)?;
+    ws.merge_range(r1, cols.not_worked, r2, cols.not_worked, "Total ore nelucrate", &turned)?;
+    ws.merge_range(r1, cols.first_code, r1, cols.code(CODES.len() - 1), "din care:", &head)?;
     for (i, (_, label)) in CODES.iter().enumerate() {
-        ws.write_string_with_format(r2, cols.code(i), *label, &h)?;
+        ws.write_string_with_format(r2, cols.code(i), *label, &turned)?;
     }
-    ws.merge_range(r1, cols.overtime, r2, cols.overtime, "Ore supl.", &h)?;
+    ws.merge_range(r1, cols.overtime, r2, cols.overtime, "ORE SUPL.", &turned)?;
     Ok(())
 }
 
@@ -198,36 +237,44 @@ fn write_employee(
     row: RowNum,
     nr: usize,
     emp: &Employee,
+    hours_from: Option<HoursFormula>,
 ) -> std::result::Result<(), XlsxError> {
     let last = row + ROWS_PER_EMPLOYEE - 1;
-    let thick_top = |f: Format| f.set_border_top(FormatBorder::Medium);
 
-    ws.merge_range(row, 0, last, 0, "", &thick_top(st.base.clone()))?;
-    ws.write_number_with_format(row, 0, nr as f64, &thick_top(st.base.clone()))?;
-    ws.merge_range(row, 1, last, 1, &emp.name, &thick_top(st.fill(NAME_FILL).set_font_name("Arial").set_bold().set_text_wrap()))?;
-
-    let label = st.base.clone().set_align(FormatAlign::Left).set_font_size(9);
-    let labels = [emp.function.as_str(), "Ore de noapte", "Ora începerii", "Ora terminării", "Ora începerii", "Ora terminării"];
-    for (k, text) in labels.iter().enumerate() {
-        let fmt = if k == 0 { thick_top(label.clone().set_text_wrap()) } else { label.clone() };
-        ws.write_string_with_format(row + k as RowNum, 2, *text, &fmt)?;
+    // Number and name over the six rows; the job over the first two (hours and night), then the labels of the times.
+    let numbered = st.base.clone().set_text_wrap();
+    ws.merge_range(row, 0, last, 0, "", &numbered)?;
+    ws.write_number_with_format(row, 0, nr as f64, &numbered)?;
+    ws.merge_range(row, 1, last, 1, &emp.name, &st.fill(YELLOW).set_font_name("Arial").set_align(FormatAlign::Left).set_text_wrap())?;
+    ws.merge_range(row, 2, row + 1, 2, &emp.function, &st.base.clone().set_font_size(9).set_text_wrap())?;
+    let label = st.base.clone().set_font_size(9).set_italic().set_align(FormatAlign::Left).set_text_wrap();
+    for (k, text) in ["Ora începerii", "Ora terminării", "Ora începerii", "Ora terminării"].iter().enumerate() {
+        ws.write_string_with_format(row + 2 + k as RowNum, 2, *text, &label)?;
+    }
+    let department = st.base.clone().set_num_format("h:mm");
+    for k in 0..ROWS_PER_EMPLOYEE {
+        ws.write_blank(row + k, 3, &department)?;
     }
 
     for (i, (info, entry)) in sheet.days.iter().zip(&emp.days).enumerate() {
         let col = FIRST_DAY_COL + i as ColNum;
-        let day = st.day(info.is_off());
-        let hours_fmt = thick_top(day.clone().set_bold());
-        match (&entry.code, entry.hours) {
-            (Some(code), _) => ws.write_string_with_format(row, col, code, &thick_top(st.fill(CODE_FILL).set_bold()))?,
-            (None, Some(h)) => ws.write_number_with_format(row, col, h, &hours_fmt)?,
-            (None, None) => ws.write_blank(row, col, &hours_fmt)?,
+        let day = if info.is_off() { st.fill(WEEKEND_FILL) } else { st.base.clone() };
+        let linked = hours_from.and_then(|f| f(nr - 1, info.day));
+        match (&entry.code, entry.hours, linked) {
+            (Some(code), _, _) => ws.write_string_with_format(row, col, code, &day.clone().set_bold().set_font_color(Color::RGB(CODE_FONT)))?,
+            (None, hours, Some(text)) => {
+                // The writer turns an empty result into "0": a blank text keeps non-calculating viewers from showing zeros.
+                let result = Formula::new(text).set_result(hours.map_or_else(|| " ".to_string(), |h| h.to_string()));
+                ws.write_formula_with_format(row, col, result, &day)?
+            }
+            (None, Some(h), None) => ws.write_number_with_format(row, col, h, &day)?,
+            (None, None, None) => ws.write_blank(row, col, &day)?,
         };
-        let night_fmt = day.clone().set_italic().set_font_color(Color::RGB(NIGHT_FONT));
         match entry.night_hours {
-            Some(n) => ws.write_number_with_format(row + 1, col, n, &night_fmt)?,
-            None => ws.write_blank(row + 1, col, &night_fmt)?,
+            Some(n) => ws.write_number_with_format(row + 1, col, n, &day)?,
+            None => ws.write_blank(row + 1, col, &day)?,
         };
-        let time_fmt = day.clone().set_num_format("hh:mm").set_font_size(9);
+        let time_fmt = day.clone().set_num_format("h:mm");
         for k in 0..4 {
             let r = row + 2 + k as RowNum;
             let value = entry.intervals.get(k / 2).map(|iv| if k % 2 == 0 { iv.start } else { iv.end });
@@ -238,9 +285,15 @@ fn write_employee(
         }
     }
 
-    // Totals: merged over the six rows, formulas with cached results.
+    // Totals: a yellow block, one formula per cell with its cached result (hours, night and the rest sit on the rows
+    // they are on in the payroll file: hours, the unworked time and the codes on the first row, the night on the second).
     let t = &emp.totals;
-    let total_fmt = thick_top(st.fill(TOTAL_FILL).set_bold());
+    let total_fmt = st.fill(YELLOW).set_text_wrap();
+    for col in cols.worked..=cols.overtime {
+        for k in 0..ROWS_PER_EMPLOYEE {
+            ws.write_blank(row + k, col, &total_fmt)?;
+        }
+    }
     let hours_range = range(row, FIRST_DAY_COL, cols.last_day);
     let night_range = range(row + 1, FIRST_DAY_COL, cols.last_day);
     let worked_ref = cell(row, cols.worked);
@@ -268,15 +321,17 @@ fn write_employee(
         formulas.push((cols.code(i), formula, value));
     }
     for (col, formula, value) in formulas {
-        let fmt = if col == cols.worked || col == cols.night { total_fmt.clone() } else { thick_top(st.base.clone()) };
-        ws.merge_range(row, col, last, col, "", &fmt)?;
-        ws.write_formula_with_format(row, col, Formula::new(formula).set_result(value.to_string()), &fmt)?;
+        let bold = col == cols.worked || col == cols.night || col == cols.not_worked;
+        let fmt = if bold { total_fmt.clone().set_bold() } else { total_fmt.clone() };
+        let fmt = if col == cols.not_worked { fmt.set_num_format("0") } else { fmt };
+        let at = if col == cols.night { row + 1 } else { row };
+        ws.write_formula_with_format(at, col, Formula::new(formula).set_result(value.to_string()), &fmt)?;
     }
     Ok(())
 }
 
 fn write_totals(ws: &mut Worksheet, sheet: &Timesheet, st: &Styles, cols: &Cols, row: RowNum) -> std::result::Result<(), XlsxError> {
-    let fmt = st.fill(TOTAL_FILL).set_bold().set_border_top(FormatBorder::Medium).set_border_bottom(FormatBorder::Medium);
+    let fmt = st.fill(YELLOW).set_bold();
     ws.merge_range(row, 0, row, cols.last_day, "TOTAL", &fmt)?;
     let mut summary: Vec<(ColNum, f64)> = vec![
         (cols.worked, sheet.employees.iter().map(|e| e.totals.worked).sum::<f64>()),
@@ -315,28 +370,30 @@ fn write_signatures(ws: &mut Worksheet, settings: &Settings, cols: &Cols, row: R
 }
 
 fn layout(ws: &mut Worksheet, cols: &Cols, total_row: RowNum) -> std::result::Result<(), XlsxError> {
-    ws.set_column_width(0, 4.5)?;
-    ws.set_column_width(1, 18)?;
-    ws.set_column_width(2, 13)?;
+    ws.set_column_width(0, 3.86)?;
+    ws.set_column_width(1, 15.57)?;
+    ws.set_column_width(2, 10.29)?;
+    ws.set_column_width(3, 4.86)?;
     for col in FIRST_DAY_COL..=cols.last_day {
-        ws.set_column_width(col, 5.3)?;
+        ws.set_column_width(col, DAY_WIDTHS[(col - FIRST_DAY_COL) as usize % DAY_WIDTHS.len()])?;
     }
-    for col in [cols.worked, cols.night, cols.not_worked] {
-        ws.set_column_width(col, 8.5)?;
+    ws.set_column_width(cols.worked, 5.71)?;
+    for col in cols.night..=cols.code(CODES.len() - 1) {
+        ws.set_column_width(col, 4.71)?;
     }
-    for i in 0..CODES.len() {
-        ws.set_column_width(cols.code(i), 5.3)?;
-    }
-    ws.set_column_width(cols.overtime, 7)?;
-    ws.set_row_height(3, 22)?;
-    ws.set_row_height(HEADER_ROW, 30)?;
-    ws.set_row_height(HEADER_ROW + 1, 28)?;
-    for r in FIRST_DATA_ROW..total_row {
-        ws.set_row_height(r, 13.5)?;
+    ws.set_column_width(cols.overtime, 6.0)?;
+    ws.set_row_height(6, 12.75)?;
+    ws.set_row_height(7, 15.75)?;
+    ws.set_row_height(HEADER_ROW, 38.25)?;
+    ws.set_row_height(HEADER_ROW + 1, 64.5)?;
+    for employee_first in (FIRST_DATA_ROW..total_row).step_by(ROWS_PER_EMPLOYEE as usize) {
+        for r in employee_first + 2..employee_first + ROWS_PER_EMPLOYEE {
+            ws.set_row_height(r, 13.5)?;
+        }
     }
     ws.set_row_height(total_row, 18)?;
 
-    ws.set_freeze_panes(FIRST_DATA_ROW, FIRST_DAY_COL)?;
+    ws.set_freeze_panes(FIRST_DATA_ROW, 3)?;
     ws.set_repeat_rows(HEADER_ROW, HEADER_ROW + 1)?;
     ws.set_landscape();
     ws.set_paper_size(8); // A3
@@ -344,7 +401,6 @@ fn layout(ws: &mut Worksheet, cols: &Cols, total_row: RowNum) -> std::result::Re
     ws.set_print_center_horizontally(true);
     ws.set_margins(0.3, 0.3, 0.5, 0.5, 0.3, 0.3);
     ws.set_footer("&CPagina &P din &N");
-    ws.set_zoom(90);
     Ok(())
 }
 

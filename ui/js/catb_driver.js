@@ -19,6 +19,8 @@ export const LEAVE_TYPES = [
   ["CM", "Concediu medical"],
   ["CP", "Concediu parental"],
   ["CFP", "Concediu fără plată"],
+  ["CC", "Concediu maternal"],
+  ["CIM", "Contract individual de muncă"],
 ];
 const leaveName = (code) => LEAVE_TYPES.find(([c]) => c === code)?.[1] ?? code;
 

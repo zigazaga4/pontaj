@@ -10,6 +10,7 @@ mod merge;
 mod model;
 mod overlap;
 mod places;
+mod pontaj;
 pub mod store;
 pub mod tariffs;
 
