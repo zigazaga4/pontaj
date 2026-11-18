@@ -97,7 +97,7 @@ fn warning_summary(driver: &Driver) -> String {
 // Sinteză
 // ---------------------------------------------------------------------------------------------------------------------
 
-const SUMMARY_HEADERS: [&str; 11] = ["Nr.", "Șofer", "Zile lucrate", "Curse regulate", "Ore curse", "Ore staționare", "Total ore", "Plafon lunar", "Depășire", "Concediu (zile lucrătoare)", "Avertizări"];
+const SUMMARY_HEADERS: [&str; 11] = ["Nr.", "Șofer", "Zile lucrate", "Curse regulate", "Ore curse", "Ore staționare", "Total ore", "Plafon lunar", "Depășire", "Concediu (zile)", "Avertizări"];
 const MONEY_HEADERS: [&str; 4] = ["Curse (lei)", "Exterioare (lei)", "Staționare (lei)", "Total estimat (lei)"];
 
 fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings) -> Done {
@@ -230,7 +230,7 @@ const GRID_HEADER_ROW: RowNum = 3;
 const GRID_LABELS: [&str; 3] = ["Cursă", "Staționare", "Total"];
 const LEAVE_FILL: u32 = 0xE2EFDA;
 
-/// "CO 4 zile · CM 1 zi": the working days of leave of a driver, by kind of leave (empty without leave).
+/// "CO 4 zile · CM 1 zi": the days of leave of a driver, by kind of leave (empty without leave).
 fn leave_summary(totals: &Totals) -> String {
     let parts: Vec<String> = LEAVE_TYPES
         .iter()
@@ -260,7 +260,7 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet) -> Done {
         let text = format!("{}\n{}", info.day, info.weekday);
         ws.write_string_with_format(GRID_HEADER_ROW, GRID_FIRST_DAY + index as ColNum, text, &st.day_header(info.is_off(), info.holiday.is_some()))?;
     }
-    for (col, text) in [(total_col, "Total"), (cap_col, "Plafon"), (over_col, "Depășire"), (leave_col, "Concediu (zile lucrătoare)")] {
+    for (col, text) in [(total_col, "Total"), (cap_col, "Plafon"), (over_col, "Depășire"), (leave_col, "Concediu (zile)")] {
         ws.write_string_with_format(GRID_HEADER_ROW, col, text, &head)?;
     }
     ws.set_row_height(GRID_HEADER_ROW, 30)?;
@@ -368,11 +368,6 @@ struct DetailRow {
 fn pause_state_text(pause: &Pause) -> String {
     let state = match (pause.state, is_station(pause)) {
         _ if pause.kind == PauseKind::Overlap => String::new(),
-        _ if pause.leave.is_some() => {
-            let code = pause.leave.as_deref().unwrap_or_default();
-            let no_day = if pause.free_days.is_empty() { "; nicio zi lucrătoare întreagă liberă, deci nu se trece nimic în pontaj" } else { "" };
-            format!("{} ({code}), ales în aplicație: nu se numără{no_day}", leave_name(code))
-        }
         (PauseState::Auto, true) => "staționare, după reguli (la Otopeni)".to_string(),
         (PauseState::Auto, false) => "pauză, după reguli: acasă în Constanța sau peste limita pauzei lungi, nu se numără".to_string(),
         (_, true) => "staționare, aleasă în aplicație".to_string(),
@@ -395,7 +390,6 @@ fn worth_listing(pause: &Pause) -> bool {
         || !pause.alerts.is_empty()
         || pause.kind == PauseKind::Overlap
         || pause.state != PauseState::Auto
-        || pause.leave.is_some()
         || pause.hours_override.is_some()
         || !pause.note.trim().is_empty()
 }
@@ -476,6 +470,28 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
                 out: !counted,
             });
         }
+    }
+    // The days of leave: no trip, no hours, but the office must see which day and which kind.
+    let before = rows.len();
+    for day in driver.days.iter().filter(|d| d.leave.is_some()) {
+        let (Some(date), Some(code)) = (day.date, day.leave.as_deref()) else { continue };
+        let counted = counts(date);
+        rows.push(DetailRow {
+            date,
+            kind: "Concediu".into(),
+            start: None,
+            end: None,
+            from: String::new(),
+            to: String::new(),
+            minutes: None,
+            pay: None,
+            note: if counted { format!("{} ({code})", leave_name(code)) } else { format!("{} ({code}); {}", leave_name(code), why_not(date)) },
+            remarks: String::new(),
+            out: !counted,
+        });
+    }
+    if rows.len() > before {
+        rows.sort_by_key(|r| r.date); // stable: the lines of one day keep their order
     }
     rows
 }
@@ -778,14 +794,23 @@ mod tests {
           {"driver_id":1,"driver_name":"Popescu Ion","trip":{"type":"eco","id":"eco-2"},"route":{"from":"Constanta","to":"Aeroport Otopeni Bucuresti"},"departure":"2026-10-12 05:00","duration_minutes":180}
         ]}"#;
         let mut sheet = apply_download(None, 2026, 10, &parse_rows(body).unwrap(), "x", &Settings::default());
-        sheet.drivers[0].pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), leave: Some("CM".into()), ..Default::default() });
+        for day in [6, 7, 8, 9] {
+            sheet.drivers[0].leaves.insert(NaiveDate::from_ymd_opt(2026, 10, day).unwrap(), "CM".into());
+        }
+        sheet.drivers[0].leaves.insert(NaiveDate::from_ymd_opt(2026, 10, 10).unwrap(), "CO".into());
+        sheet.drivers[0].excluded_days.push(NaiveDate::from_ymd_opt(2026, 10, 9).unwrap());
         super::super::recompute(&mut sheet, &Settings::default());
 
         let driver = &sheet.drivers[0];
-        assert_eq!(leave_summary(&driver.totals), "CM 4 zile");
+        assert_eq!(leave_summary(&driver.totals), "CO 1 zi · CM 3 zile", "the day taken out of the pontaj is not summed");
         let rows = detail_rows(driver, 2026, 10);
-        let pause = rows.iter().find(|r| r.kind == "Pauză").expect("a leave is listed");
-        assert!(pause.note.contains("Concediu medical (CM)") && pause.minutes == Some(0), "{pause:?}");
+        let leaves: Vec<&DetailRow> = rows.iter().filter(|r| r.kind == "Concediu").collect();
+        assert_eq!(leaves.len(), 5, "every leave day is listed");
+        assert!(leaves[0].note.contains("Concediu medical (CM)") && leaves[0].minutes.is_none() && !leaves[0].out, "{:?}", leaves[0]);
+        assert!(leaves[3].out && leaves[3].note.contains("zi scoasă din pontaj"), "{:?}", leaves[3]);
+        assert!(leaves[4].note.contains("Concediu de odihnă (CO)"));
+        let dates: Vec<NaiveDate> = rows.iter().map(|r| r.date).collect();
+        assert!(dates.windows(2).all(|w| w[0] <= w[1]), "the lines stay in date order: {dates:?}");
         let dir = std::env::temp_dir().join(format!("pontaj-catb-leave-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         write_xlsx(&sheet, &Settings::default(), &dir.join("leave.xlsx")).unwrap();

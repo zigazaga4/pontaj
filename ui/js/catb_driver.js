@@ -13,7 +13,7 @@ const PAUSE_CHOICES = [
   ["rest", "Pauză"],
 ];
 const PAUSE_BADGES = { normal: "Staționare", rest: "Pauză", overlap: "Suprapunere" };
-// The kinds of leave a long pause can be (code of the timesheet, name). The first one is what "Concediu: Da" starts with.
+// The kinds of leave a day without any trip can be (code of the timesheet, name).
 export const LEAVE_TYPES = [
   ["CO", "Concediu de odihnă"],
   ["CM", "Concediu medical"],
@@ -30,12 +30,6 @@ const pauseClass = (pause) => (pause.kind === "overlap" ? "overlap" : isStation(
 
 /** One sentence under the pause: whether it counts in the hours, and what the choice changes. */
 function pauseHint(pause) {
-  if (pause.leave) {
-    const marked = pause.freeDays.length
-      ? `zilele lucrătoare libere din pauză se trec în pontaj cu codul ${pause.leave}`
-      : "în pauză nu e nicio zi lucrătoare întreagă liberă (șoferul are curse în ambele zile), așa că nu se trece nimic în pontaj";
-    return `${leaveName(pause.leave)}: ${marked}. Nu se numără nimic ca staționare și nu se plătește.`;
-  }
   if (pause.kind === "overlap") return "Sosirea e doar estimată (plecarea + durata fixă a traseului), plecările sunt reale. Apasă „Rezolvă suprapunerea” ca aplicația să mute orele celor două curse, sau corectează-le tu.";
   if (isStation(pause)) {
     return pause.state === "stayed"
@@ -55,13 +49,13 @@ const NO_TARIFF = "fără tarif";
 // Changes to a driver (plain data; the caller recomputes in Rust afterwards)
 // ---------------------------------------------------------------------------------------------------------------------
 
-const emptyPauseEdit = (e) => e.state === "auto" && e.hours == null && !e.note && e.leave == null;
+const emptyPauseEdit = (e) => e.state === "auto" && e.hours == null && !e.note;
 
 /** Sets what the office decided about the pause between two trips; an edit that says nothing is dropped. */
 export function setPause(driver, pause, patch) {
   let edit = driver.pauseEdits.find((e) => e.prev === pause.prev && e.next === pause.next);
   if (!edit) {
-    edit = { prev: pause.prev, next: pause.next, state: "auto", hours: null, note: "", leave: null };
+    edit = { prev: pause.prev, next: pause.next, state: "auto", hours: null, note: "" };
     driver.pauseEdits.push(edit);
   }
   Object.assign(edit, patch);
@@ -85,6 +79,26 @@ export function toggleDay(driver, date) {
   const at = driver.excludedDays.indexOf(date);
   if (at >= 0) driver.excludedDays.splice(at, 1);
   else driver.excludedDays.push(date);
+}
+
+/** Marks days (free days: no trip at all) as leave of the kind `code`; `null` takes the leave off again. */
+export function setLeave(driver, dates, code) {
+  driver.leaves ??= {};
+  for (const date of dates) {
+    if (code) driver.leaves[date] = code;
+    else delete driver.leaves[date];
+  }
+}
+
+/** The free days (sorted ISO dates) as runs of consecutive calendar days: [[6th, 7th, 8th], [10th]]. */
+export function freeRuns(freeDays) {
+  const runs = [];
+  for (const date of [...freeDays].sort()) {
+    const last = runs.at(-1)?.at(-1);
+    if (last && Date.parse(`${date}T00:00:00Z`) - Date.parse(`${last}T00:00:00Z`) === 86400000) runs.at(-1).push(date);
+    else runs.push([date]);
+  }
+  return runs;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -216,8 +230,7 @@ function pauseControls(driver, pause, edit) {
   const state = pause.state;
   const station = isStation(pause);
   if (pause.kind === "overlap") return h("div", { class: "pause-ctl" }, h("p", { class: "pause-hint" }, pauseHint(pause)));
-  const select = h("select", { class: `pause-state ${state !== "auto" ? "manual" : ""}`, "data-key": `state:${pause.prev}`, disabled: !!pause.leave,
-    title: pause.leave ? "Un concediu este mereu pauză" : null,
+  const select = h("select", { class: `pause-state ${state !== "auto" ? "manual" : ""}`, "data-key": `state:${pause.prev}`,
     onchange: (e) => {
       const wantStation = e.target.value === "station";
       decide({ state: wantStation === (pause.kind === "normal") ? "auto" : wantStation ? "stayed" : "off" });
@@ -259,35 +272,6 @@ function pauseControls(driver, pause, edit) {
   return h("div", { class: "pause-ctl" }, h("div", { class: "pause-fields" }, fields), h("p", { class: "pause-hint" }, pauseHint(pause)));
 }
 
-/**
- * "Concediu: Nu / Da" and, for "Da", which kind of leave. Every pause longer than a day gets the selector (Rust says so
- * with `canLeave`). The free working days of the pause, if there are any, are then written in the pontaj with the code.
- */
-function leaveControls(driver, pause, edit) {
-  if (!pause.canLeave) return null;
-  const set = (leave) => edit((d) => setPause(d, pause, { leave }));
-  const on = pause.leave != null;
-  const days = driver.days.filter((d) => d.leave && pause.freeDays.includes(d.date)).length;
-  const yesNo = h("select", {
-    class: `leave-select ${on ? "manual" : ""}`,
-    "data-key": `leave:${pause.prev}`,
-    title: "Pauza e mai lungă de o zi. Dacă șoferul a fost în concediu, alege „Da” și apoi felul concediului.",
-    onchange: (e) => set(e.target.value === "yes" ? LEAVE_TYPES[0][0] : null),
-  }, h("option", { value: "no", selected: !on }, "Nu"), h("option", { value: "yes", selected: on }, "Da"));
-  const kind = on
-    ? h("select", { class: "leave-select manual", "data-key": `leavetype:${pause.prev}`, title: "Felul concediului", onchange: (e) => set(e.target.value) },
-        LEAVE_TYPES.map(([code, name]) => h("option", { value: code, selected: code === pause.leave }, `${name} (${code})`)))
-    : null;
-  const count = pause.freeDays.length;
-  return h("span", { class: "leave-ctl" },
-    h("label", {}, h("span", {}, "Concediu"), yesNo),
-    kind,
-    h("span", { class: "muted", title: count ? "" : "Șoferul are curse în ambele zile (sau pauza prinde doar weekend), nu există o zi lucrătoare întreagă liberă pe care să se scrie concediul." },
-      on
-        ? count ? `${days} ${days === 1 ? "zi lucrătoare" : "zile lucrătoare"} în pontaj` : "nicio zi lucrătoare întreagă liberă: nu se trece nimic în pontaj"
-        : count ? `${count} ${count === 1 ? "zi lucrătoare liberă" : "zile lucrătoare libere"}` : "nicio zi lucrătoare întreagă liberă"));
-}
-
 /** Where the driver is while he waits: "la Constanta" or "Otopeni → Constanta" when he comes back some other way. */
 const pausePlace = (pause) => (pause.placeFrom === pause.placeTo ? `la ${pause.placeFrom}` : `${pause.placeFrom} → ${pause.placeTo}`);
 
@@ -313,7 +297,7 @@ function pauseRows(driver, pause, edit, resolveOverlap) {
         h("span", { class: "muted" }, pausePlace(pause)),
         overlap
           ? h("button", { class: "btn small primary", title: "Ora de plecare a fiecărei curse e reală, sosirea e doar estimată. Mută sosirea cursei dinainte (iar dacă ar rămâne prea scurtă, și plecarea celei de după) ca să nu se mai suprapună. Se schimbă doar aceste două curse.", onclick: () => resolveOverlap(pause) }, "Rezolvă suprapunerea")
-          : leaveControls(driver, pause, edit)),
+          : null),
       h("td", { class: `calc ${counted ? "strong" : ""}`, title: counted ? "Cât se numără din pauză, în ore" : "Nu se numără în ore" }, counted ? duration(pause.countedMin) : "–"),
       h("td", { class: "money calc" }, pause.extraPay > 0 ? lei(pause.extraPay) : ""),
       h("td", { class: "actions" }, controls ? null : change)),
@@ -326,9 +310,57 @@ function pauseRows(driver, pause, edit, resolveOverlap) {
 /** One figure of the day header with its caption under it. */
 const dayStat = (label, value, tone = "") => h("div", { class: `day-stat ${tone}` }, h("b", {}, value), h("small", {}, label));
 
+/** The calendar entry (weekend, holiday) of an ISO date of the month; undefined outside the month. */
+const dayInfo = (sheet, date) => sheet.days.find((d) => `${sheet.year}-${String(sheet.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}` === date);
+
+/**
+ * Days without any trip, one run of consecutive calendar days per block. Each day can be marked as leave with its kind
+ * (CO, CM, CP, CFP); the select above the days sets the same kind on all of them at once. Only these days can be leave:
+ * a day with even one trip is a working day.
+ */
+function leaveRunRows(driver, sheet, run, edit) {
+  const leaves = driver.leaves ?? {};
+  const set = (dates, code) => edit((d) => setLeave(d, dates, code));
+  const marked = run.filter((date) => leaves[date]).length;
+  const first = run[0];
+  const last = run.at(-1);
+  const title = run.length === 1 ? `Zi liberă · ${weekdayName(first)} ${shortDate(first)}` : `${run.length} zile libere · ${shortDate(first)} – ${shortDate(last)}`;
+  const kinds = (chosen) => LEAVE_TYPES.map(([code, name]) => h("option", { value: code, selected: code === chosen }, `${name} (${code})`));
+  // The quick choice covers the working days (Mon–Fri, no holiday) of the block; a weekend or a holiday is chosen day by day.
+  const working = run.filter((date) => { const info = dayInfo(sheet, date); return info && !info.weekend && !info.holiday; });
+  const all = working.length > 1
+    ? h("label", { class: "ctl inline", title: "Alege același concediu pentru zilele lucrătoare libere de aici (luni–vineri, fără sărbători). Sâmbăta, duminica și sărbătorile le alegi tu, una câte una." },
+        h("span", {}, "Toate zilele lucrătoare"),
+        h("select", { class: "leave-select", "data-key": `leaverun:${first}`, onchange: (e) => { if (e.target.value) set(e.target.value === "none" ? run : working, e.target.value === "none" ? null : e.target.value); } },
+          h("option", { value: "" }, "alege…"), h("option", { value: "none" }, "Fără concediu (toate zilele)"), ...kinds(null)))
+    : null;
+  const days = run.map((date) => {
+    const info = dayInfo(sheet, date);
+    const code = leaves[date] ?? "";
+    const excluded = driver.excludedDays.includes(date);
+    return h("div", { class: `leave-day ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${code ? "on" : ""} ${excluded ? "excluded" : ""}`,
+      title: excluded ? "Ziua e scoasă din pontaj, deci concediul nu se numără" : info?.holiday ?? "" },
+      h("b", {}, `${weekdayName(date).slice(0, 3)} ${shortDate(date)}`),
+      h("select", { class: `leave-select ${code ? "manual" : ""}`, "data-key": `leave:${date}`, title: "Felul concediului. „Fără” = zi liberă obișnuită.", onchange: (e) => set([date], e.target.value || null) },
+        h("option", { value: "", selected: !code }, "Fără concediu"),
+        ...kinds(code)),
+      excluded ? h("button", { class: "btn small ghost", title: "Pune ziua la loc în pontaj", onclick: () => edit((d) => toggleDay(d, date)) }, "Pune ziua la loc") : null);
+  });
+  return [
+    h("tr", { class: "day-gap" }, h("td", { colspan: 8 })),
+    h("tr", { class: "leave-run" },
+      h("td", { colspan: 8 },
+        h("div", { class: "day-line" },
+          h("div", { class: "day-title" }, h("b", {}, title), h("span", { class: "muted" }, "fără nicio cursă")),
+          marked ? h("span", { class: "pill code" }, `${marked} ${marked === 1 ? "zi" : "zile"} de concediu`) : null,
+          all),
+        h("div", { class: "leave-days" }, days))),
+  ];
+}
+
 function dayRows(driver, sheet, date, trips, edit, resolveOverlap) {
   const row = driver.days.find((d) => d.date === date);
-  const info = sheet.days.find((d) => `${sheet.year}-${String(sheet.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}` === date);
+  const info = dayInfo(sheet, date);
   const outside = !info;
   const excursionOnly = trips.length > 0 && trips.every((t) => t.eff.excursion);
   const excluded = !!row?.excluded;
@@ -464,7 +496,7 @@ export function renderCatbDriver(container, ctx) {
       chip("Ore staționare", duration(t.stationMin), { title: "Dedusă: plecarea cursei următoare minus sosirea celei dinainte" }),
       excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
       Object.keys(t.leaveDays ?? {}).length
-        ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zile lucrătoare de concediu, alese la pauzele lungi" })
+        ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
         : null,
       chip("Total ore", duration(t.totalMin), { tone: t.overMin > 0 ? "bad" : "" }),
       chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
@@ -479,13 +511,17 @@ export function renderCatbDriver(container, ctx) {
     if (!byDate.has(date)) byDate.set(date, []);
     byDate.get(date).push(trip);
   }
+  // Days with trips and blocks of free days, together, in date order.
+  const blocks = [...byDate.keys()].map((date) => ({ date, rows: () => dayRows(driver, sheet, date, byDate.get(date), edit, ctx.resolveOverlap) }));
+  for (const run of freeRuns(driver.freeDays ?? [])) blocks.push({ date: run[0], rows: () => leaveRunRows(driver, sheet, run, edit) });
+  blocks.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const body = h("tbody");
-  for (const date of [...byDate.keys()].sort()) body.append(...dayRows(driver, sheet, date, byDate.get(date), edit, ctx.resolveOverlap));
+  for (const block of blocks) body.append(...block.rows());
 
   const table = h("table", { class: "data-table catb-table" },
     h("thead", {}, h("tr", {}, ["Tip", "Plecare", "Sosire", "Din", "Spre", "Ore", "Lei", ""].map((text) => h("th", {}, text)))),
     body);
   container.replaceChildren(
     head,
-    driver.trips.length ? h("div", { class: "table-scroll", id: "catb-scroll" }, table) : h("div", { class: "empty-note" }, "Șoferul nu are curse în luna aceasta."));
+    blocks.length ? h("div", { class: "table-scroll", id: "catb-scroll" }, table) : h("div", { class: "empty-note" }, "Șoferul nu are curse în luna aceasta."));
 }

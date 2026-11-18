@@ -321,10 +321,18 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .catb-table td.pause-what, .catb-table td.pause-cell { text-align: left; }
 .pause-what > * { margin-right: 12px; }
 .pause-span { font-weight: 600; }
-.leave-ctl { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.leave-ctl > label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
-.leave-ctl select { padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12.5px; color: var(--text); background: #fff; }
-.leave-ctl select.manual { border-color: var(--manual); color: var(--manual); font-weight: 600; }
+.leave-run td { background: #f1f7f2; text-align: left; padding: 8px 12px; border-top: 2px solid #c5dccb; }
+.leave-run .day-title b { font-size: 14px; text-transform: none; }
+.leave-run .ctl.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.leave-days { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.leave-day { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: #fff; min-width: 178px; }
+.leave-day b { font-size: 12px; text-transform: capitalize; }
+.leave-day.off { background: #eef0f4; }
+.leave-day.holiday { background: var(--holiday); }
+.leave-day.on { border-color: #86b894; box-shadow: inset 3px 0 0 #3f8f55; }
+.leave-day.excluded { opacity: .6; }
+.leave-select { padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12.5px; color: var(--text); background: #fff; }
+.leave-select.manual { border-color: var(--manual); color: var(--manual); font-weight: 600; }
 .pause-row.with-controls td { border-bottom: 0; }
 .pause-ctl-row td { padding-top: 0; }
 .pause-ctl-row.overlap td { background: #fde9e9; }

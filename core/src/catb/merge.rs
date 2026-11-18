@@ -58,7 +58,7 @@ fn is_edited(trip: &Trip) -> bool {
 
 /// Has the office decided anything about this driver (so he must not disappear on his own)?
 pub(super) fn has_decisions(driver: &Driver) -> bool {
-    !driver.pause_edits.is_empty() || !driver.excluded_days.is_empty() || driver.trips.iter().any(|t| t.manual || is_edited(t))
+    !driver.pause_edits.is_empty() || !driver.excluded_days.is_empty() || !driver.leaves.is_empty() || driver.trips.iter().any(|t| t.manual || is_edited(t))
 }
 
 fn short(trip: &Trip) -> String {

@@ -142,12 +142,9 @@ pub enum PauseState {
     Off,
 }
 
-/// The kinds of leave the office can pick for a long pause: (code of the timesheet, name). Same codes as the monthly
-/// timesheet of the tachograph mode (`CO`, `CM`, `CP`, `CFP`).
+/// The kinds of leave the office can pick for a day without any trip: (code of the timesheet, name). Same codes as the
+/// monthly timesheet of the tachograph mode (`CO`, `CM`, `CP`, `CFP`).
 pub const LEAVE_TYPES: [(&str, &str); 4] = [("CO", "Concediu de odihnă"), ("CM", "Concediu medical"), ("CP", "Concediu parental"), ("CFP", "Concediu fără plată")];
-
-/// A pause is offered as a leave only when it is longer than this many minutes (one day).
-pub const LEAVE_MIN_GAP_MIN: i32 = 24 * 60;
 
 /// Name of a leave code ("CO" → "Concediu de odihnă"); the code itself when it is not known.
 pub fn leave_name(code: &str) -> &str {
@@ -164,8 +161,8 @@ pub struct PauseEdit {
     /// Waiting time typed by hand, in hours (half hours or minutes allowed).
     pub hours: Option<f64>,
     pub note: String,
-    /// The driver was on leave: the code of the kind of leave (see [`LEAVE_TYPES`]). Only a pause longer than a day can be
-    /// a leave.
+    /// Only read from months saved by 0.3.11–0.3.12, which chose a leave for a whole pause: the next recompute turns it
+    /// into a leave on each free working day of the pause (see [`Driver::leaves`]) and clears it.
     pub leave: Option<String>,
 }
 
@@ -205,13 +202,6 @@ pub struct Pause {
     pub counted_min: i32,
     /// Added to the estimate for the waiting beyond the included time.
     pub extra_pay: f64,
-    /// The pause is longer than a day ([`LEAVE_MIN_GAP_MIN`]): the office may choose a leave for it.
-    pub can_leave: bool,
-    /// Working days (Mon–Fri, not legal holidays) inside the pause on which the driver had no trip at all: the days a
-    /// leave writes in the pontaj (there may be none, e.g. 27 hours from Monday 14:00 to Tuesday 17:00).
-    pub free_days: Vec<NaiveDate>,
-    /// The kind of leave the office chose (code); a leave is a pauză: nothing of it counts as waiting.
-    pub leave: Option<String>,
     pub alerts: Vec<Alert>,
 }
 
@@ -232,7 +222,7 @@ pub struct DayRow {
     pub pay_total: f64,
     /// Taken out of the pontaj by the office (it stays on screen, but counts nowhere).
     pub excluded: bool,
-    /// A working day of a leave the office chose for the pause around it: the code of the kind of leave.
+    /// The day is a leave the office chose (a day without any trip): the code of the kind of leave.
     pub leave: Option<String>,
     pub alerts: Vec<Alert>,
 }
@@ -251,7 +241,7 @@ pub struct Totals {
     pub pay_total: f64,
     /// Minutes above the monthly ceiling (0 when within it).
     pub over_min: i32,
-    /// Working days of leave in the month, per code of leave.
+    /// Days of leave in the month, per code of leave.
     pub leave_days: BTreeMap<String, i32>,
 }
 
@@ -289,7 +279,13 @@ pub struct Driver {
     pub trips: Vec<Trip>,
     pub pause_edits: Vec<PauseEdit>,
     pub excluded_days: Vec<NaiveDate>,
+    /// Days the office marked as leave: date → code of the kind of leave ([`LEAVE_TYPES`]). Only a day without any trip
+    /// ([`Driver::free_days`]) counts as leave; if a trip shows up on it later, the leave stays here but counts nowhere.
+    pub leaves: BTreeMap<NaiveDate, String>,
     // --- derived ---
+    /// The days of the month on which the driver has no trip at all (weekends and holidays included): the days that can
+    /// be marked as leave.
+    pub free_days: Vec<NaiveDate>,
     pub pauses: Vec<Pause>,
     pub days: Vec<DayRow>,
     pub totals: Totals,
