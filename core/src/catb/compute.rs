@@ -120,13 +120,14 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
         let gap_min = (end - start).num_minutes() as i32;
         let busy_min = busy_minutes(start, end, &between);
         let mut pause = Pause { prev: a.id.clone(), next: b.id.clone(), place_from: a.eff.to.clone(), place_to: b.eff.from.clone(), start: Some(start), end: Some(end), gap_min, busy_min, ..Default::default() };
+        pause.can_leave = gap_min > LEAVE_MIN_GAP_MIN;
         pause.free_days = free_days(start, end, &between);
         if let Some(edit) = edits.iter().find(|e| e.prev == a.id && e.next == b.id) {
             pause.state = edit.state;
             pause.hours_override = edit.hours;
             pause.note = edit.note.clone();
-            // A leave needs at least one whole free day in the pause, and a kind of leave we know.
-            pause.leave = edit.leave.clone().filter(|code| !pause.free_days.is_empty() && LEAVE_TYPES.iter().any(|(known, _)| known == code));
+            // A leave needs a pause longer than a day, and a kind of leave we know.
+            pause.leave = edit.leave.clone().filter(|code| pause.can_leave && LEAVE_TYPES.iter().any(|(known, _)| known == code));
         }
         // He waits (staționare) only at Otopeni; in Constanța he is at home (pauză). A far trip without a tariff is already an
         // excursion (see `effective`), so the pause around it is out too.
@@ -152,8 +153,8 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
 }
 
 /// The working days (Monday to Friday, not legal holidays) between the day the pause starts and the day it ends (both left
-/// out, the driver worked on them) on which none of the other trips of the pause was running: the days the driver can have
-/// been on leave. A weekend off is not a leave, so a pause without such a day cannot be one.
+/// out, the driver worked on them) on which none of the other trips of the pause was running: the days a leave writes in
+/// the pontaj. A weekend off is no leave, so weekend days and legal holidays are not in the list.
 fn free_days(start: chrono::NaiveDateTime, end: chrono::NaiveDateTime, between: &[&Trip]) -> Vec<NaiveDate> {
     let busy = |day: NaiveDate| {
         between.iter().any(|trip| {
@@ -526,29 +527,49 @@ mod tests {
     }
 
     #[test]
-    fn a_pause_without_a_whole_free_day_or_with_an_unknown_kind_is_not_a_leave() {
-        // 25 hours, but he drives on both days: no whole day is free.
+    fn any_pause_longer_than_a_day_can_be_a_leave_even_without_a_whole_free_day() {
+        // 25 hours (Mon 11:00 → Tue 12:00), but he drives on both days: the office can still choose a leave for it, only
+        // there is no working day to write it on.
         let mut d = driver(vec![
             trip("eco-1", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 08:00", Some("2026-10-05 11:00")),
             trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-06 12:00", Some("2026-10-06 15:00")),
         ]);
+        run(&mut d);
+        assert!(d.pauses[0].can_leave && d.pauses[0].leave.is_none());
         d.pause_edits.push(leave_edit("CO"));
         run(&mut d);
-        assert!(d.pauses[0].free_days.is_empty() && d.pauses[0].leave.is_none() && d.totals.leave_days.is_empty());
+        assert_eq!(d.pauses[0].leave.as_deref(), Some("CO"));
+        assert!(d.pauses[0].free_days.is_empty() && d.totals.leave_days.is_empty() && d.days.iter().all(|x| x.leave.is_none()));
 
-        let mut d = week_off();
-        d.pause_edits.push(leave_edit("XX"));
-        run(&mut d);
-        assert!(d.pauses[0].leave.is_none());
-
-        // A plain weekend off (Friday evening to Monday morning) has no working day to be a leave.
+        // A weekend off (Friday afternoon to Monday morning) has no working day either.
         let mut d = driver(vec![
             trip("eco-1", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-09 15:00", Some("2026-10-09 18:00")),
             trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-12 05:00", Some("2026-10-12 08:00")),
         ]);
         d.pause_edits.push(leave_edit("CO"));
         run(&mut d);
-        assert!(d.pauses[0].free_days.is_empty() && d.pauses[0].leave.is_none());
+        assert!(d.pauses[0].can_leave && d.pauses[0].leave.is_some() && d.pauses[0].free_days.is_empty());
+    }
+
+    #[test]
+    fn a_pause_of_a_day_or_less_or_an_unknown_kind_is_not_a_leave() {
+        // Exactly 24 hours is not longer than a day.
+        let mut d = driver(vec![
+            trip("eco-1", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 08:00", Some("2026-10-05 11:00")),
+            trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-06 11:00", Some("2026-10-06 14:00")),
+        ]);
+        d.pause_edits.push(leave_edit("CO"));
+        run(&mut d);
+        assert_eq!((d.pauses[0].gap_min, d.pauses[0].can_leave), (24 * 60, false));
+        assert!(d.pauses[0].leave.is_none());
+        d.trips[1].departure = parse_time("2026-10-06 11:01").unwrap();
+        run(&mut d);
+        assert!(d.pauses[0].can_leave && d.pauses[0].leave.is_some(), "one minute more is longer than a day");
+
+        let mut d = week_off();
+        d.pause_edits.push(leave_edit("XX"));
+        run(&mut d);
+        assert!(d.pauses[0].can_leave && d.pauses[0].leave.is_none());
     }
 
     #[test]

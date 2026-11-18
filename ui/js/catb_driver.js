@@ -30,7 +30,12 @@ const pauseClass = (pause) => (pause.kind === "overlap" ? "overlap" : isStation(
 
 /** One sentence under the pause: whether it counts in the hours, and what the choice changes. */
 function pauseHint(pause) {
-  if (pause.leave) return `${leaveName(pause.leave)}: zilele lucrătoare libere din pauză se trec în pontaj cu codul ${pause.leave}. Nu se numără nimic ca staționare și nu se plătește.`;
+  if (pause.leave) {
+    const marked = pause.freeDays.length
+      ? `zilele lucrătoare libere din pauză se trec în pontaj cu codul ${pause.leave}`
+      : "în pauză nu e nicio zi lucrătoare întreagă liberă (șoferul are curse în ambele zile), așa că nu se trece nimic în pontaj";
+    return `${leaveName(pause.leave)}: ${marked}. Nu se numără nimic ca staționare și nu se plătește.`;
+  }
   if (pause.kind === "overlap") return "Sosirea e doar estimată (plecarea + durata fixă a traseului), plecările sunt reale. Apasă „Rezolvă suprapunerea” ca aplicația să mute orele celor două curse, sau corectează-le tu.";
   if (isStation(pause)) {
     return pause.state === "stayed"
@@ -255,19 +260,18 @@ function pauseControls(driver, pause, edit) {
 }
 
 /**
- * "Concediu: Nu / Da" and, for "Da", which kind of leave. Only a pause with at least one free working day in it can be
- * a leave (a weekend off cannot), so only those get the selector. The working days of the pause are then written in the
- * pontaj with the code of the leave.
+ * "Concediu: Nu / Da" and, for "Da", which kind of leave. Every pause longer than a day gets the selector (Rust says so
+ * with `canLeave`). The free working days of the pause, if there are any, are then written in the pontaj with the code.
  */
 function leaveControls(driver, pause, edit) {
-  if (!pause.freeDays?.length) return null;
+  if (!pause.canLeave) return null;
   const set = (leave) => edit((d) => setPause(d, pause, { leave }));
   const on = pause.leave != null;
   const days = driver.days.filter((d) => d.leave && pause.freeDays.includes(d.date)).length;
   const yesNo = h("select", {
     class: `leave-select ${on ? "manual" : ""}`,
     "data-key": `leave:${pause.prev}`,
-    title: "Pauza are zile lucrătoare libere întregi. Dacă șoferul a fost în concediu, alege „Da” și apoi felul concediului.",
+    title: "Pauza e mai lungă de o zi. Dacă șoferul a fost în concediu, alege „Da” și apoi felul concediului.",
     onchange: (e) => set(e.target.value === "yes" ? LEAVE_TYPES[0][0] : null),
   }, h("option", { value: "no", selected: !on }, "Nu"), h("option", { value: "yes", selected: on }, "Da"));
   const kind = on
@@ -278,7 +282,10 @@ function leaveControls(driver, pause, edit) {
   return h("span", { class: "leave-ctl" },
     h("label", {}, h("span", {}, "Concediu"), yesNo),
     kind,
-    h("span", { class: "muted" }, on ? `${days} ${days === 1 ? "zi lucrătoare" : "zile lucrătoare"} în pontaj` : `${count} ${count === 1 ? "zi lucrătoare liberă" : "zile lucrătoare libere"}`));
+    h("span", { class: "muted", title: count ? "" : "Șoferul are curse în ambele zile (sau pauza prinde doar weekend), nu există o zi lucrătoare întreagă liberă pe care să se scrie concediul." },
+      on
+        ? count ? `${days} ${days === 1 ? "zi lucrătoare" : "zile lucrătoare"} în pontaj` : "nicio zi lucrătoare întreagă liberă: nu se trece nimic în pontaj"
+        : count ? `${count} ${count === 1 ? "zi lucrătoare liberă" : "zile lucrătoare libere"}` : "nicio zi lucrătoare întreagă liberă"));
 }
 
 /** Where the driver is while he waits: "la Constanta" or "Otopeni → Constanta" when he comes back some other way. */

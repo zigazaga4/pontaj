@@ -370,7 +370,8 @@ fn pause_state_text(pause: &Pause) -> String {
         _ if pause.kind == PauseKind::Overlap => String::new(),
         _ if pause.leave.is_some() => {
             let code = pause.leave.as_deref().unwrap_or_default();
-            format!("{} ({code}), ales în aplicație: nu se numără", leave_name(code))
+            let no_day = if pause.free_days.is_empty() { "; nicio zi lucrătoare întreagă liberă, deci nu se trece nimic în pontaj" } else { "" };
+            format!("{} ({code}), ales în aplicație: nu se numără{no_day}", leave_name(code))
         }
         (PauseState::Auto, true) => "staționare, după reguli (la Otopeni)".to_string(),
         (PauseState::Auto, false) => "pauză, după reguli: acasă în Constanța sau peste limita pauzei lungi, nu se numără".to_string(),
