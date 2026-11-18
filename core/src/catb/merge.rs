@@ -8,6 +8,8 @@
 
 use std::collections::BTreeMap;
 
+use chrono::Datelike;
+
 use super::api::ApiRow;
 use super::model::*;
 use crate::calendar;
@@ -125,7 +127,7 @@ pub fn merge_rows(sheet: &mut Sheet, rows: &[ApiRow], skipped: usize, fetched_at
             }
         }
 
-        for trip in driver.trips.iter().filter(|t| !t.manual && !seen.contains(&t.id.as_str())) {
+        for trip in driver.trips.iter().filter(|t| !t.manual && !t.generated && !seen.contains(&t.id.as_str())) {
             gone.push(format!("{}: {}", driver.name, short(trip)));
         }
     }
@@ -147,6 +149,35 @@ pub fn merge_rows(sheet: &mut Sheet, rows: &[ApiRow], skipped: usize, fetched_at
         } else {
             format!("{}: nu mai apare în API; l-am păstrat cu cursele pe care le avea.", driver.name)
         });
+    }
+}
+
+/// How many trips on each side of the month a driver keeps (the nearest ones): enough to find a regular trip even when the
+/// nearest are private or excursions.
+const NEIGHBOR_TRIPS: usize = 8;
+
+/// Splits the rows of a download: those that leave in the month (the sheet's trips) and the others (the days around it).
+pub fn split_month(rows: &[ApiRow], year: i32, month: u32) -> (Vec<ApiRow>, Vec<ApiRow>) {
+    rows.iter().cloned().partition(|row| (row.departure.year(), row.departure.month()) == (year, month))
+}
+
+/// Notes, for each driver of the sheet, his nearest trips before and after the month (see [`Driver::before`]). They come
+/// from the API only, so a download replaces them: the office has nothing to protect there. A driver the answer has no
+/// trip around the month for keeps what he had.
+pub fn set_neighbors(sheet: &mut Sheet, around: &[ApiRow]) {
+    let Some(start) = chrono::NaiveDate::from_ymd_opt(sheet.year, sheet.month, 1).and_then(|d| d.and_hms_opt(0, 0, 0)) else { return };
+    for driver in &mut sheet.drivers {
+        let mut mine: Vec<&ApiRow> = around.iter().filter(|r| r.driver_id == driver.id).collect();
+        // An answer that says nothing about the driver changes nothing: the generated trips must not vanish because the API
+        // was silent once.
+        if mine.is_empty() {
+            continue;
+        }
+        mine.sort_by(|a, b| (a.departure, &a.trip_id).cmp(&(b.departure, &b.trip_id)));
+        mine.dedup_by(|a, b| a.trip_id == b.trip_id);
+        let (before, after): (Vec<&ApiRow>, Vec<&ApiRow>) = mine.into_iter().partition(|r| r.departure < start);
+        driver.before = before.iter().rev().take(NEIGHBOR_TRIPS).rev().map(|r| from_row(r)).collect();
+        driver.after = after.iter().take(NEIGHBOR_TRIPS).map(|r| from_row(r)).collect();
     }
 }
 
@@ -181,11 +212,17 @@ mod tests {
         }
     }
 
+    /// The same trip the other way round (Otopeni → Constanța): a driver's trips follow each other.
+    fn back(mut row: ApiRow) -> ApiRow {
+        std::mem::swap(&mut row.from, &mut row.to);
+        row
+    }
+
     fn first_download() -> Sheet {
         let mut sheet = new_sheet(2026, 10);
         let rows = vec![
             row(1, "Popescu Ion", "eco-1", "2026-10-05 05:00", "2026-10-05 08:00"),
-            row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00"),
+            back(row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00")),
             row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:00"),
         ];
         merge_rows(&mut sheet, &rows, 0, "2026-10-31 10:00");
@@ -218,7 +255,7 @@ mod tests {
         // The API now has a new trip for Popescu and a new driver, and nothing else.
         let rows = vec![
             row(1, "Popescu Ion", "eco-1", "2026-10-05 05:00", "2026-10-05 08:00"),
-            row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00"),
+            back(row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00")),
             row(1, "Popescu Ion", "eco-4", "2026-10-07 05:00", "2026-10-07 08:00"),
             row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:00"),
             row(3, "Nou Gheorghe", "eco-5", "2026-10-08 05:00", "2026-10-08 08:00"),
@@ -248,7 +285,7 @@ mod tests {
         let mut sheet = first_download();
         let rows = vec![
             row(1, "Popescu Ion", "eco-1", "2026-10-05 05:00", "2026-10-05 08:00"),
-            row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00"),
+            back(row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00")),
             row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:00"),
         ];
         let before = sheet.drivers.clone();
@@ -277,13 +314,57 @@ mod tests {
     fn a_trip_the_api_now_describes_differently_is_left_as_it_is_and_reported() {
         let mut sheet = first_download();
         sheet.drivers.iter_mut().find(|d| d.id == 1).unwrap().trips[0].edit.arrival = parse_time("2026-10-05 09:00");
-        let rows = vec![row(1, "Popescu Ion", "eco-1", "2026-10-05 05:15", "2026-10-05 08:15"), row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00"), row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:00")];
+        let rows = vec![row(1, "Popescu Ion", "eco-1", "2026-10-05 05:15", "2026-10-05 08:15"), back(row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00")), row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:00")];
         merge_rows(&mut sheet, &rows, 0, "z");
         assert_eq!(sheet.notices.len(), 1, "{:?}", sheet.notices);
         assert!(sheet.notices[0].starts_with("1 cursă din foaie are alte date în API") && sheet.notices[0].contains("eco-1"), "{:?}", sheet.notices);
         let trip = &sheet.drivers.iter().find(|d| d.id == 1).unwrap().trips[0];
         assert_eq!(trip.departure, parse_time("2026-10-05 05:00").unwrap(), "the sheet keeps what it had");
         assert_eq!(trip.edit.arrival, parse_time("2026-10-05 09:00"));
+    }
+
+    #[test]
+    fn the_days_around_the_month_are_neighbors_and_not_trips() {
+        use super::super::api::Parsed;
+        let mut coach = row(1, "Badea Lucian", "eco-1", "2026-09-29 05:00", "2026-09-29 08:00");
+        (coach.car_model, coach.car_seats) = ("TOURISMO".into(), 55);
+        let rows = vec![
+            coach,
+            back(row(1, "Badea Lucian", "eco-30", "2026-10-31 11:00", "2026-10-31 14:00")),
+            back(row(1, "Badea Lucian", "eco-31", "2026-11-01 05:30", "2026-11-01 08:30")),
+            row(1, "Badea Lucian", "eco-32", "2026-11-03 05:00", "2026-11-03 08:00"),
+            back(row(1, "Badea Lucian", "eco-33", "2026-12-20 05:00", "2026-12-20 08:00")),
+            row(2, "Doar Context", "eco-40", "2026-10-30 05:00", "2026-10-30 08:00"),
+        ];
+        let sheet = super::super::apply_download(None, 2026, 11, &Parsed { rows, ..Default::default() }, "x", &Settings::default());
+        // Driver 1 drove a coach in September (outside the month): that does not make him category D. Driver 2 has no trip
+        // in November, so he is not in the sheet at all.
+        assert_eq!(sheet.drivers.len(), 1);
+        let badea = &sheet.drivers[0];
+        let ids = |trips: &[Trip]| trips.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&badea.before), ["eco-1", "eco-30"]);
+        assert_eq!(ids(&badea.after), ["eco-33"]);
+        // The sheet's trips are those of November, and the drive that explains how he got to Otopeni on the 1st is there.
+        assert_eq!(ids(&badea.trips), ["gen-pre-eco-31", "eco-31", "eco-32"]);
+        assert!(sheet.notices.is_empty(), "{:?}", sheet.notices);
+
+        // A download with no trip in the month says so, and the same data twice changes nothing.
+        let empty = super::super::apply_download(None, 2026, 8, &Parsed { rows: vec![row(1, "X", "eco-9", "2026-09-29 05:00", "2026-09-29 08:00")], ..Default::default() }, "x", &Settings::default());
+        assert!(empty.notices.iter().any(|n| n.contains("nicio cursă")), "{:?}", empty.notices);
+        let again = super::super::apply_download(Some(sheet.clone()), 2026, 11, &Parsed { rows: vec![], ..Default::default() }, "y", &Settings::default());
+        assert_eq!(again.drivers[0].trips, sheet.drivers[0].trips, "generated trips are not 'gone from the API'");
+        assert!(again.notices.iter().all(|n| !n.contains("din foaie")), "{:?}", again.notices);
+    }
+
+    #[test]
+    fn when_the_api_refuses_the_days_around_the_month_the_old_neighbors_stay_and_the_office_is_told() {
+        use super::super::api::Parsed;
+        let mut sheet = first_download();
+        sheet.drivers[1].before = vec![back(row(1, "Popescu Ion", "eco-0", "2026-09-30 11:00", "2026-09-30 14:00"))].iter().map(from_row).collect();
+        let parsed = Parsed { rows: vec![row(1, "Popescu Ion", "eco-1", "2026-10-05 05:00", "2026-10-05 08:00")], without_neighbors: true, ..Default::default() };
+        let sheet = super::super::apply_download(Some(sheet), 2026, 10, &parsed, "z", &Settings::default());
+        assert_eq!(sheet.drivers.iter().find(|d| d.id == 1).unwrap().before.len(), 1);
+        assert!(sheet.notices.iter().any(|n| n.contains("deplasările dintre luni nu se generează")), "{:?}", sheet.notices);
     }
 
     #[test]

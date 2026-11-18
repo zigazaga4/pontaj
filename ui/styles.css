@@ -303,6 +303,7 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .day-excluded td .btn { opacity: 1; }
 .trip-row.removed td:not(.actions) { text-decoration: line-through; opacity: .55; }
 .trip-row.edited td:first-child { box-shadow: inset 3px 0 0 var(--manual); }
+.trip-row.generated td { background: #f2f9fb; }
 .trip-row.excursion td { background: #f1f1f4; color: var(--muted); }
 .trip-row.excursion td input { color: var(--muted); }
 .pill.excursion { background: #e6e8ef; color: #4b5266; }
@@ -315,6 +316,7 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .badge.private, .badge.vip { background: #efe3fb; color: #5b21b6; }
 .badge.bus { background: #dcf3e2; color: #166534; }
 .badge.passenger { background: #fdebd2; color: #92400e; }
+.badge.transfer { background: #d9eef2; color: #0b5360; }
 .badge.pause { background: #ececf2; color: #52586a; }
 .badge.pause.normal { background: #f6ebc9; color: #6b4e00; }
 .badge.pause.overlap { background: #fbd0d0; color: #8e1b1b; }

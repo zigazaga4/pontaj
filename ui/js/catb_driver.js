@@ -6,7 +6,8 @@ import { showDialog } from "./dialog.js";
 import { boundInput } from "./table.js";
 import { duration, formatWhen, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, spanText, weekdayName } from "./time.js";
 
-export const KIND_LABELS = { eco: "Eco", private: "Privată", vip: "VIP", bus: "Autocar", passenger: "Pasager" };
+export const KIND_LABELS = { eco: "Eco", private: "Privată", vip: "VIP", bus: "Autocar", passenger: "Pasager", transfer: "Deplasare" };
+const GENERATED_HINT = "Adăugată de aplicație: șoferul a ajuns într-un loc și următoarea cursă pleacă din altul (Otopeni la un capăt), iar drumul ăsta nu apare în API (a mers cu mașina goală sau ca pasager). Se numără ca o cursă regulată. Poți schimba orele și locurile sau o poți scoate cu ✕.";
 // The only two things a wait between regular trips can be: waiting at Otopeni (counts) or a break (counts nothing).
 const PAUSE_CHOICES = [
   ["station", "Staționare"],
@@ -198,7 +199,10 @@ function tripRow(trip, edit) {
   const counted = trip.eff.countsHours && trip.eff.minutes > 0;
   const regular = trip.eff.regular;
   const cells = [
-    h("td", { class: "kind" }, h("span", { class: `badge ${trip.kind}` }, KIND_LABELS[trip.kind] ?? trip.kind), trip.manual ? h("span", { class: "muted", title: "Adăugată manual" }, " ✎") : null),
+    h("td", { class: "kind" },
+      h("span", { class: `badge ${trip.kind}`, title: trip.generated ? GENERATED_HINT : "" }, KIND_LABELS[trip.kind] ?? trip.kind),
+      trip.manual ? h("span", { class: "muted", title: "Adăugată manual" }, " ✎") : null,
+      trip.generated ? h("span", { class: "muted", title: GENERATED_HINT }, " auto") : null),
     h("td", {}, timeInput(trip, "departure", edit)),
     h("td", {}, timeInput(trip, "arrival", edit)),
     h("td", {}, placeInput(trip, "from", edit)),
@@ -208,13 +212,13 @@ function tripRow(trip, edit) {
     h("td", { class: "actions" },
       removed
         ? h("button", { class: "icon-btn", title: "Pune cursa la loc", onclick: () => edit((d) => (d.trips.find((x) => x.id === trip.id).edit.removed = false)) }, "↺")
-        : h("button", { class: "icon-btn", title: trip.manual ? "Șterge cursa adăugată" : "Scoate cursa din pontaj", onclick: () => edit((d) => {
+        : h("button", { class: "icon-btn", title: trip.manual ? "Șterge cursa adăugată" : trip.generated ? "Scoate deplasarea (nu se mai generează la locul ăsta)" : "Scoate cursa din pontaj", onclick: () => edit((d) => {
             if (trip.manual) d.trips.splice(d.trips.findIndex((x) => x.id === trip.id), 1);
             else d.trips.find((x) => x.id === trip.id).edit.removed = true;
           }) }, "✕"),
       trip.car ? h("small", { class: "muted car", title: "Mașina, modelul și locurile din API" }, carText(trip)) : null),
   ];
-  return h("tr", { class: `trip-row ${removed ? "removed" : ""} ${trip.eff.excursion ? "excursion" : ""} ${trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null ? "edited" : ""}` }, cells);
+  return h("tr", { class: `trip-row ${removed ? "removed" : ""} ${trip.eff.excursion ? "excursion" : ""} ${trip.generated ? "generated" : ""} ${trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null ? "edited" : ""}` }, cells);
 }
 
 /** A caption above a control, so nobody has to guess what an empty box is for. */
@@ -391,7 +395,9 @@ function dayRows(driver, sheet, date, trips, edit, resolveOverlap) {
   for (const trip of trips) {
     body.push(tripRow(trip, edit));
     const pause = pauseOf.get(trip.id);
-    if (pause) body.push(...pauseRows(driver, pause, edit, resolveOverlap));
+    // Two trips that meet with no time between them (a generated drive and the trip it leads to) have nothing to show.
+    const meets = pause && pause.gapMin === 0 && !needsControls(pause) && !pause.alerts.length;
+    if (pause && !meets) body.push(...pauseRows(driver, pause, edit, resolveOverlap));
   }
   const group = [h("tr", { class: "day-gap" }, h("td", { colspan: 8 })), head, ...body];
   if (excluded) group.forEach((tr) => tr.classList.add("day-excluded"));

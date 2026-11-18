@@ -22,7 +22,7 @@ use chrono::{Datelike, NaiveDate};
 
 use super::config::CatbSettings;
 use super::model::*;
-use super::{cap, places, tariffs};
+use super::{cap, places, tariffs, transfers};
 use crate::calendar;
 use crate::settings::Settings;
 use crate::time::{fmt_duration, round_hours};
@@ -51,6 +51,7 @@ pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &S
     for trip in &mut driver.trips {
         trip.eff = effective(trip, cfg);
     }
+    transfers::sync(driver, year, month, settings);
     driver.trips.sort_by_key(|t| (t.eff.departure, t.id.clone()));
     driver.free_days = free_days(&driver.trips, year, month);
     migrate_pause_leaves(driver);
@@ -62,14 +63,14 @@ pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &S
     driver.proposals = cap::propose(driver, cap_min, settings);
 }
 
-fn effective(trip: &Trip, cfg: &CatbSettings) -> Effective {
+pub(super) fn effective(trip: &Trip, cfg: &CatbSettings) -> Effective {
     let departure = trip.edit.departure.unwrap_or(trip.departure);
     let arrival = trip.edit.arrival.or(trip.arrival);
     let from = trip.edit.from.clone().unwrap_or_else(|| trip.from.clone());
     let to = trip.edit.to.clone().unwrap_or_else(|| trip.to.clone());
     let minutes = arrival.map(|a| (a - departure).num_minutes()).filter(|m| *m >= 0).unwrap_or(0) as i32;
     let regular = match trip.kind {
-        TripKind::Eco | TripKind::Passenger => true,
+        TripKind::Eco | TripKind::Passenger | TripKind::Transfer => true,
         TripKind::Private | TripKind::Vip => cfg.main_route_private_regular && places::is_regular_route(&from, &to),
         TripKind::Bus => false,
     };
@@ -97,7 +98,7 @@ fn price_of(trip: &Trip, regular: bool, from: &str, to: &str, cfg: &CatbSettings
         return (price, "preț trecut manual".into());
     }
     if regular {
-        return (cfg.leg_pay(), "cursă".into());
+        return (cfg.leg_pay(), if trip.generated { "deplasare adăugată de aplicație" } else { "cursă" }.into());
     }
     // The exterior place is the end of the trip that is not on the regular route.
     let outside: Vec<&str> = [to, from].into_iter().filter(|p| !p.is_empty() && !places::is_main_route(p)).collect();
@@ -297,6 +298,17 @@ fn days(driver: &Driver, year: i32, month: u32) -> Vec<DayRow> {
         }
         if eff.price_note == NO_TARIFF {
             row.alerts.push(Alert::new("no_tariff", Level::Alert, format!("Cursă fără tarif: {} → {}. Trece prețul în dreptul cursei.", eff.from, eff.to)));
+        }
+        if trip.generated {
+            let (Some(start), Some(end)) = (eff.departure, eff.arrival) else { continue };
+            let text = format!(
+                "Deplasare adăugată de aplicație (nu apare în API): {} → {}, {}–{}. Se numără ca o cursă regulată; o poți schimba sau scoate din listă.",
+                eff.from,
+                eff.to,
+                start.format("%H:%M"),
+                end.format("%H:%M")
+            );
+            row.alerts.push(Alert::new("transfer", Level::Info, text));
         }
     }
     for pause in &driver.pauses {
@@ -701,7 +713,6 @@ mod tests {
     fn a_private_run_toward_otopeni_from_outside_the_county_is_the_same_kind_of_run() {
         // Tulcea → Otopeni: no tariff, not an excursion, not a question for the office: a leg like any other.
         let mut d = driver(vec![
-            trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 05:00", Some("2026-10-05 08:00")),
             trip("private-9", TripKind::Private, "Tulcea", "Aeroport Otopeni Bucuresti", "2026-10-05 10:00", Some("2026-10-05 14:30")),
             trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 17:00", Some("2026-10-05 20:00")),
         ]);
@@ -709,37 +720,48 @@ mod tests {
         let tulcea = d.trips.iter().find(|t| t.id == "private-9").unwrap();
         assert!(tulcea.eff.regular && tulcea.eff.counts_hours && !tulcea.eff.excursion);
         assert_eq!((tulcea.eff.price, tulcea.eff.price_note.as_str()), (120.0, "cursă"));
-        assert_eq!(d.pauses.len(), 2);
-        assert!(d.pauses.iter().all(|p| p.kind == PauseKind::Normal), "{:?}", d.pauses);
-        // The waiting of that day applies: 08:00 → 10:00 and 14:30 → 17:00.
-        assert_eq!((d.pauses[0].counted_min, d.pauses[1].counted_min), (120, 150));
+        assert_eq!(d.pauses.len(), 1);
+        assert_eq!(d.pauses[0].kind, PauseKind::Normal);
+        // The waiting of that day applies: 14:30 → 17:00.
+        assert_eq!(d.pauses[0].counted_min, 150);
         let day = &d.days[0];
-        assert_eq!((day.legs, day.pay_legs, day.pay_exterior), (3, 360.0, 0.0));
+        assert_eq!((day.legs, day.pay_legs, day.pay_exterior), (2, 240.0, 0.0));
         assert!(day.alerts.iter().all(|a| a.code != "no_tariff"), "{:?}", day.alerts);
     }
 
     #[test]
-    fn after_a_run_that_ends_in_the_county_the_time_is_a_pause_even_if_the_next_run_leaves_from_otopeni() {
-        // The private trip Otopeni → Năvodari, then the next run leaves from Otopeni: he is at home in Năvodari, so nothing
-        // counts and nothing is flagged (he came back some other way, which does not change his pay).
+    fn after_a_run_that_ends_in_the_county_the_drive_to_otopeni_is_added_and_the_time_before_it_is_a_pause() {
+        // The private trip Otopeni → Năvodari, then the next run leaves from Otopeni: nobody logged how he got there, so the
+        // app adds the drive (3 h, ending when the run leaves). The time he spent in Năvodari before it is a pause.
         let mut d = driver(vec![
             trip("private-9", TripKind::Private, "Aeroport Otopeni Bucuresti", "Navodari", "2026-10-05 05:00", Some("2026-10-05 09:00")),
-            trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 12:00", Some("2026-10-05 15:00")),
+            trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-06 12:00", Some("2026-10-06 15:00")),
         ]);
         run(&mut d);
-        assert_eq!(d.pauses.len(), 1);
-        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Rest, 0));
-        assert!(d.pauses[0].alerts.is_empty(), "{:?}", d.pauses[0].alerts);
+        assert_eq!(d.trips.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["private-9", "gen-pre-eco-2", "eco-2"]);
+        assert_eq!(d.pauses.len(), 2);
+        assert_eq!((d.pauses[0].kind, d.pauses[0].counted_min), (PauseKind::Rest, 0), "at home in Năvodari");
+        assert_eq!((d.pauses[1].gap_min, d.pauses[1].counted_min), (0, 0), "he drives straight to the next run");
+        assert!(d.pauses.iter().all(|p| p.alerts.is_empty()), "{:?}", d.pauses);
     }
 
     #[test]
-    fn arriving_in_otopeni_and_leaving_from_constanta_is_flagged_as_a_different_place() {
-        // He waits at Otopeni, but the next run leaves from Constanța: he probably went back as a passenger.
+    fn arriving_in_otopeni_and_leaving_from_constanta_adds_the_way_back() {
+        // He waits at Otopeni, but the next run leaves from Constanța: he came back with the car or as a passenger. The app
+        // adds that drive at the moment he arrived, so the wait at Otopeni is not counted and there is no remark.
         let mut d = driver(vec![
             trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 05:00", Some("2026-10-05 08:00")),
             trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 12:00", Some("2026-10-05 15:00")),
         ]);
         run(&mut d);
+        assert_eq!(d.trips.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["eco-1", "gen-ret-eco-1", "eco-2"]);
+        assert_eq!((d.days[0].legs, d.days[0].trip_min, d.days[0].station_min), (3, 180 + 180 + 180, 0));
+        assert!(d.pauses.iter().all(|p| p.alerts.iter().all(|a| a.code != "place_differs")), "{:?}", d.pauses);
+        // With the generation off it is the remark of before: he probably went back as a passenger.
+        let mut off = Settings::default();
+        off.catb.generate_transfers = false;
+        recompute_driver(&mut d, 2026, 10, &off);
+        assert_eq!(d.trips.len(), 2);
         assert!(d.pauses[0].alerts.iter().any(|a| a.code == "place_differs" && a.level == Level::Warn), "{:?}", d.pauses[0].alerts);
     }
 
@@ -848,10 +870,11 @@ mod tests {
 
     #[test]
     fn a_different_place_between_two_trips_is_flagged() {
-        // Arrives in Bucharest, the next trip leaves from Constanța: he came back some other way.
+        // Arrives in Bucharest, the next trip leaves from far away (Tulcea): not a return to Constanța, so the app adds
+        // nothing, and he is asked about: he came back some other way.
         let mut d = driver(vec![
             trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 05:00", Some("2026-10-05 08:00")),
-            trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 15:00", Some("2026-10-05 18:00")),
+            trip("eco-2", TripKind::Eco, "Tulcea", "Aeroport Otopeni Bucuresti", "2026-10-05 15:00", Some("2026-10-05 18:00")),
         ]);
         run(&mut d);
         let alert = d.pauses[0].alerts.iter().find(|a| a.code == "place_differs").expect("flagged");

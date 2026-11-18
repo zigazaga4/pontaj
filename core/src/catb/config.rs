@@ -32,6 +32,11 @@ pub struct CatbSettings {
     /// "Rezolvă suprapunerea": the least a trip keeps of its (estimated) duration when its time is moved to make room
     /// for the next one, in percent.
     pub overlap_keep_pct: i32,
+    /// When a regular trip starts somewhere the driver's last one did not end (Otopeni on one side), the app adds the
+    /// drive that explains it: an empty car to Otopeni, or the way back from it. Off: nothing is added.
+    pub generate_transfers: bool,
+    /// How long such a generated drive lasts (the office can still change each one).
+    pub transfer_min: i32,
     /// Amounts in the Excel file. Off: the file has hours and warnings only.
     pub show_money: bool,
     /// A driver who drove a category D vehicle is not Categoria B: he is on the tachograph. On: such drivers are left
@@ -61,6 +66,8 @@ impl Default for CatbSettings {
             count_other_trips: true,
             main_route_private_regular: true,
             overlap_keep_pct: 50,
+            generate_transfers: true,
+            transfer_min: 180,
             show_money: true,
             exclude_d_drivers: true,
             small_vehicle_max_seats: 8,

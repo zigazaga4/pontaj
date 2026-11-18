@@ -39,9 +39,18 @@ pub struct ApiRow {
 /// The rows of an answer, and how many could not be read.
 #[derive(Debug, Clone, Default)]
 pub struct Parsed {
+    /// Besides the month's trips, those of the days around it (see [`DAYS_BEFORE`], [`DAYS_AFTER`]): the caller keeps
+    /// only the month's as trips and uses the others to tell where each driver was when the month began and ended.
     pub rows: Vec<ApiRow>,
     pub skipped: usize,
+    /// The API refused the wider range, so only the month was asked for: no trips around it are known.
+    pub without_neighbors: bool,
 }
+
+/// Days before the month and after it that a download asks for as well. A driver's last trip before the month can be
+/// weeks old (he was on leave); 31 days covers a whole month away. The longest range the API gives is 93 days.
+pub const DAYS_BEFORE: i64 = 31;
+pub const DAYS_AFTER: i64 = 14;
 
 #[derive(Deserialize)]
 struct Response {
@@ -137,7 +146,7 @@ pub fn parse_rows(body: &str) -> Result<Parsed> {
     let response: Response = serde_json::from_str(body).map_err(|e| Error::new(format!("Răspunsul API-ului nu poate fi citit: {e}")))?;
     let total = response.data.len();
     let rows: Vec<ApiRow> = response.data.into_iter().filter_map(Raw::into_row).collect();
-    Ok(Parsed { skipped: total - rows.len(), rows })
+    Ok(Parsed { skipped: total - rows.len(), rows, without_neighbors: false })
 }
 
 /// The reason the API gave for refusing a request (`{"message": "..."}`).
@@ -148,7 +157,14 @@ fn refusal(body: &str) -> String {
         .unwrap_or_default()
 }
 
-fn get(url: &str, key: &str) -> Result<String> {
+/// What the server answered to one request.
+struct Reply {
+    status: u16,
+    retry_after: Option<String>,
+    body: String,
+}
+
+fn call(url: &str, key: &str) -> Result<Reply> {
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(60))).build().into();
     let mut response = agent
         .get(url)
@@ -157,25 +173,31 @@ fn get(url: &str, key: &str) -> Result<String> {
         .call()
         .map_err(|e| Error::new(format!("Nu pot ajunge la API (verifică internetul): {e}")))?;
     let status = response.status().as_u16();
-    let retry = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let retry_after = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
     let body = response
         .body_mut()
         .with_config()
         .limit(64 * 1024 * 1024)
         .read_to_string()
         .map_err(|e| Error::new(format!("Răspunsul API-ului s-a întrerupt: {e}")))?;
-    match status {
-        200 => Ok(body),
+    Ok(Reply { status, retry_after, body })
+}
+
+/// The body of a successful answer, or the explanation of the refusal in plain Romanian.
+fn accept(reply: Reply) -> Result<String> {
+    match reply.status {
+        200 => Ok(reply.body),
         401 => Err(Error::new("Cheia API este greșită sau a fost schimbată. Anunță administratorul aplicației ALT; o cheie nouă se poate trece în Reguli → Categoria B.")),
         404 => Err(Error::new("Accesul la API nu este activat pe server. Anunță administratorul aplicației ALT.")),
-        422 => Err(Error::new(format!("API-ul a refuzat cererea: {}", refusal(&body)))),
-        429 => Err(Error::new(format!("Prea multe cereri către API (maxim 30 pe minut). Încearcă din nou peste {} secunde.", retry.as_deref().unwrap_or("60")))),
+        422 => Err(Error::new(format!("API-ul a refuzat cererea: {}", refusal(&reply.body)))),
+        429 => Err(Error::new(format!("Prea multe cereri către API (maxim 30 pe minut). Încearcă din nou peste {} secunde.", reply.retry_after.as_deref().unwrap_or("60")))),
         503 => Err(Error::new("API-ul are o problemă de configurare pe server. Anunță administratorul aplicației ALT.")),
         other => Err(Error::new(format!("API-ul a răspuns cu eroarea {other}."))),
     }
 }
 
-/// Downloads all the trips of a month with one request.
+/// Downloads the trips of a month, and those of the days around it, with one request. If the API refuses the wider
+/// range, only the month is asked for (and the answer says so).
 pub fn fetch_month(cfg: &CatbSettings, year: i32, month: u32) -> Result<Parsed> {
     fetch_month_with_key(cfg, cfg.effective_key(), year, month)
 }
@@ -186,8 +208,16 @@ fn fetch_month_with_key(cfg: &CatbSettings, key: &str, year: i32, month: u32) ->
     }
     let first = NaiveDate::from_ymd_opt(year, month, 1).ok_or_else(|| Error::new("Luna aleasă nu este validă."))?;
     let last = first.with_day(days_in_month(year, month)).unwrap_or(first);
-    let url = format!("{}/external/driver-trips?date_from={first}&date_to={last}", cfg.api_base.trim().trim_end_matches('/'));
-    parse_rows(&get(&url, key)?)
+    let base = cfg.api_base.trim().trim_end_matches('/');
+    let url = |from: NaiveDate, to: NaiveDate| format!("{base}/external/driver-trips?date_from={from}&date_to={to}");
+
+    let wide = call(&url(first - chrono::Duration::days(DAYS_BEFORE), last + chrono::Duration::days(DAYS_AFTER)), key)?;
+    if wide.status != 422 {
+        return parse_rows(&accept(wide)?);
+    }
+    let mut parsed = parse_rows(&accept(call(&url(first, last), key)?)?)?;
+    parsed.without_neighbors = true;
+    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -243,5 +273,20 @@ mod tests {
     fn refusals_show_the_message_of_the_api() {
         assert_eq!(refusal(r#"{"message":"Intervalul depășește 93 de zile","errors":{}}"#), "Intervalul depășește 93 de zile");
         assert_eq!(refusal("nu e json"), "");
+    }
+
+    #[test]
+    fn answers_are_accepted_or_explained() {
+        let reply = |status: u16, body: &str| Reply { status, retry_after: Some("12".into()), body: body.into() };
+        assert_eq!(accept(reply(200, "{}")).unwrap(), "{}");
+        assert!(accept(reply(422, r#"{"message":"Interval prea lung"}"#)).unwrap_err().to_string().contains("Interval prea lung"));
+        assert!(accept(reply(429, "")).unwrap_err().to_string().contains("12 secunde"));
+        assert!(accept(reply(500, "")).unwrap_err().to_string().contains("500"));
+    }
+
+    #[test]
+    fn the_range_asked_for_fits_the_limit_of_the_api() {
+        // The longest month plus the days around it must stay under the 93 days the API allows.
+        assert!(31 + DAYS_BEFORE + DAYS_AFTER <= 93);
     }
 }

@@ -939,6 +939,26 @@ mod tests {
     }
 
     #[test]
+    fn a_drive_made_by_the_app_is_listed_in_the_detail_and_summed_with_the_trips() {
+        let body = r#"{"data":[
+          {"driver_id":7,"driver_name":"Badea Lucian","trip":{"type":"eco","id":"eco-1"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-10-31 11:00","duration_minutes":180},
+          {"driver_id":7,"driver_name":"Badea Lucian","trip":{"type":"eco","id":"eco-2"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-11-01 05:30","duration_minutes":180}
+        ]}"#;
+        let sheet = apply_download(None, 2026, 11, &parse_rows(body).unwrap(), "x", &Settings::default());
+        let driver = &sheet.drivers[0];
+        let rows = detail_rows(driver, 2026, 11);
+        let drive = rows.iter().find(|r| r.kind == "Deplasare").expect("the drive is a line of the detail");
+        assert_eq!((drive.minutes, drive.pay, drive.date), (Some(180), Some(120.0), NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()));
+        assert!(drive.note.contains("adăugată de aplicație"), "{}", drive.note);
+        assert_eq!(rows.iter().filter_map(|r| r.minutes).sum::<i32>(), driver.totals.total_min);
+        assert_eq!(driver.totals.legs, 2);
+        let path = std::env::temp_dir().join(format!("pontaj-catb-drive-{}.xlsx", std::process::id()));
+        write_xlsx(&sheet, &Settings::default(), &path).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > 3000);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn remarks_put_the_serious_ones_first() {
         let sheet = sample();
         let rows = remark_rows(&sheet, &Settings::default());

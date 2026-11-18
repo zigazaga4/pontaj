@@ -21,6 +21,9 @@ pub enum TripKind {
     Bus,
     /// Added by hand: the driver came back as a passenger (counts as a regular leg).
     Passenger,
+    /// Made by the app: the drive (empty car, or as a passenger) that explains how the driver got from where one regular
+    /// trip ended to where the next one starts (see [`super::transfers`]). Counts as a regular leg.
+    Transfer,
 }
 
 impl TripKind {
@@ -40,6 +43,7 @@ impl TripKind {
             Self::Vip => "VIP",
             Self::Bus => "Autocar",
             Self::Passenger => "Pasager",
+            Self::Transfer => "Deplasare",
         }
     }
 }
@@ -122,6 +126,8 @@ pub struct Trip {
     pub car_category: String,
     pub passengers: i32,
     pub manual: bool,
+    /// Made by the app, not read from the API ([`TripKind::Transfer`]): rebuilt on every recompute, the office's edits on it stay.
+    pub generated: bool,
     pub edit: TripEdit,
     pub eff: Effective,
 }
@@ -289,6 +295,11 @@ pub struct Driver {
     /// Days the office marked as leave: date → code of the kind of leave ([`LEAVE_TYPES`]). Only a day without any trip
     /// ([`Driver::free_days`]) counts as leave; if a trip shows up on it later, the leave stays here but counts nowhere.
     pub leaves: BTreeMap<NaiveDate, String>,
+    /// The driver's trips just before and just after the month (from the days around it that the download asks for):
+    /// not part of this sheet, they only tell where he was when the month began and where he went when it ended, so the
+    /// trips between months can be explained (see [`super::transfers`]). Replaced by every download.
+    pub before: Vec<Trip>,
+    pub after: Vec<Trip>,
     // --- derived ---
     /// The days of the month on which the driver has no trip at all (weekends and holidays included): the days that can
     /// be marked as leave.

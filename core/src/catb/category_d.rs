@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn a_download_leaves_the_d_drivers_out_of_the_sheet_and_says_so() {
-        let parsed = super::super::api::Parsed { rows: fleet(), skipped: 0 };
+        let parsed = super::super::api::Parsed { rows: fleet(), ..Default::default() };
         let sheet = super::super::apply_download(None, 2026, 10, &parsed, "17.11.2026 10:00", &Settings::default());
         let names: Vec<&str> = sheet.drivers.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["Fără Detalii", "Mic Ion"]);
@@ -136,7 +136,7 @@ mod tests {
     fn a_d_driver_the_office_already_changed_stays_with_a_clear_notice() {
         // First download with the exclusion off (as before this feature): everybody is in the sheet.
         let off = Settings { catb: CatbSettings { exclude_d_drivers: false, ..CatbSettings::default() }, ..Settings::default() };
-        let parsed = super::super::api::Parsed { rows: fleet(), skipped: 0 };
+        let parsed = super::super::api::Parsed { rows: fleet(), ..Default::default() };
         let mut sheet = super::super::apply_download(None, 2026, 10, &parsed, "1", &off);
         assert_eq!(sheet.drivers.len(), 4);
         sheet.drivers.iter_mut().find(|d| d.id == 2).unwrap().excluded_days.push(chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap());
