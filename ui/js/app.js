@@ -5,7 +5,7 @@ import { renderGrid, refreshGrid, renderDetails } from "./grid.js";
 import { renderScanned } from "./scanned.js";
 import { renderDaily } from "./daily.js";
 import { renderSettings } from "./settings.js";
-import { checkForUpdates } from "./updater.js";
+import { checkForUpdates, watchForUpdates } from "./updater.js";
 import { createCatb } from "./catb.js";
 import { hoursText, signed } from "./time.js";
 
@@ -263,7 +263,15 @@ async function init() {
   $("#btn-close-settings").addEventListener("click", () => openSettings(false));
   document.querySelectorAll("#modes .mode").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
   const idle = () => state.mode === "pdf" && !state.sheet && $("#overlay").hidden; // nothing open, nothing loading: safe to restart
-  $("#btn-update").addEventListener("click", () => checkForUpdates({ manual: true, canInstallNow: idle }));
+  // Categoria B saves by itself (the last edit is written first); a sheet read from PDFs is lost on restart, so he is asked.
+  const updates = {
+    canInstallNow: idle,
+    beforeInstall: async () => {
+      if (state.mode === "pdf" && state.sheet && !confirm("Pontajul deschis din PDF-uri nu se păstrează la repornire. Instalezi totuși actualizarea?")) return false;
+      await catb.flush();
+    },
+  };
+  $("#btn-update").addEventListener("click", () => checkForUpdates({ ...updates, manual: true }));
   api.appVersion().then((v) => ($("#app-version").textContent = `Versiunea ${v}`)).catch(() => {});
   $("#btn-clear").addEventListener("click", () => {
     Object.assign(state, { sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null });
@@ -280,7 +288,10 @@ async function init() {
   const startup = await api.startupFiles();
   setMode(startup.length ? "pdf" : localStorage.getItem("pontaj.mode") === "catb" ? "catb" : "pdf");
   if (startup.length) await loadFiles(startup);
-  checkForUpdates({ canInstallNow: idle });
+  // At start nothing was edited yet and Categoria B months are saved on disk, so that mode can restart too; later checks
+  // only offer the update while something is open.
+  checkForUpdates({ ...updates, canInstallNow: () => idle() || state.mode === "catb" });
+  watchForUpdates(updates);
 }
 
 init().catch((err) => toast(String(err), { kind: "error", timeout: 0 }));

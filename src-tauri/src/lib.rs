@@ -108,8 +108,13 @@ fn catb_months(app: AppHandle) -> CmdResult<Vec<(i32, u32)>> {
 #[tauri::command]
 async fn catb_open(app: AppHandle, year: i32, month: u32, settings: Settings) -> CmdResult<Option<catb::Sheet>> {
     blocking(move || {
-        let mut sheet = catb::store::load(&catb_dir(&app)?, year, month).map_err(|e| e.to_string())?;
+        let dir = catb_dir(&app)?;
+        let mut sheet = catb::store::load(&dir, year, month).map_err(|e| e.to_string())?;
         if let Some(sheet) = &mut sheet {
+            // A month downloaded before the days around it were kept still gets the drives between months: the months
+            // saved beside it have exactly those trips.
+            let (previous, next) = catb::store::load_around(&dir, year, month);
+            catb::borrow_neighbors(sheet, previous.as_ref(), next.as_ref());
             catb::recompute(sheet, &settings);
         }
         Ok(sheet)

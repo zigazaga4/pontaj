@@ -181,6 +181,39 @@ pub fn set_neighbors(sheet: &mut Sheet, around: &[ApiRow]) {
     }
 }
 
+/// A month saved before the days around it were kept (or never downloaded again) knows nothing of the trips just outside
+/// it, but the months saved beside it do: their trips are exactly those. They go into [`Driver::before`] and
+/// [`Driver::after`] (the nearest ones), so the drives between months are found without downloading again. A trip as the
+/// neighbor's sheet has it wins over the one the sheet had: it carries what the office did to it (a trip taken out stays out).
+pub fn borrow_neighbors(sheet: &mut Sheet, previous: Option<&Sheet>, next: Option<&Sheet>) {
+    for driver in &mut sheet.drivers {
+        if let Some(theirs) = previous.and_then(|s| s.drivers.iter().find(|d| d.id == driver.id)) {
+            driver.before = nearest(std::mem::take(&mut driver.before), &theirs.trips, true);
+        }
+        if let Some(theirs) = next.and_then(|s| s.drivers.iter().find(|d| d.id == driver.id)) {
+            driver.after = nearest(std::mem::take(&mut driver.after), &theirs.trips, false);
+        }
+    }
+}
+
+/// The driver's own context joined with the trips of the neighbor month, in time order: the last [`NEIGHBOR_TRIPS`] (`last`,
+/// the days before the month) or the first ones (the days after it).
+fn nearest(own: Vec<Trip>, theirs: &[Trip], last: bool) -> Vec<Trip> {
+    let mut trips: Vec<Trip> = theirs.iter().filter(|t| !t.generated).cloned().collect();
+    for trip in own {
+        if !trips.iter().any(|t| t.id == trip.id) {
+            trips.push(trip);
+        }
+    }
+    trips.sort_by(|a, b| (a.departure, &a.id).cmp(&(b.departure, &b.id)));
+    if last {
+        trips.drain(..trips.len().saturating_sub(NEIGHBOR_TRIPS));
+    } else {
+        trips.truncate(NEIGHBOR_TRIPS);
+    }
+    trips
+}
+
 fn count_trips(count: usize) -> String {
     if count == 1 { "1 cursă".into() } else { format!("{count} curse") }
 }
@@ -365,6 +398,45 @@ mod tests {
         let sheet = super::super::apply_download(Some(sheet), 2026, 10, &parsed, "z", &Settings::default());
         assert_eq!(sheet.drivers.iter().find(|d| d.id == 1).unwrap().before.len(), 1);
         assert!(sheet.notices.iter().any(|n| n.contains("deplasările dintre luni nu se generează")), "{:?}", sheet.notices);
+    }
+
+    #[test]
+    fn a_saved_month_borrows_the_days_around_it_from_the_months_saved_beside_it() {
+        use super::super::api::Parsed;
+        let settings = Settings::default();
+        let download = |month: u32, rows: Vec<ApiRow>| super::super::apply_download(None, 2026, month, &Parsed { rows, ..Default::default() }, "x", &settings);
+        // The last trip of October ends in Constanța; the first of November leaves from Otopeni (nobody logged the drive).
+        let october = download(10, vec![back(row(1, "Badea Lucian", "eco-30", "2026-10-31 11:00", "2026-10-31 14:00"))]);
+        let november = download(11, vec![back(row(1, "Badea Lucian", "eco-31", "2026-11-01 05:30", "2026-11-01 08:30"))]);
+        let made = |sheet: &Sheet| sheet.drivers[0].trips.iter().filter(|t| t.generated).map(|t| t.id.clone()).collect::<Vec<_>>();
+        assert!(made(&november).is_empty(), "saved without the days around it: nothing is known about where he was");
+
+        // Opened with October saved beside it, November finds the drive; October (whose next trip is November's) does not
+        // count it again — a drive belongs to the month it starts in.
+        let mut opened = november.clone();
+        borrow_neighbors(&mut opened, Some(&october), None);
+        recompute(&mut opened, &settings);
+        assert_eq!(made(&opened), ["gen-pre-eco-31"]);
+        let mut opened_october = october.clone();
+        borrow_neighbors(&mut opened_october, None, Some(&november));
+        recompute(&mut opened_october, &settings);
+        assert_eq!(opened_october.drivers[0].after.len(), 1);
+        assert!(made(&opened_october).is_empty(), "{:?}", made(&opened_october));
+
+        // What the office did to the trip in October is respected: a trip taken out there is not the one he arrived with.
+        let mut taken_out = october.clone();
+        taken_out.drivers[0].trips[0].edit.removed = true;
+        let mut opened = november.clone();
+        borrow_neighbors(&mut opened, Some(&taken_out), None);
+        recompute(&mut opened, &settings);
+        assert!(made(&opened).is_empty(), "{:?}", made(&opened));
+
+        // A driver the neighbor does not have, and no neighbor at all, change nothing.
+        let mut alone = download(11, vec![back(row(7, "Alt Șofer", "eco-90", "2026-11-02 05:30", "2026-11-02 08:30"))]);
+        let copy = alone.clone();
+        borrow_neighbors(&mut alone, Some(&october), None);
+        borrow_neighbors(&mut alone, None, None);
+        assert_eq!(alone, copy);
     }
 
     #[test]

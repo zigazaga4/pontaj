@@ -17,7 +17,7 @@ mod transfers;
 
 pub use compute::{monthly_cap_min, recompute, recompute_driver};
 pub use config::CatbSettings;
-pub use merge::{merge_rows, new_sheet};
+pub use merge::{borrow_neighbors, merge_rows, new_sheet};
 pub use model::*;
 pub use overlap::{resolve_overlap, Resolved};
 

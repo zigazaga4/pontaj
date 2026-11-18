@@ -38,6 +38,14 @@ pub fn load(dir: &Path, year: i32, month: u32) -> Result<Option<Sheet>> {
         .map_err(|e| Error::new(format!("Luna salvată {year}-{month:02} nu poate fi citită ({e}). Copia de siguranță este lângă ea, cu extensia .bak.")))
 }
 
+/// The months saved on each side of one (before, after), if there are any: the trips just outside a month are theirs (see
+/// [`super::borrow_neighbors`]). A file that cannot be read counts as absent here; it is reported when that month is opened.
+pub fn load_around(dir: &Path, year: i32, month: u32) -> (Option<Sheet>, Option<Sheet>) {
+    let (before_year, before_month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
+    let (after_year, after_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    (load(dir, before_year, before_month).ok().flatten(), load(dir, after_year, after_month).ok().flatten())
+}
+
 /// The saved months, newest first.
 pub fn list(dir: &Path) -> Vec<(i32, u32)> {
     let mut months: Vec<(i32, u32)> = std::fs::read_dir(dir)
@@ -90,6 +98,21 @@ mod tests {
         assert!(!backup.contains("a doua versiune"), "the .bak is the version before the last save");
         assert_eq!(list(&dir), vec![(2026, 10), (2026, 9)]);
         assert!(!dir.join("2026-09.json.tmp").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_months_beside_one_are_found_across_the_turn_of_the_year_and_a_broken_one_counts_as_absent() {
+        let dir = temp_dir("around");
+        save(&dir, &new_sheet(2026, 12)).unwrap();
+        save(&dir, &new_sheet(2027, 2)).unwrap();
+        std::fs::write(dir.join("2027-03.json"), "{ nu e json").unwrap();
+        let (before, after) = load_around(&dir, 2027, 1);
+        assert_eq!((before.map(|s| (s.year, s.month)), after.map(|s| (s.year, s.month))), (Some((2026, 12)), Some((2027, 2))), "January 2027 sits between December 2026 and February 2027");
+        let (before, after) = load_around(&dir, 2027, 2);
+        assert_eq!((before.is_none(), after.is_none()), (true, true), "no January saved, March is broken");
+        let (before, after) = load_around(&dir, 2026, 11);
+        assert_eq!((before.is_none(), after.map(|s| (s.year, s.month))), (true, Some((2026, 12))));
         std::fs::remove_dir_all(&dir).ok();
     }
 
