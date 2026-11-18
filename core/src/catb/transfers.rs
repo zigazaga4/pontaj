@@ -162,6 +162,8 @@ mod tests {
         // It is a trip of the day: two regular legs, six hours, 240 lei; the time in Constanța before it is a pauză.
         let day = &d.days[0];
         assert_eq!((day.legs, day.trip_min, day.station_min, day.pay_total), (2, 360, 0, 240.0));
+        // The drive is work like the trips: the day is filled up to 8 hours around it (1 h before 01:30, 1 h after 08:30).
+        assert_eq!((day.fill_before_min, day.fill_after_min, day.total_min), (60, 60, 480));
         assert!(day.alerts.iter().any(|a| a.code == "transfer" && a.level == Level::Info), "{:?}", day.alerts);
         assert!(d.trips.iter().position(|t| t.id == drive.id) < d.trips.iter().position(|t| t.id == "eco-2"), "sorted by departure");
     }

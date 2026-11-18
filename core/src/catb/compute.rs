@@ -2,7 +2,10 @@
 //! between regular trips (waiting time), the days, the totals, the estimate and the remarks.
 //!
 //! Rules (all numbers come from [`CatbSettings`]):
-//! - A day's hours are the known driving time of its trips plus the waiting time of the pauses that start that day.
+//! - A day's hours are the known driving time of its trips plus the waiting time of the pauses that start that day, plus the
+//!   time that brings the day up to a full one (`hours_per_day`, 8 h): half before the first departure and half after the
+//!   last arrival, each at most `fill_max_side_min` (1 h + 1 h for the usual two trips of 3 h). The generated drives are
+//!   trips like any other, so they count in the day before it is filled. A day that already has 8 h gets nothing.
 //! - Waiting is only measured between two *regular* trips (Constanța ↔ Otopeni; private/VIP trips on the same route
 //!   count as regular, and so does any private/VIP "Otopeni run": a trip with the Otopeni/Bucharest end on one side and
 //!   any place on the other, even outside the county, e.g. Otopeni → Năvodari, Mamaia → Otopeni, Tulcea → Otopeni).
@@ -56,7 +59,7 @@ pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &S
     driver.free_days = free_days(&driver.trips, year, month);
     migrate_pause_leaves(driver);
     driver.pauses = pauses(&driver.trips, &driver.pause_edits, settings);
-    driver.days = days(driver, year, month);
+    driver.days = days(driver, year, month, settings);
     let cap_min = monthly_cap_min(year, month, settings);
     driver.totals = totals(&driver.days, cap_min);
     driver.alerts = driver_alerts(driver, cap_min);
@@ -279,7 +282,32 @@ fn day_row(rows: &mut BTreeMap<NaiveDate, DayRow>, date: NaiveDate, year: i32, m
     inside.then(|| rows.entry(date).or_insert_with(|| DayRow { date: Some(date), ..Default::default() }))
 }
 
-fn days(driver: &Driver, year: i32, month: u32) -> Vec<DayRow> {
+/// How the time that brings a day up to a full one is split: half before the first departure, half after the last
+/// arrival, each at most `max_side` and in whole 5 minutes. The part that does not fit before the first departure (the day
+/// starts too close to midnight) goes after the last arrival.
+pub(super) fn split_fill(missing: i32, max_side: i32, room_before: i32) -> (i32, i32) {
+    let total = missing.clamp(0, 2 * max_side.max(0));
+    let before = (total / 2 / 5 * 5).min(room_before.max(0));
+    (before, total - before)
+}
+
+/// The time added to a day with `work_min` of trips and waiting: the rules' split (when the setting is on), with whatever the
+/// office typed for either side on top. Nothing is added to a day without hours.
+fn fill_of(driver: &Driver, date: NaiveDate, work_min: i32, settings: &Settings) -> (i32, i32, bool) {
+    if work_min <= 0 {
+        return (0, 0, false);
+    }
+    let cfg = &settings.catb;
+    let first_start = super::pontaj::day_span(driver, date).map_or(0, |(start, _)| start);
+    let (auto_before, auto_after) = if cfg.fill_day { split_fill(settings.hours_per_day * 60 - work_min, cfg.fill_max_side_min, first_start) } else { (0, 0) };
+    let edit = driver.fills.get(&date);
+    // Typed time before the first departure cannot start before midnight (that is the day before).
+    let before = edit.and_then(|e| e.before).map_or(auto_before, |m| m.clamp(0, first_start.max(0)));
+    let after = edit.and_then(|e| e.after).map_or(auto_after, |m| m.max(0));
+    (before, after, edit.is_some_and(|e| e.before.is_some() || e.after.is_some()))
+}
+
+fn days(driver: &Driver, year: i32, month: u32, settings: &Settings) -> Vec<DayRow> {
     let mut rows: BTreeMap<NaiveDate, DayRow> = BTreeMap::new();
 
     // A trip belongs to the day it departs, a pause to the day it starts.
@@ -325,7 +353,21 @@ fn days(driver: &Driver, year: i32, month: u32) -> Vec<DayRow> {
 
     let mut list: Vec<DayRow> = rows.into_values().collect();
     for row in &mut list {
-        row.total_min = row.trip_min + row.station_min;
+        if let Some(date) = row.date {
+            (row.fill_before_min, row.fill_after_min, row.fill_manual) = fill_of(driver, date, row.trip_min + row.station_min, settings);
+        }
+        row.fill_min = row.fill_before_min + row.fill_after_min;
+        row.total_min = row.trip_min + row.station_min + row.fill_min;
+        // A day is not shortened when it already has more than a full day, but the office is told.
+        let work_min = row.trip_min + row.station_min;
+        if work_min > settings.hours_per_day * 60 {
+            let text = format!(
+                "Ziua are {} de lucru (curse și staționare), peste cele {} ore ale unei zile. Nu se completează nimic, dar verifică foaia șoferului: poate a plecat sau s-a întors altfel.",
+                fmt_duration(work_min),
+                settings.hours_per_day
+            );
+            row.alerts.push(Alert::new("long_day", Level::Warn, text));
+        }
         row.pay_total = row.pay_legs + row.pay_exterior + row.pay_station;
         row.excluded = row.date.is_some_and(|d| driver.excluded_days.contains(&d));
     }
@@ -343,6 +385,7 @@ fn totals(days: &[DayRow], cap_min: i32) -> Totals {
         totals.legs += day.legs;
         totals.trip_min += day.trip_min;
         totals.station_min += day.station_min;
+        totals.fill_min += day.fill_min;
         totals.total_min += day.total_min;
         totals.pay_legs += day.pay_legs;
         totals.pay_exterior += day.pay_exterior;
@@ -419,6 +462,121 @@ mod tests {
         assert_eq!((day.legs, day.trip_min, day.station_min, day.total_min), (2, 360, 120, 480));
         assert_eq!((day.pay_legs, day.pay_station, day.pay_total), (240.0, 0.0, 240.0), "2 h of waiting are inside the 3 included hours");
         assert!(d.pauses[0].alerts.is_empty());
+    }
+
+    fn filled(d: &Driver) -> (i32, i32, i32) {
+        (d.days[0].fill_before_min, d.days[0].fill_after_min, d.days[0].total_min)
+    }
+
+    #[test]
+    fn a_day_under_eight_hours_gets_the_missing_time_before_the_first_departure_and_after_the_last_arrival() {
+        // Two legs of 3 h that meet at Otopeni: 6 h, 2 h missing → 1 h before 05:00 and 1 h after 11:00.
+        let mut d = round_trip("2026-10-05 08:00", "2026-10-05 11:00");
+        run(&mut d);
+        assert_eq!(filled(&d), (60, 60, 480));
+        assert_eq!((d.days[0].fill_min, d.days[0].trip_min, d.days[0].station_min, d.days[0].pay_total), (120, 360, 0, 240.0), "the money does not change");
+        assert_eq!((d.totals.fill_min, d.totals.total_min, d.totals.trip_min), (120, 480, 360));
+        assert_eq!(super::super::pontaj::day_span(&d, d.days[0].date.unwrap()), Some((5 * 60, 11 * 60)), "the span of the trips alone");
+    }
+
+    #[test]
+    fn a_short_day_is_filled_up_to_eight_hours_within_the_limit_of_each_side() {
+        // One trip of 3 h: 5 h missing, 2 h 30 min on each side.
+        let mut d = driver(vec![trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 09:00", Some("2026-10-05 12:00"))]);
+        run(&mut d);
+        assert_eq!(filled(&d), (150, 150, 8 * 60));
+        // With at most 2 h on each side the same day stays at 7 h.
+        let mut settings = Settings::default();
+        settings.catb.fill_max_side_min = 120;
+        recompute_driver(&mut d, 2026, 10, &settings);
+        assert_eq!(filled(&d), (120, 120, 7 * 60));
+        // A trip of 1 h leaves 7 h missing, but 3 h on each side is the most: 7 h.
+        let mut d = driver(vec![trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 09:00", Some("2026-10-05 10:00"))]);
+        run(&mut d);
+        assert_eq!(filled(&d), (180, 180, 7 * 60));
+        // 5 h 30 min of trips: 2 h 30 min missing, 1 h 15 min on each side.
+        let mut d = driver(vec![
+            trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 05:00", Some("2026-10-05 08:00")),
+            trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-05 08:00", Some("2026-10-05 10:30")),
+        ]);
+        run(&mut d);
+        assert_eq!(filled(&d), (75, 75, 8 * 60));
+    }
+
+    #[test]
+    fn a_day_with_eight_hours_or_more_is_left_as_it_is_and_the_long_one_is_flagged() {
+        // Exactly 8 h (3 + 2 waiting + 3): nothing added, nothing said.
+        let mut d = round_trip("2026-10-05 10:00", "2026-10-05 13:00");
+        run(&mut d);
+        assert_eq!((d.days[0].fill_min, d.days[0].total_min), (0, 480));
+        assert!(d.days[0].alerts.iter().all(|a| a.code != "long_day"));
+        // 10 h (3 + 4 waiting + 3): not shortened, but the office is warned.
+        let mut d = round_trip("2026-10-05 12:00", "2026-10-05 15:00");
+        run(&mut d);
+        assert_eq!((d.days[0].fill_min, d.days[0].total_min), (0, 600));
+        let warning = d.days[0].alerts.iter().find(|a| a.code == "long_day").expect("a warning for a day over 8 hours");
+        assert_eq!(warning.level, Level::Warn);
+        assert!(warning.text.contains("10:00") && warning.text.contains("8 ore"), "{}", warning.text);
+    }
+
+    #[test]
+    fn the_time_added_never_starts_before_midnight() {
+        // A trip at 00:20 for 3 h: only 20 min fit before it, the rest of the 5 h goes after the arrival.
+        let mut d = driver(vec![trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 00:20", Some("2026-10-05 03:20"))]);
+        run(&mut d);
+        assert_eq!(filled(&d), (20, 280, 480));
+    }
+
+    #[test]
+    fn the_office_can_type_the_time_added_on_either_side() {
+        let mut d = round_trip("2026-10-05 08:00", "2026-10-05 11:00");
+        let date = d.trips[0].departure.date();
+        d.fills.insert(date, FillEdit { before: Some(30), after: None });
+        run(&mut d);
+        assert_eq!(filled(&d), (30, 60, 450), "the side left empty keeps the rules' value");
+        assert!(d.days[0].fill_manual);
+        d.fills.insert(date, FillEdit { before: Some(0), after: Some(0) });
+        run(&mut d);
+        assert_eq!(filled(&d), (0, 0, 360), "typing 0 adds nothing");
+        d.fills.clear();
+        run(&mut d);
+        assert_eq!(filled(&d), (60, 60, 480));
+        assert!(!d.days[0].fill_manual);
+    }
+
+    #[test]
+    fn with_the_setting_off_nothing_is_added_but_what_the_office_typed_still_counts() {
+        let mut settings = Settings::default();
+        settings.catb.fill_day = false;
+        let mut d = round_trip("2026-10-05 08:00", "2026-10-05 11:00");
+        recompute_driver(&mut d, 2026, 10, &settings);
+        assert_eq!(filled(&d), (0, 0, 360));
+        let date = d.trips[0].departure.date();
+        d.fills.insert(date, FillEdit { before: None, after: Some(60) });
+        recompute_driver(&mut d, 2026, 10, &settings);
+        assert_eq!(filled(&d), (0, 60, 420));
+    }
+
+    #[test]
+    fn a_smaller_side_limit_or_a_different_day_length_changes_what_is_added() {
+        let mut settings = Settings::default();
+        settings.catb.fill_max_side_min = 30;
+        let mut d = round_trip("2026-10-05 08:00", "2026-10-05 11:00");
+        recompute_driver(&mut d, 2026, 10, &settings);
+        assert_eq!(filled(&d), (30, 30, 420), "at most 30 min on each side");
+        settings.catb.fill_max_side_min = 120;
+        settings.hours_per_day = 7;
+        recompute_driver(&mut d, 2026, 10, &settings);
+        assert_eq!(filled(&d), (30, 30, 420), "a day is 7 h: 1 h missing");
+    }
+
+    #[test]
+    fn a_day_without_hours_gets_nothing() {
+        // A trip beyond the county with no tariff is an excursion: it counts nowhere, so there is no day to fill.
+        let mut d = driver(vec![trip("p-1", TripKind::Private, "Constanta", "Tulcea", "2026-10-06 09:00", None)]);
+        run(&mut d);
+        assert!(d.days.iter().all(|day| day.fill_min == 0 && day.total_min == 0), "{:?}", d.days);
+        assert_eq!(d.totals.fill_min, 0);
     }
 
     #[test]

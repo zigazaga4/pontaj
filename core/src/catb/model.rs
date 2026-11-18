@@ -164,6 +164,15 @@ pub fn leave_name(code: &str) -> &str {
     LEAVE_TYPES.iter().find(|(c, _)| *c == code).map_or(code, |(_, name)| name)
 }
 
+/// What the office typed for the time added to one day (minutes). A side left empty keeps what the rules give it; `0` adds
+/// nothing on that side.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FillEdit {
+    pub before: Option<i32>,
+    pub after: Option<i32>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PauseEdit {
@@ -228,6 +237,14 @@ pub struct DayRow {
     pub legs: i32,
     pub trip_min: i32,
     pub station_min: i32,
+    /// Time added to bring the day up to the hours of a full day: before the first departure and after the last arrival
+    /// (see [`FillEdit`]). Part of `total_min`.
+    pub fill_before_min: i32,
+    pub fill_after_min: i32,
+    pub fill_min: i32,
+    /// The office typed one of the two values.
+    pub fill_manual: bool,
+    /// Trips + waiting + the time added.
     pub total_min: i32,
     pub pay_legs: f64,
     pub pay_exterior: f64,
@@ -247,6 +264,8 @@ pub struct Totals {
     pub legs: i32,
     pub trip_min: i32,
     pub station_min: i32,
+    /// Time added to the days to bring them up to a full day (part of `total_min`).
+    pub fill_min: i32,
     pub total_min: i32,
     pub pay_legs: f64,
     pub pay_exterior: f64,
@@ -295,6 +314,8 @@ pub struct Driver {
     /// Days the office marked as leave: date → code of the kind of leave ([`LEAVE_TYPES`]). Only a day without any trip
     /// ([`Driver::free_days`]) counts as leave; if a trip shows up on it later, the leave stays here but counts nowhere.
     pub leaves: BTreeMap<NaiveDate, String>,
+    /// The time the office typed for the days brought up to a full day: date → [`FillEdit`].
+    pub fills: BTreeMap<NaiveDate, FillEdit>,
     /// The driver's trips just before and just after the month (from the days around it that the download asks for):
     /// not part of this sheet, they only tell where he was when the month began and where he went when it ended, so the
     /// trips between months can be explained (see [`super::transfers`]). Replaced by every download.

@@ -17,7 +17,7 @@ fn minute_of_day(at: NaiveDateTime) -> i32 {
 }
 
 /// The periods of a day that count as work: the trips that leave that day and the waiting that starts on it.
-fn work_blocks(driver: &Driver, date: NaiveDate) -> Vec<Interval> {
+pub(super) fn work_blocks(driver: &Driver, date: NaiveDate) -> Vec<Interval> {
     let trips = driver
         .trips
         .iter()
@@ -33,7 +33,14 @@ fn work_blocks(driver: &Driver, date: NaiveDate) -> Vec<Interval> {
     blocks
 }
 
-/// One day of one driver. A day taken out of the pontaj stays empty; a leave is its code.
+/// First start and last end (minutes from midnight) of the periods that count on a day, without the time added to fill it.
+pub(super) fn day_span(driver: &Driver, date: NaiveDate) -> Option<(i32, i32)> {
+    let blocks = work_blocks(driver, date);
+    Some((blocks.iter().map(|b| b.start).min()?, blocks.iter().map(|b| b.end).max()?))
+}
+
+/// One day of one driver. A day taken out of the pontaj stays empty; a leave is its code. The time added to fill the day
+/// goes before the first start and after the last end, so the written intervals show it.
 fn day_entry(driver: &Driver, day: u32, date: NaiveDate, settings: &Settings) -> DayEntry {
     let mut entry = DayEntry { day, ..Default::default() };
     let row: Option<&DayRow> = driver.days.iter().find(|r| r.date == Some(date));
@@ -41,10 +48,19 @@ fn day_entry(driver: &Driver, day: u32, date: NaiveDate, settings: &Settings) ->
         if let Some(code) = &row.leave {
             entry.code = Some(code.clone());
         } else if row.total_min > 0 {
-            let blocks = work_blocks(driver, date);
+            let mut blocks = work_blocks(driver, date);
             entry.worked_min = row.total_min;
-            entry.first_start = blocks.iter().map(|b| b.start).min();
-            entry.last_end = blocks.iter().map(|b| b.end).max();
+            let first = blocks.iter().map(|b| b.start).min();
+            let last = blocks.iter().map(|b| b.end).max();
+            if let Some(start) = first.filter(|_| row.fill_before_min > 0) {
+                blocks.push(Interval { start: start - row.fill_before_min, end: start });
+            }
+            if let Some(end) = last.filter(|_| row.fill_after_min > 0) {
+                blocks.push(Interval { start: end, end: end + row.fill_after_min });
+            }
+            blocks.sort_by_key(|b| (b.start, b.end));
+            entry.first_start = first.map(|start| start - row.fill_before_min);
+            entry.last_end = last.map(|end| end + row.fill_after_min);
             entry.segments = blocks;
         }
     }
@@ -110,14 +126,15 @@ mod tests {
     use crate::catb::{api::parse_rows, apply_download};
 
     /// Mon 5 Oct: Otopeni 11:00 → Constanța 14:00 (3 h); Mon 12 Oct 05:00 → 08:00, wait until 11:00, 11:00 → 14:00.
-    fn october() -> Sheet {
-        let body = r#"{"data":[
+    const OCTOBER_BODY: &str = r#"{"data":[
           {"driver_id":1,"driver_name":"Popescu Ion","trip":{"type":"eco","id":"eco-1"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-10-05 11:00","duration_minutes":180},
           {"driver_id":1,"driver_name":"Popescu Ion","trip":{"type":"eco","id":"eco-2"},"route":{"from":"Constanta","to":"Aeroport Otopeni Bucuresti"},"departure":"2026-10-12 05:00","duration_minutes":180},
           {"driver_id":1,"driver_name":"Popescu Ion","trip":{"type":"eco","id":"eco-3"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-10-12 11:00","duration_minutes":180},
           {"driver_id":2,"driver_name":"Anghel Dan","trip":{"type":"eco","id":"eco-4"},"route":{"from":"Constanta","to":"Aeroport Otopeni Bucuresti"},"departure":"2026-10-06 05:00","duration_minutes":200}
         ]}"#;
-        apply_download(None, 2026, 10, &parse_rows(body).unwrap(), "x", &Settings::default())
+
+    fn october() -> Sheet {
+        apply_download(None, 2026, 10, &parse_rows(OCTOBER_BODY).unwrap(), "x", &Settings::default())
     }
 
     fn entry<'a>(timesheet: &'a Timesheet, name: &str, day: u32) -> &'a DayEntry {
@@ -130,14 +147,33 @@ mod tests {
         assert_eq!(timesheet.employees.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["ANGHEL DAN", "POPESCU ION"]);
         assert_eq!(timesheet.norm_hours, 22 * 8, "22 weekdays in October 2026");
 
-        assert_eq!(entry(&timesheet, "POPESCU ION", 5).hours, Some(3.0));
-        // 05:00–08:00 and 11:00–14:00 plus the 3 h of waiting in between: 9 h.
+        // One trip of 3 h: 2 h 30 min are added before the departure and 2 h 30 min after the arrival, 8 h.
+        assert_eq!(entry(&timesheet, "POPESCU ION", 5).hours, Some(8.0));
+        // 05:00–08:00 and 11:00–14:00 plus the 3 h of waiting in between: 9 h, more than a full day, so nothing is added.
         let twelfth = entry(&timesheet, "POPESCU ION", 12);
         assert_eq!(twelfth.hours, Some(9.0));
         assert_eq!(twelfth.intervals.iter().map(|i| i.end - i.start).sum::<i32>(), 9 * 60, "the intervals add up to the hours");
-        // 3 h 20 min rounds up (20 minutes and more count as a full hour), like in the tachograph mode.
-        assert_eq!(entry(&timesheet, "ANGHEL DAN", 6).hours, Some(4.0));
+        // 3 h 20 min + 4 h 40 min added = 8 h.
+        assert_eq!(entry(&timesheet, "ANGHEL DAN", 6).hours, Some(8.0));
         assert_eq!(entry(&timesheet, "ANGHEL DAN", 7).hours, None, "a day without trips stays empty");
+    }
+
+    #[test]
+    fn the_time_added_to_a_day_moves_the_written_start_and_end() {
+        // Mon 5 Oct 11:00–14:00 is the only trip of the day: 2 h 30 min before and 2 h 30 min after.
+        let timesheet = to_timesheet(&october(), &Settings::default());
+        let day = entry(&timesheet, "POPESCU ION", 5);
+        assert_eq!((day.first_start, day.last_end), (Some(8 * 60 + 30), Some(16 * 60 + 30)), "08:30–16:30 instead of 11:00–14:00");
+        // The day starts at 08:30 and its two intervals add up to the 8 hours (with no room for a break inside the day, the
+        // second interval starts after one, like in the tachograph mode).
+        assert_eq!(day.intervals.first().unwrap().start, 8 * 60 + 30);
+        assert_eq!(day.intervals.iter().map(|i| i.end - i.start).sum::<i32>(), 8 * 60);
+        // Without the setting the day keeps the hours of the trip.
+        let mut settings = Settings::default();
+        settings.catb.fill_day = false;
+        let plain = to_timesheet(&apply_download(None, 2026, 10, &parse_rows(OCTOBER_BODY).unwrap(), "x", &settings), &settings);
+        let day = entry(&plain, "POPESCU ION", 5);
+        assert_eq!((day.hours, day.first_start, day.last_end), (Some(3.0), Some(11 * 60), Some(14 * 60)));
     }
 
     #[test]

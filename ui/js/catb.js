@@ -131,6 +131,7 @@ export function createCatb({ getSettings }) {
       chip("Plafon lunar", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore, sărbătorile incluse` }),
       chip("Total ore", duration(sum((d) => d.totals.totalMin))),
       chip("Din care staționare", duration(sum((d) => d.totals.stationMin))),
+      chip("Din care completare", duration(sum((d) => d.totals.fillMin ?? 0)), { title: "Timpul adăugat zilelor sub 8 ore (înainte de plecare și după sosire)" }),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),
       chip("Curse fără tarif", noTariff, { tone: noTariff ? "bad" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
       chip("Estimare plată", `~${lei(sum((d) => d.totals.payTotal))} lei`, { title: "Orientativ" }));

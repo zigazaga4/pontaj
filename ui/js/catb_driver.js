@@ -316,6 +316,42 @@ function pauseRows(driver, pause, edit, resolveOverlap) {
 /** One figure of the day header with its caption under it. */
 const dayStat = (label, value, tone = "") => h("div", { class: `day-stat ${tone}` }, h("b", {}, value), h("small", {}, label));
 
+/**
+ * The time added to bring a day up to a full one: before the first departure and after the last arrival. Both boxes show what
+ * counts now (the rules' value or the office's), and typing changes it; an empty box goes back to the rules, 0 adds nothing.
+ */
+function fillStat(driver, row, date, edit) {
+  const side = (key, field, label) => {
+    const typed = () => driver.fills?.[date]?.[key];
+    return h("label", { class: "ctl", title: `${label}. Scrie orele (ex. 1, 1:30), 0 = nimic, gol = după reguli.` },
+      h("span", {}, key === "before" ? "la plecare" : "la sosire"),
+      bound({
+        className: "fill-input",
+        dataset: { key: `fill-${key}:${date}` },
+        placeholder: "0",
+        get: () => row,
+        format: (r) => (r[field] > 0 || typed() === 0 ? hoursText(r[field] / 60) : ""),
+        parse: (text) => {
+          const hours = parseHours(text, 12);
+          return hours === undefined ? undefined : hours === null ? null : Math.round(hours * 60);
+        },
+        classes: () => (typed() != null ? "manual" : ""),
+        commit: (value) => edit((d) => setFill(d, date, key, value)),
+      }));
+  };
+  return h("div", { class: "day-stat fill" },
+    h("div", { class: "fill-inputs" }, side("before", "fillBeforeMin", "Timp adăugat înainte de prima plecare"), side("after", "fillAfterMin", "Timp adăugat după ultima sosire")),
+    h("small", {}, "Completare până la ziua întreagă"));
+}
+
+/** Types the time added to a day on one side (`"before"` / `"after"`, in minutes; `null` = back to the rules). */
+export function setFill(driver, date, side, minutes) {
+  driver.fills ??= {};
+  const edit = (driver.fills[date] ??= { before: null, after: null });
+  edit[side] = minutes;
+  if (edit.before == null && edit.after == null) delete driver.fills[date];
+}
+
 /** The calendar entry (weekend, holiday) of an ISO date of the month; undefined outside the month. */
 const dayInfo = (sheet, date) => sheet.days.find((d) => `${sheet.year}-${String(sheet.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}` === date);
 
@@ -385,6 +421,7 @@ function dayRows(driver, sheet, date, trips, edit, resolveOverlap) {
               dayStat("Curse regulate", row.legs),
               dayStat("Ore curse", duration(row.tripMin)),
               dayStat("Staționare", duration(row.stationMin)),
+              !excluded && row.tripMin + row.stationMin > 0 ? fillStat(driver, row, date, edit) : null,
               dayStat("Total ziua", duration(row.totalMin), "total"),
               dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted"))
           : null,
@@ -502,6 +539,7 @@ export function renderCatbDriver(container, ctx) {
       chip("Curse regulate", t.legs),
       chip("Ore curse", duration(t.tripMin)),
       chip("Ore staționare", duration(t.stationMin), { title: "Dedusă: plecarea cursei următoare minus sosirea celei dinainte" }),
+      t.fillMin > 0 ? chip("Ore completare", duration(t.fillMin), { title: "Timpul adăugat zilelor sub 8 ore, înainte de prima plecare și după ultima sosire, ca fiecare zi lucrată să aibă 8 ore (Reguli → Categoria B). Îl poți schimba pe fiecare zi." }) : null,
       excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
       Object.keys(t.leaveDays ?? {}).length
         ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
