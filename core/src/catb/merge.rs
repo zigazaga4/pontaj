@@ -219,13 +219,13 @@ fn count_trips(count: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::api::parse_time;
     use super::super::compute::recompute;
     use super::*;
     use crate::settings::Settings;
 
-    fn row(driver: i64, name: &str, id: &str, departure: &str, arrival: &str) -> ApiRow {
+    pub(in crate::catb) fn row(driver: i64, name: &str, id: &str, departure: &str, arrival: &str) -> ApiRow {
         ApiRow {
             driver_id: driver,
             driver_name: name.into(),
@@ -246,7 +246,7 @@ mod tests {
     }
 
     /// The same trip the other way round (Otopeni → Constanța): a driver's trips follow each other.
-    fn back(mut row: ApiRow) -> ApiRow {
+    pub(in crate::catb) fn back(mut row: ApiRow) -> ApiRow {
         std::mem::swap(&mut row.from, &mut row.to);
         row
     }

@@ -255,6 +255,15 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .driver-filter { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; font: inherit; width: 100%; }
 .check-line { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; padding: 0 2px; }
 .driver-list { display: flex; flex-direction: column; gap: 6px; }
+.driver-row { position: relative; }
+.driver-row .driver { width: 100%; padding-right: 34px; }
+.driver-remove { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 17px; line-height: 20px; text-align: center; cursor: pointer; }
+.driver-remove:hover, .driver-remove:focus-visible { background: #fdeeee; color: var(--danger); }
+.hidden-drivers { margin-top: 8px; border: 1px dashed var(--border); border-radius: 9px; padding: 6px 10px; font-size: 12px; }
+.hidden-drivers summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.hidden-drivers p { margin: 6px 0; }
+.hidden-driver { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
+.hidden-driver span { overflow-wrap: anywhere; }
 .driver.over { border-left: 3px solid var(--danger); }
 .flag.bad { color: var(--danger); font-weight: 700; }
 .flag.warn { color: #b45309; font-weight: 600; }

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::hidden::HiddenDriver;
 use super::places;
 use super::tariffs::{default_tariffs, Tariff};
 
@@ -58,6 +59,9 @@ pub struct CatbSettings {
     /// Places of Constanța county that the built-in list misses (written like the ALT app writes them).
     /// A private trip to a place that is neither on the regular route nor in the county is an excursion.
     pub extra_local_places: Vec<String>,
+    /// Drivers taken out of the pontaj with the "×" button: they stay out of every month, past and future, until the office
+    /// adds them back (see [`super::hidden`]). Kept here so the list is saved with the other settings.
+    pub hidden_drivers: Vec<HiddenDriver>,
 }
 
 impl Default for CatbSettings {
@@ -83,6 +87,7 @@ impl Default for CatbSettings {
             d_models: ["Tourismo", "Setra", "Travego"].map(String::from).to_vec(),
             tariffs: default_tariffs(),
             extra_local_places: Vec::new(),
+            hidden_drivers: Vec::new(),
         }
     }
 }

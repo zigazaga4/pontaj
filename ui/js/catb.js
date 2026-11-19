@@ -27,10 +27,10 @@ const urgent = (driver) => worryingAlerts(driver).filter((alert) => alert.level 
 const untariffed = (driver) => driver.trips.filter((t) => !t.edit.removed && t.eff.priceNote === "fără tarif").length;
 
 /**
- * @param {{ getSettings: () => object }} host
+ * @param {{ getSettings: () => object, saveSettings: (settings: object) => Promise<void> }} host
  * Returns the functions the page needs: show/hide the mode, download, export, react to changed settings.
  */
-export function createCatb({ getSettings }) {
+export function createCatb({ getSettings, saveSettings }) {
   const today = new Date();
   const previous = new Date(today.getFullYear(), today.getMonth() - 1, 1);
   const state = { sheet: null, year: previous.getFullYear(), month: previous.getMonth() + 1, saved: [], driverId: null, filter: "", onlyIssues: false, dirty: false, loaded: false };
@@ -97,6 +97,40 @@ export function createCatb({ getSettings }) {
     return queue;
   }
 
+  // ---- drivers taken out of the pontaj ----
+
+  const hiddenDrivers = () => getSettings().catb?.hiddenDrivers ?? [];
+
+  /**
+   * Saves the list of drivers taken out of the pontaj (it lives in the settings, so every month obeys it) and applies it to
+   * the open month: Rust moves them out of the sheet, or back into it with everything they had.
+   */
+  function setHiddenDrivers(change, selectId = null) {
+    queue = queue
+      .then(async () => {
+        // The list is read when its turn comes, so two quick clicks never overwrite each other.
+        const settings = getSettings();
+        await saveSettings({ ...settings, catb: { ...settings.catb, hiddenDrivers: change(hiddenDrivers()) } });
+        if (!state.sheet) return;
+        state.sheet = await api.catbRecalculate(state.sheet, getSettings());
+        if (selectId !== null && state.sheet.drivers.some((d) => d.id === selectId)) state.driverId = selectId;
+        if (!driver()) state.driverId = state.sheet.drivers[0]?.id ?? null;
+        markDirty();
+        renderAll();
+      })
+      .catch(fail);
+    return queue;
+  }
+
+  function removeDriver(d) {
+    setHiddenDrivers((list) => [...list.filter((x) => x.id !== d.id), { id: d.id, name: d.name }]);
+    toast(`${d.name} a fost scos din pontaj, în toate lunile.`, { kind: "ok", timeout: 12000, action: { label: "Anulează", run: () => restoreDriver(d.id) } });
+  }
+
+  function restoreDriver(id) {
+    setHiddenDrivers((list) => list.filter((x) => x.id !== id), id);
+  }
+
   // ---- drawing ----
 
   function renderBar() {
@@ -154,7 +188,8 @@ export function createCatb({ getSettings }) {
         h("h3", { id: "catb-drivers-title" }),
         h("input", { class: "driver-filter", type: "search", placeholder: "Caută după nume…", oninput: (e) => { state.filter = e.target.value; renderDrivers(); } }),
         h("label", { class: "check-line" }, h("input", { id: "catb-only-issues", type: "checkbox", onchange: toggleIssues }), "Doar cei de verificat"),
-        h("div", { class: "driver-list", id: "catb-driver-list" }));
+        h("div", { class: "driver-list", id: "catb-driver-list" }),
+        h("details", { class: "hidden-drivers", id: "catb-hidden" }, h("summary", { id: "catb-hidden-title" }), h("div", { id: "catb-hidden-list" })));
     }
     $("#catb-only-issues").checked = state.onlyIssues;
     const needle = state.filter.trim().toLowerCase();
@@ -163,12 +198,27 @@ export function createCatb({ getSettings }) {
     $("#catb-driver-list").replaceChildren(
       ...list.map((d) => {
         const flags = attention(d);
-        return h("button", { class: `driver ${d.id === state.driverId ? "active" : ""} ${d.totals.overMin > 0 ? "over" : ""}`, onclick: () => selectDriver(d.id) },
-          h("b", {}, d.name),
-          h("small", {}, `${duration(d.totals.totalMin)} ore · ${d.totals.days} zile`,
-            d.totals.overMin > 0 ? h("span", { class: "flag bad" }, ` · +${duration(d.totals.overMin)}`) : null,
-            flags ? h("span", { class: `flag ${urgent(d) ? "bad" : "warn"}` }, ` · ⚠ ${flags}`) : null));
+        return h("div", { class: "driver-row" },
+          h("button", { class: `driver ${d.id === state.driverId ? "active" : ""} ${d.totals.overMin > 0 ? "over" : ""}`, onclick: () => selectDriver(d.id) },
+            h("b", {}, d.name),
+            h("small", {}, `${duration(d.totals.totalMin)} ore · ${d.totals.days} zile`,
+              d.totals.overMin > 0 ? h("span", { class: "flag bad" }, ` · +${duration(d.totals.overMin)}`) : null,
+              flags ? h("span", { class: `flag ${urgent(d) ? "bad" : "warn"}` }, ` · ⚠ ${flags}`) : null)),
+          h("button", { class: "driver-remove", type: "button", title: `Scoate-l pe ${d.name} din pontaj, în toate lunile (îl poți adăuga înapoi)`, "aria-label": `Scoate pe ${d.name} din pontaj`, onclick: () => removeDriver(d) }, "×"));
       }));
+    renderHiddenDrivers();
+  }
+
+  /** The drivers taken out of the pontaj, each with the way back. */
+  function renderHiddenDrivers() {
+    const out = [...hiddenDrivers()].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+    $("#catb-hidden").hidden = !out.length;
+    $("#catb-hidden-title").textContent = `Scoși din pontaj (${out.length})`;
+    $("#catb-hidden-list").replaceChildren(
+      h("p", { class: "muted" }, "Nu apar în nicio lună. Dacă îl adaugi înapoi, revine cu tot ce avea."),
+      ...out.map((d) => h("div", { class: "hidden-driver" },
+        h("span", {}, d.name || `Șofer #${d.id}`),
+        h("button", { class: "btn small", type: "button", onclick: () => restoreDriver(d.id) }, "Adaugă înapoi"))));
   }
 
   function renderView() {

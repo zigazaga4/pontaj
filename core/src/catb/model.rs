@@ -345,6 +345,9 @@ pub struct Sheet {
     /// Monthly ceiling: 8 hours × `weekdays`, in minutes.
     pub cap_min: i32,
     pub drivers: Vec<Driver>,
+    /// Drivers the office took out of the pontaj (see [`super::hidden`]): what the sheet knew about them, kept apart so that
+    /// adding one back loses nothing. They are in no total and in no file.
+    pub removed_drivers: Vec<Driver>,
     /// Remarks from the last download (trips that changed or disappeared in the API).
     pub notices: Vec<String>,
 }

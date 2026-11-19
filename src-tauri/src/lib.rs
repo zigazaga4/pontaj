@@ -112,10 +112,9 @@ async fn catb_open(app: AppHandle, year: i32, month: u32, settings: Settings) ->
         let mut sheet = catb::store::load(&dir, year, month).map_err(|e| e.to_string())?;
         if let Some(sheet) = &mut sheet {
             // A month downloaded before the days around it were kept still gets the drives between months: the months
-            // saved beside it have exactly those trips.
+            // saved beside it have exactly those trips. The drivers taken out of the pontaj stay out of every month.
             let (previous, next) = catb::store::load_around(&dir, year, month);
-            catb::borrow_neighbors(sheet, previous.as_ref(), next.as_ref());
-            catb::recompute(sheet, &settings);
+            catb::open_saved(sheet, previous, next, &settings);
         }
         Ok(sheet)
     })

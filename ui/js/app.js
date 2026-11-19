@@ -25,7 +25,7 @@ const TAGLINES = {
 
 const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null, mode: "pdf" };
 
-const catb = createCatb({ getSettings: () => state.settings });
+const catb = createCatb({ getSettings: () => state.settings, saveSettings: persistSettings });
 
 const basename = (path) => path.split(/[\\/]/).pop();
 
@@ -238,14 +238,19 @@ function openSettings(open) {
   if (open) renderSettings($("#settings-form"), state.settings, onSettingsChange);
 }
 
-async function onSettingsChange(settings) {
+/** Keeps the settings in memory and on disk (the form, when open, is drawn again so it never edits an old copy). */
+async function persistSettings(settings) {
   state.settings = settings;
-  renderSettings($("#settings-form"), settings, onSettingsChange);
+  if (!$("#settings-panel").hidden) renderSettings($("#settings-form"), settings, onSettingsChange);
   try {
     await api.saveSettings(settings);
   } catch (err) {
     toast(`Setările nu au putut fi salvate: ${err}`, { kind: "warn" });
   }
+}
+
+async function onSettingsChange(settings) {
+  await persistSettings(settings);
   await Promise.all([state.sheet ? edit(null, { structural: true }) : null, catb.settingsChanged()]);
 }
 

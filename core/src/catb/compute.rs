@@ -25,7 +25,7 @@ use chrono::{Datelike, NaiveDate};
 
 use super::config::CatbSettings;
 use super::model::*;
-use super::{cap, places, tariffs, transfers};
+use super::{cap, hidden, places, tariffs, transfers};
 use crate::calendar;
 use crate::settings::Settings;
 use crate::time::{fmt_duration, round_hours};
@@ -33,6 +33,8 @@ use crate::timesheet::month_days;
 
 /// Recomputes the whole sheet.
 pub fn recompute(sheet: &mut Sheet, settings: &Settings) {
+    // Drivers taken out of the pontaj leave the sheet (and come back when they leave the list) before anything is counted.
+    hidden::apply(sheet, &settings.catb.hidden_drivers);
     sheet.days = month_days(sheet.year, sheet.month);
     sheet.weekdays = calendar::weekdays_in_month(sheet.year, sheet.month);
     sheet.cap_min = monthly_cap_min(sheet.year, sheet.month, settings);
