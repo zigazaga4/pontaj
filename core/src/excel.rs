@@ -1,6 +1,7 @@
 //! Writes the "Foaie colectivă de prezență (pontaj)" workbook, laid out like the payroll team's own file
 //! (the October 2026 one): company and legend on top, the title, the month and the days as columns, six rows per
-//! employee (hours, night hours, two start/end pairs) and live formulas for every total.
+//! employee (hours, night hours, two start/end pairs; more pairs when a day of the employee has more intervals) and
+//! live formulas for every total.
 //! [`pontaj_sheet`] draws that one worksheet from a [`Timesheet`]; the tachograph mode and Categoria B both use it.
 
 use std::path::Path;
@@ -17,7 +18,10 @@ use crate::{Error, Result};
 /// Row of the first header line (Excel row 9); the days numbers are on the next one.
 const HEADER_ROW: RowNum = 8;
 const FIRST_DATA_ROW: RowNum = 10;
-const ROWS_PER_EMPLOYEE: RowNum = 6;
+/// The hours and the night hours, the two rows on top of every employee; the start/end pairs come under them.
+const TOP_ROWS: RowNum = 2;
+/// Start/end pairs of an employee in the payroll file; a day with more intervals gives the employee more pairs.
+const MIN_SLOTS: usize = 2;
 /// Column E: A is the number, B the name, C the job, D the department (left empty, as in the payroll file).
 const FIRST_DAY_COL: ColNum = 4;
 
@@ -85,6 +89,16 @@ pub(crate) fn cell(row: RowNum, col: ColNum) -> String {
 
 pub(crate) fn range(row: RowNum, from: ColNum, to: ColNum) -> String {
     format!("{}:{}", cell(row, from), cell(row, to))
+}
+
+/// Start/end pairs written for an employee: the two of the payroll file, or as many as its busiest day has.
+fn slots(emp: &Employee) -> usize {
+    emp.days.iter().map(|d| d.intervals.len()).max().unwrap_or(0).max(MIN_SLOTS)
+}
+
+/// Rows of an employee on the sheet: hours, night hours and a start and an end row per pair.
+fn rows_of(emp: &Employee) -> RowNum {
+    TOP_ROWS + 2 * slots(emp) as RowNum
 }
 
 /// Reusable cell formats.
@@ -160,14 +174,17 @@ pub(crate) fn pontaj_sheet(ws: &mut Worksheet, sheet: &Timesheet, settings: &Set
     write_header(ws, sheet, &st, &cols, month)?;
 
     let mut row = FIRST_DATA_ROW;
+    let mut time_rows: Vec<RowNum> = Vec::new();
     for (i, employee) in sheet.employees.iter().enumerate() {
         write_employee(ws, sheet, settings, &st, &cols, row, i + 1, employee, hours_from)?;
-        row += ROWS_PER_EMPLOYEE;
+        let rows = rows_of(employee);
+        time_rows.extend(row + TOP_ROWS..row + rows);
+        row += rows;
     }
     let total_row = row;
     write_totals(ws, sheet, &st, &cols, total_row)?;
     write_signatures(ws, settings, &cols, total_row + 3)?;
-    layout(ws, &cols, total_row)?;
+    layout(ws, &cols, &time_rows, total_row)?;
     Ok(())
 }
 
@@ -239,20 +256,23 @@ fn write_employee(
     emp: &Employee,
     hours_from: Option<HoursFormula>,
 ) -> std::result::Result<(), XlsxError> {
-    let last = row + ROWS_PER_EMPLOYEE - 1;
+    let rows = rows_of(emp);
+    let times = 2 * slots(emp);
+    let last = row + rows - 1;
 
-    // Number and name over the six rows; the job over the first two (hours and night), then the labels of the times.
+    // Number and name over all the rows; the job over the first two (hours and night), then the labels of the times.
     let numbered = st.base.clone().set_text_wrap();
     ws.merge_range(row, 0, last, 0, "", &numbered)?;
     ws.write_number_with_format(row, 0, nr as f64, &numbered)?;
     ws.merge_range(row, 1, last, 1, &emp.name, &st.fill(YELLOW).set_font_name("Arial").set_align(FormatAlign::Left).set_text_wrap())?;
     ws.merge_range(row, 2, row + 1, 2, &emp.function, &st.base.clone().set_font_size(9).set_text_wrap())?;
     let label = st.base.clone().set_font_size(9).set_italic().set_align(FormatAlign::Left).set_text_wrap();
-    for (k, text) in ["Ora începerii", "Ora terminării", "Ora începerii", "Ora terminării"].iter().enumerate() {
-        ws.write_string_with_format(row + 2 + k as RowNum, 2, *text, &label)?;
+    for k in 0..times {
+        let text = if k % 2 == 0 { "Ora începerii" } else { "Ora terminării" };
+        ws.write_string_with_format(row + TOP_ROWS + k as RowNum, 2, text, &label)?;
     }
     let department = st.base.clone().set_num_format("h:mm");
-    for k in 0..ROWS_PER_EMPLOYEE {
+    for k in 0..rows {
         ws.write_blank(row + k, 3, &department)?;
     }
 
@@ -275,8 +295,8 @@ fn write_employee(
             None => ws.write_blank(row + 1, col, &day)?,
         };
         let time_fmt = day.clone().set_num_format("h:mm");
-        for k in 0..4 {
-            let r = row + 2 + k as RowNum;
+        for k in 0..times {
+            let r = row + TOP_ROWS + k as RowNum;
             let value = entry.intervals.get(k / 2).map(|iv| if k % 2 == 0 { iv.start } else { iv.end });
             match value {
                 Some(min) => ws.write_number_with_format(r, col, min.rem_euclid(DAY) as f64 / DAY as f64, &time_fmt)?,
@@ -290,7 +310,7 @@ fn write_employee(
     let t = &emp.totals;
     let total_fmt = st.fill(YELLOW).set_text_wrap();
     for col in cols.worked..=cols.overtime {
-        for k in 0..ROWS_PER_EMPLOYEE {
+        for k in 0..rows {
             ws.write_blank(row + k, col, &total_fmt)?;
         }
     }
@@ -369,7 +389,8 @@ fn write_signatures(ws: &mut Worksheet, settings: &Settings, cols: &Cols, row: R
     Ok(())
 }
 
-fn layout(ws: &mut Worksheet, cols: &Cols, total_row: RowNum) -> std::result::Result<(), XlsxError> {
+/// `time_rows`: the rows of the start/end times of every employee (lower than the others).
+fn layout(ws: &mut Worksheet, cols: &Cols, time_rows: &[RowNum], total_row: RowNum) -> std::result::Result<(), XlsxError> {
     ws.set_column_width(0, 3.86)?;
     ws.set_column_width(1, 15.57)?;
     ws.set_column_width(2, 10.29)?;
@@ -386,10 +407,8 @@ fn layout(ws: &mut Worksheet, cols: &Cols, total_row: RowNum) -> std::result::Re
     ws.set_row_height(7, 15.75)?;
     ws.set_row_height(HEADER_ROW, 38.25)?;
     ws.set_row_height(HEADER_ROW + 1, 64.5)?;
-    for employee_first in (FIRST_DATA_ROW..total_row).step_by(ROWS_PER_EMPLOYEE as usize) {
-        for r in employee_first + 2..employee_first + ROWS_PER_EMPLOYEE {
-            ws.set_row_height(r, 13.5)?;
-        }
+    for &r in time_rows {
+        ws.set_row_height(r, 13.5)?;
     }
     ws.set_row_height(total_row, 18)?;
 
@@ -665,6 +684,23 @@ mod tests {
         let absence = DayEntry { code: Some("CO".into()), ..Default::default() };
         assert_eq!(audit_remarks(&absence), "Absență trecută manual");
         assert!(audit_has_data(&absence) && !audit_has_data(&DayEntry::default()));
+    }
+
+    #[test]
+    fn an_employee_gets_a_pair_of_rows_for_every_interval_of_its_busiest_day() {
+        let iv = |start, end| Interval { start, end };
+        let mut emp = Employee {
+            name: "X".into(),
+            function: String::new(),
+            location: String::new(),
+            activities: Vec::new(),
+            days: vec![DayEntry::default(); 3],
+            totals: Default::default(),
+        };
+        assert_eq!(rows_of(&emp), 6, "the six rows of the payroll file");
+        emp.days[0].intervals = vec![iv(300, 480)];
+        emp.days[1].intervals = vec![iv(300, 480), iv(540, 720), iv(1080, 1260)];
+        assert_eq!(rows_of(&emp), 8, "hours, night and three start/end pairs");
     }
 
     #[test]

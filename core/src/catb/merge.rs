@@ -501,26 +501,26 @@ pub(super) mod tests {
     #[test]
     fn the_days_around_the_month_are_neighbors_and_not_trips() {
         use super::super::api::Parsed;
-        let mut coach = row(1, "Badea Lucian", "eco-1", "2026-09-29 05:00", "2026-09-29 08:00");
+        let mut coach = row(1, "Testescu Ion", "eco-1", "2026-09-29 05:00", "2026-09-29 08:00");
         (coach.car_model, coach.car_seats) = ("TOURISMO".into(), 55);
         let rows = vec![
             coach,
-            back(row(1, "Badea Lucian", "eco-30", "2026-10-31 11:00", "2026-10-31 14:00")),
-            back(row(1, "Badea Lucian", "eco-31", "2026-11-01 05:30", "2026-11-01 08:30")),
-            row(1, "Badea Lucian", "eco-32", "2026-11-03 05:00", "2026-11-03 08:00"),
-            back(row(1, "Badea Lucian", "eco-33", "2026-12-20 05:00", "2026-12-20 08:00")),
+            back(row(1, "Testescu Ion", "eco-30", "2026-10-31 11:00", "2026-10-31 14:00")),
+            back(row(1, "Testescu Ion", "eco-31", "2026-11-01 05:30", "2026-11-01 08:30")),
+            row(1, "Testescu Ion", "eco-32", "2026-11-03 05:00", "2026-11-03 08:00"),
+            back(row(1, "Testescu Ion", "eco-33", "2026-12-20 05:00", "2026-12-20 08:00")),
             row(2, "Doar Context", "eco-40", "2026-10-30 05:00", "2026-10-30 08:00"),
         ];
         let sheet = super::super::apply_download(None, 2026, 11, &Parsed { rows, ..Default::default() }, "x", &Settings::default());
         // Driver 1 drove a coach in September (outside the month): a category D trip is no neighbor for Categoria B, and it
         // does not take him out of the sheet. Driver 2 has no trip in November, so he is not in the sheet at all.
         assert_eq!(sheet.drivers.len(), 1);
-        let badea = &sheet.drivers[0];
+        let testescu = &sheet.drivers[0];
         let ids = |trips: &[Trip]| trips.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
-        assert_eq!(ids(&badea.before), ["eco-30"]);
-        assert_eq!(ids(&badea.after), ["eco-33"]);
+        assert_eq!(ids(&testescu.before), ["eco-30"]);
+        assert_eq!(ids(&testescu.after), ["eco-33"]);
         // The sheet's trips are those of November, and the drive that explains how he got to Otopeni on the 1st is there.
-        assert_eq!(ids(&badea.trips), ["gen-pre-eco-31", "eco-31", "eco-32"]);
+        assert_eq!(ids(&testescu.trips), ["gen-pre-eco-31", "eco-31", "eco-32"]);
         assert!(sheet.notices.is_empty(), "{:?}", sheet.notices);
 
         // A download with no trip in the month says so, and the same data twice changes nothing.
@@ -548,8 +548,8 @@ pub(super) mod tests {
         let settings = Settings::default();
         let download = |month: u32, rows: Vec<ApiRow>| super::super::apply_download(None, 2026, month, &Parsed { rows, ..Default::default() }, "x", &settings);
         // The last trip of October ends in Constanța; the first of November leaves from Otopeni (nobody logged the drive).
-        let october = download(10, vec![back(row(1, "Badea Lucian", "eco-30", "2026-10-31 11:00", "2026-10-31 14:00"))]);
-        let november = download(11, vec![back(row(1, "Badea Lucian", "eco-31", "2026-11-01 05:30", "2026-11-01 08:30"))]);
+        let october = download(10, vec![back(row(1, "Testescu Ion", "eco-30", "2026-10-31 11:00", "2026-10-31 14:00"))]);
+        let november = download(11, vec![back(row(1, "Testescu Ion", "eco-31", "2026-11-01 05:30", "2026-11-01 08:30"))]);
         let made = |sheet: &Sheet| sheet.drivers[0].trips.iter().filter(|t| t.generated).map(|t| t.id.clone()).collect::<Vec<_>>();
         assert!(made(&november).is_empty(), "saved without the days around it: nothing is known about where he was");
 

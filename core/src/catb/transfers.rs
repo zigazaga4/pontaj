@@ -163,7 +163,7 @@ mod tests {
     }
 
     fn driver(trips: Vec<Trip>) -> Driver {
-        Driver { id: 1, name: "BADEA LUCIAN".into(), trips, ..Default::default() }
+        Driver { id: 1, name: "TESTESCU ION".into(), trips, ..Default::default() }
     }
 
     fn run(driver: &mut Driver, month: u32) {

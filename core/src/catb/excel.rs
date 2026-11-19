@@ -1033,8 +1033,8 @@ mod tests {
     #[test]
     fn a_drive_made_by_the_app_is_listed_in_the_detail_and_summed_with_the_trips() {
         let body = r#"{"data":[
-          {"driver_id":7,"driver_name":"Badea Lucian","trip":{"type":"eco","id":"eco-1"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-10-31 11:00","duration_minutes":180},
-          {"driver_id":7,"driver_name":"Badea Lucian","trip":{"type":"eco","id":"eco-2"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-11-01 05:30","duration_minutes":180}
+          {"driver_id":7,"driver_name":"Testescu Ion","trip":{"type":"eco","id":"eco-1"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-10-31 11:00","duration_minutes":180},
+          {"driver_id":7,"driver_name":"Testescu Ion","trip":{"type":"eco","id":"eco-2"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-11-01 05:30","duration_minutes":180}
         ]}"#;
         let sheet = apply_download(None, 2026, 11, &parse_rows(body).unwrap(), "x", &Settings::default());
         let driver = &sheet.drivers[0];
