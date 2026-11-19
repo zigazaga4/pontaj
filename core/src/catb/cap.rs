@@ -30,14 +30,14 @@ pub(super) fn propose(driver: &Driver, cap_min: i32, settings: &Settings) -> Vec
     //    below it would be added back as time before the departure and after the arrival.
     let floor = if settings.catb.fill_day { settings.hours_per_day * 60 } else { 0 };
     let mut room: BTreeMap<NaiveDate, i32> = driver.days.iter().filter_map(|d| Some((d.date?, (d.trip_min + d.station_min - floor).max(0)))).collect();
-    let mut pauses: Vec<&Pause> = driver.pauses.iter().filter(|p| p.counted_min > 0 && p.start.is_some_and(|s| !excluded(s.date()))).collect();
+    let mut pauses: Vec<&Pause> = driver.pauses.iter().filter(|p| p.counted_min > 0 && p.day.is_some_and(|day| !excluded(day))).collect();
     pauses.sort_by_key(|p| Reverse(p.counted_min));
     let mut proposals: Vec<Proposal> = Vec::new();
     for pause in pauses {
         if remaining <= 0 {
             break;
         }
-        let Some(date) = pause.start.map(|s| s.date()) else { continue };
+        let Some(date) = pause.day else { continue };
         let day_room = room.entry(date).or_insert(0);
         let cuttable = pause.counted_min.min(*day_room);
         if cuttable <= 0 {

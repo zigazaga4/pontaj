@@ -95,6 +95,13 @@ impl Maker<'_> {
                     self.trip(driver, TripKind::Private, CONSTANTA, place, local, Some(40), small);
                 }
             }
+            92..=95 => {
+                // To the airport in the afternoon, a night of waiting there, back before dawn: one shift over midnight.
+                let go = self.at(day, 13, 18);
+                self.trip(driver, TripKind::Eco, CONSTANTA, OTOPENI, go, Some(180), small);
+                let back = go + Duration::minutes(180 + i64::from(self.rng.range(96, 138) * 5));
+                self.trip(driver, TripKind::Eco, OTOPENI, CONSTANTA, back, Some(180), small);
+            }
             73..=78 => {
                 // One late trip that ends the next day.
                 let go = self.at(day, 21, 23);

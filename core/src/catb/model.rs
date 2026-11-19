@@ -105,6 +105,10 @@ pub struct Effective {
     pub price: f64,
     /// Why the amount is what it is: "cursă", "exterior: Tulcea", "fără tarif"…
     pub price_note: String,
+    /// The day the trip counts on in the pontaj: the day it leaves, except a trip that follows a staționare going over
+    /// midnight (the same shift: left at 14:30, arrived at 17:30, waited, left again at 03:30 the next day), which counts on
+    /// the day of the trip before it, as the accountants write it. Derived by [`super::recompute`].
+    pub work_day: Option<NaiveDate>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -216,6 +220,9 @@ pub struct Pause {
     pub place_to: String,
     pub start: Option<NaiveDateTime>,
     pub end: Option<NaiveDateTime>,
+    /// The day its minutes count on: the day the trip before it counts on when it is a staționare of the same shift (see
+    /// [`Effective::work_day`]), else the day it starts.
+    pub day: Option<NaiveDate>,
     pub gap_min: i32,
     /// Minutes of the pause spent on other trips (private, charter): they count as trip hours, not as waiting.
     pub busy_min: i32,

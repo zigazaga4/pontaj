@@ -7,7 +7,7 @@
 //! night hours are those of the written times. "Pontaj zilnic" and "Sinteză": the minutes of the app. Every formula:
 //! the value cached in the file is what it computes.
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, NaiveDate, NaiveTime};
 use pontaj_core::calendar::days_in_month;
 use pontaj_core::catb::{Driver, Sheet};
 use pontaj_core::settings::Settings;
@@ -57,29 +57,58 @@ pub fn hm(m: i32) -> String {
     format!("{sign}{}:{:02}", m.abs() / 60, m.abs() % 60)
 }
 
-fn minute_of(at: NaiveDateTime) -> i32 {
-    (at.hour() * 60 + at.minute()) as i32
-}
-
 fn clock(text: &str) -> i32 {
     let (h, m) = text.split_once(':').unwrap_or((text, "0"));
     h.trim().parse::<i32>().unwrap_or(0) * 60 + m.trim().parse::<i32>().unwrap_or(0)
 }
 
-/// The trips of a day as the screen lists them, each from its departure to its arrival (minutes from midnight; an
-/// arrival past midnight is over 1440): those that leave that day and count (not taken out, not an excursion).
+/// The trips of a day as the screen lists them, each from its departure to its arrival (minutes from the midnight that opens
+/// the day; what happens after midnight in a shift that began that day is over 1440): those that count on that day (not
+/// taken out, not an excursion). A trip counts on the day it leaves, except one that follows a staționare going over midnight
+/// (the same shift): that one counts on the day of the trip before it.
 pub fn day_trips(driver: &Driver, date: NaiveDate) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
     for t in &driver.trips {
         if t.edit.removed || t.eff.excursion || !t.eff.counts_hours || t.eff.minutes <= 0 {
             continue;
         }
-        if let Some(at) = t.eff.departure.filter(|at| at.date() == date) {
-            out.push((minute_of(at), minute_of(at) + t.eff.minutes));
+        let Some(at) = t.eff.departure else { continue };
+        if t.eff.work_day.unwrap_or(at.date()) == date {
+            let start = (at - date.and_time(NaiveTime::MIN)).num_minutes() as i32;
+            out.push((start, start + t.eff.minutes));
         }
     }
     out.sort();
     out
+}
+
+/// The rule behind the day a trip counts on, checked apart from the app's own code: a trip counts on another day than the
+/// one it leaves only when it follows (in the sheet) a staționare that goes over a single midnight, and then on the day of
+/// the trip before it; a trip that counts on its own day follows no such staționare.
+pub fn work_day_problems(driver: &Driver) -> Vec<String> {
+    let mut problems = Vec::new();
+    let station = |p: &pontaj_core::catb::Pause| match p.state {
+        pontaj_core::catb::PauseState::Stayed => true,
+        pontaj_core::catb::PauseState::Off => false,
+        pontaj_core::catb::PauseState::Auto => p.kind == pontaj_core::catb::PauseKind::Normal,
+    };
+    for t in &driver.trips {
+        let Some(at) = t.eff.departure else { continue };
+        let day = t.eff.work_day;
+        let after = driver.pauses.iter().find(|p| p.next == t.id);
+        let shift = after.filter(|p| station(p) && p.start.zip(p.end).is_some_and(|(s, e)| (e.date() - s.date()).num_days() <= 1));
+        match (day == Some(at.date()), shift) {
+            (true, _) => {}
+            (false, None) => problems.push(format!("{} {}: trece pe {:?} deși pleacă pe {} și nu urmează unei staționări", driver.name, t.id, day, at.date())),
+            (false, Some(p)) => {
+                let before = driver.trips.iter().find(|x| x.id == p.prev).and_then(|x| x.eff.work_day);
+                if before != day {
+                    problems.push(format!("{} {}: trece pe {:?}, dar cursa dinainte ({}) trece pe {:?}", driver.name, t.id, day, p.prev, before));
+                }
+            }
+        }
+    }
+    problems
 }
 
 /// A day of the month whose trips the first sheet writes: one that has hours (not taken out, not a leave, not under
@@ -185,6 +214,7 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
 
     for &(driver, r, rows) in &order {
         report.drivers += 1;
+        problems.extend(work_day_problems(driver));
         let pairs = (rows - 2) / 2;
         if pairs > 2 {
             report.extra_rows += 1;

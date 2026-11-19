@@ -7,7 +7,7 @@
 //! those times. The minutes and the day they belong to are the ones of the sheet (a trip counts on the day it leaves, a
 //! waiting on the day it starts), so the Excel shows what the screen shows. See [`trip_intervals`].
 
-use chrono::{NaiveDate, NaiveDateTime, Timelike};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 use super::model::{DayRow, Driver, Sheet};
 use crate::rules::{compute_totals, recompute_day};
@@ -15,17 +15,32 @@ use crate::settings::{IntervalMode, NightSource, Settings};
 use crate::time::round_hours;
 use crate::timesheet::{display_name, DayEntry, Employee, Interval, Timesheet, Totals};
 
-fn minute_of_day(at: NaiveDateTime) -> i32 {
-    (at.hour() * 60 + at.minute()) as i32
+/// A period that counts, on the day it belongs to: `start` and `minutes` from the midnight that opens `day`, so what happens
+/// after midnight in a shift that began on `day` is past 24:00 (a trip at 03:30 the next day starts at 27:30).
+struct Placed {
+    day: NaiveDate,
+    start: i32,
+    minutes: i32,
 }
 
-/// The trips whose hours count (departure, minutes): not taken out, not an excursion, with a known duration.
-fn counted_trips(driver: &Driver) -> impl Iterator<Item = (NaiveDateTime, i32)> + '_ {
+fn placed(day: NaiveDate, at: NaiveDateTime, minutes: i32) -> Placed {
+    Placed { day, start: (at - day.and_time(NaiveTime::MIN)).num_minutes() as i32, minutes }
+}
+
+impl Placed {
+    fn interval(&self) -> Interval {
+        Interval { start: self.start, end: self.start + self.minutes }
+    }
+}
+
+/// The trips whose hours count: not taken out, not an excursion, with a known duration, each on its work day (see
+/// [`super::model::Effective::work_day`]).
+fn counted_trips(driver: &Driver) -> impl Iterator<Item = Placed> + '_ {
     driver
         .trips
         .iter()
         .filter(|t| !t.edit.removed && !t.eff.excursion && t.eff.counts_hours && t.eff.minutes > 0)
-        .filter_map(|t| t.eff.departure.map(|at| (at, t.eff.minutes)))
+        .filter_map(|t| t.eff.departure.map(|at| placed(t.eff.work_day.unwrap_or(at.date()), at, t.eff.minutes)))
 }
 
 /// The trips of a day as the payroll sheet writes them: each one from its departure to its arrival, in the order they
@@ -33,22 +48,15 @@ fn counted_trips(driver: &Driver) -> impl Iterator<Item = (NaiveDateTime, i32)> 
 /// the time added to fill the day count in the hours of the day, not in its times. A day with more trips than the usual
 /// two gets more rows in the sheet (see `crate::excel::pontaj_sheet`).
 pub(super) fn trip_intervals(driver: &Driver, date: NaiveDate) -> Vec<Interval> {
-    let mut out: Vec<Interval> = counted_trips(driver)
-        .filter(|(at, _)| at.date() == date)
-        .map(|(at, minutes)| Interval { start: minute_of_day(at), end: minute_of_day(at) + minutes })
-        .collect();
+    let mut out: Vec<Interval> = counted_trips(driver).filter(|p| p.day == date).map(|p| p.interval()).collect();
     out.sort_by_key(|i| (i.start, i.end));
     out
 }
 
-/// The periods of a day that count as work: the trips that leave that day and the waiting that starts on it.
+/// The periods of a day that count as work: the trips of its work day and the waiting that counts on it.
 pub(super) fn work_blocks(driver: &Driver, date: NaiveDate) -> Vec<Interval> {
-    let waits = driver.pauses.iter().filter(|p| p.counted_min > 0).filter_map(|p| p.start.map(|at| (at, p.counted_min)));
-    let mut blocks: Vec<Interval> = counted_trips(driver)
-        .chain(waits)
-        .filter(|(at, _)| at.date() == date)
-        .map(|(at, minutes)| Interval { start: minute_of_day(at), end: minute_of_day(at) + minutes })
-        .collect();
+    let waits = driver.pauses.iter().filter(|p| p.counted_min > 0).filter_map(|p| p.start.map(|at| placed(p.day.unwrap_or(at.date()), at, p.counted_min)));
+    let mut blocks: Vec<Interval> = counted_trips(driver).chain(waits).filter(|p| p.day == date).map(|p| p.interval()).collect();
     blocks.sort_by_key(|b| (b.start, b.end));
     blocks
 }

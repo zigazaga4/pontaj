@@ -212,6 +212,17 @@ function moveControls(trip, moveTrip) {
     moved ? h("button", { class: "btn small", type: "button", title: `Pune deplasarea la loc (era mutată ${movedText(moved)})`, onclick: () => moveTrip(trip, -moved) }, "↺ la loc") : null);
 }
 
+/**
+ * A trip that leaves after midnight but belongs to the shift of the day before (it follows a staționare over midnight) is listed
+ * under that day, the way the accountants write it. This line says on which day it really leaves.
+ */
+function sameShiftNote(trip) {
+  const leaves = trip.eff.departure ? isoDate(trip.eff.departure) : null;
+  if (!trip.eff.workDay || !leaves || leaves === trip.eff.workDay) return null;
+  return h("small", { class: "moved-note", title: "Pleacă după miezul nopții, dar e din aceeași tură cu cursa dinainte (staționarea trece peste miezul nopții), deci se trece pe ziua în care a început tura." },
+    `pleacă pe ${shortDate(leaves)}, din tura de pe ${shortDate(trip.eff.workDay)}`);
+}
+
 function tripRow(trip, edit, moveTrip) {
   const removed = trip.edit.removed;
   const counted = trip.eff.countsHours && trip.eff.minutes > 0;
@@ -222,6 +233,7 @@ function tripRow(trip, edit, moveTrip) {
       trip.manual ? h("span", { class: "muted", title: "Adăugată manual" }, " ✎") : null,
       trip.generated ? h("span", { class: "muted", title: GENERATED_HINT }, " auto") : null,
       trip.generated && trip.movedDays ? h("small", { class: "moved-note" }, `mutată ${movedText(trip.movedDays)}`) : null,
+      sameShiftNote(trip),
       trip.generated && !removed ? moveControls(trip, moveTrip) : null),
     h("td", {}, timeInput(trip, "departure", edit)),
     h("td", {}, timeInput(trip, "arrival", edit)),
@@ -572,9 +584,10 @@ export function renderCatbDriver(container, ctx) {
     driver.alerts.length ? alertList(driver.alerts) : null,
     proposals);
 
+  // A trip sits under its work day: the day it leaves, or the day of the shift it continues (see `tripRow`).
   const byDate = new Map();
   for (const trip of driver.trips) {
-    const date = isoDate(trip.eff.departure ?? trip.departure);
+    const date = trip.eff.workDay ?? isoDate(trip.eff.departure ?? trip.departure);
     if (!byDate.has(date)) byDate.set(date, []);
     byDate.get(date).push(trip);
   }

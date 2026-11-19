@@ -190,7 +190,7 @@ fn driver_remarks(driver: &Driver) -> Vec<(Option<NaiveDate>, &Alert)> {
     let out_of_pontaj = |date: Option<NaiveDate>| date.is_some_and(|d| driver.excluded_days.contains(&d));
     let mut list: Vec<(Option<NaiveDate>, &Alert)> = driver.alerts.iter().map(|a| (None, a)).collect();
     for pause in &driver.pauses {
-        let date = pause.start.map(|s| s.date());
+        let date = pause.day;
         if !out_of_pontaj(date) {
             list.extend(pause.alerts.iter().map(|a| (date, a)));
         }
@@ -592,7 +592,7 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
     for trip in &driver.trips {
         let eff = &trip.eff;
         let Some(departure) = eff.departure else { continue };
-        let date = departure.date();
+        let date = eff.work_day.unwrap_or(departure.date());
         let counted = !trip.edit.removed && !eff.excursion && counts(date);
         let mut notes: Vec<String> = Vec::new();
         if trip.edit.removed {
@@ -601,6 +601,9 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
             notes.push(why_not(date).into());
         } else if !eff.price_note.is_empty() {
             notes.push(eff.price_note.clone());
+        }
+        if date != departure.date() {
+            notes.push(format!("pleacă pe {}, dar e din aceeași tură, deci se trece pe {}", departure.format("%d.%m"), date.format("%d.%m")));
         }
         if trip.manual {
             notes.push("adăugată manual".into());
@@ -627,13 +630,14 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
         });
         for pause in driver.pauses.iter().filter(|p| p.prev == trip.id && worth_listing(p)) {
             let Some(start) = pause.start else { continue };
-            let counted = counts(start.date());
+            let day = pause.day.unwrap_or(start.date());
+            let counted = counts(day);
             let mut note = pause_state_text(pause);
             if !counted {
-                note = format!("{}; {}", why_not(start.date()), note);
+                note = format!("{}; {}", why_not(day), note);
             }
             rows.push(DetailRow {
-                date: start.date(),
+                date: day,
                 kind: match (pause.kind, is_station(pause)) {
                     (PauseKind::Overlap, _) => "Suprapunere",
                     (_, true) => "Staționare",
@@ -654,7 +658,6 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
         }
     }
     // The days of leave and the time added to the days: no trip behind them, but the office must see where the hours come from.
-    let before = rows.len();
     for day in driver.days.iter().filter(|d| d.fill_min > 0) {
         let Some(date) = day.date else { continue };
         let Some((first, last)) = super::pontaj::day_span(driver, date) else { continue };
@@ -703,9 +706,9 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
             order: 1,
         });
     }
-    if rows.len() > before {
-        rows.sort_by_key(|r| (r.date, r.order)); // stable: the lines of one day keep their order
-    }
+    // Stable: the lines of one day keep their order (a trip of the same shift that leaves after midnight sits on the day of
+    // the shift, between the lines of that day).
+    rows.sort_by_key(|r| (r.date, r.order));
     rows
 }
 
