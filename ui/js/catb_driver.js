@@ -213,14 +213,20 @@ function moveControls(trip, moveTrip) {
 }
 
 /**
- * A trip that leaves after midnight but belongs to the shift of the day before (it follows a staționare over midnight) is listed
- * under that day, the way the accountants write it. This line says on which day it really leaves.
+ * A trip that leaves after midnight but belongs to the shift of the day before (it follows a staționare over midnight) stays
+ * listed on the day it really leaves; the hours, the night and the intervals go to the day of the shift in the Excel. This line
+ * says on which day it is counted.
  */
 function sameShiftNote(trip) {
   const leaves = trip.eff.departure ? isoDate(trip.eff.departure) : null;
   if (!trip.eff.workDay || !leaves || leaves === trip.eff.workDay) return null;
-  return h("small", { class: "moved-note", title: "Pleacă după miezul nopții, dar e din aceeași tură cu cursa dinainte (staționarea trece peste miezul nopții), deci se trece pe ziua în care a început tura." },
-    `pleacă pe ${shortDate(leaves)}, din tura de pe ${shortDate(trip.eff.workDay)}`);
+  return h("small", { class: "moved-note", title: "Pleacă după miezul nopții, dar e din aceeași tură cu cursa dinainte (staționarea trece peste miezul nopții), deci în Excel se trece pe ziua în care a început tura." },
+    `se numără pe ${shortDate(trip.eff.workDay)}, din aceeași tură`);
+}
+
+/** The trips of other days that are counted on `date` (the shift that started on `date` goes on after midnight). */
+function joinedTrips(driver, date) {
+  return driver.trips.filter((t) => t.eff.workDay === date && t.eff.departure && isoDate(t.eff.departure) !== date);
 }
 
 function tripRow(trip, edit, moveTrip) {
@@ -438,6 +444,9 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
   const outside = !info;
   const excursionOnly = trips.length > 0 && trips.every((t) => t.eff.excursion);
   const excluded = !!row?.excluded;
+  const joined = joinedTrips(driver, date);
+  // Every trip listed here is counted on the day of an earlier shift: this day has no hours of its own to show.
+  const elsewhere = trips.length > 0 && trips.every((t) => t.eff.workDay && t.eff.workDay !== date);
   const head = h("tr", { class: `day-head ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${excluded ? "excluded" : ""}` },
     h("td", { colspan: 8 },
       h("div", { class: "day-line" },
@@ -446,9 +455,14 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
           h("span", { class: "day-date" }, shortDate(date)),
           info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
           outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
+          joined.length
+            ? h("span", { class: "pill", title: "Cursa pleacă după miezul nopții, dar e din aceeași tură: orele, noaptea și intervalele ei sunt pe această zi." },
+                `include ${joined.length === 1 ? "cursa" : "cursele"} de pe ${[...new Set(joined.map((t) => shortDate(isoDate(t.eff.departure))))].join(", ")}`)
+            : null,
+          elsewhere ? h("span", { class: "pill" }, `orele se numără pe ${[...new Set(trips.map((t) => shortDate(t.eff.workDay)))].join(", ")}`) : null,
           excursionOnly ? h("span", { class: "pill excursion" }, "excursie · se pontează din tahograf") : null,
           excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null),
-        row
+        row && !elsewhere
           ? h("div", { class: "day-stats" },
               dayStat("Curse regulate", row.legs),
               dayStat("Ore curse", duration(row.tripMin)),
@@ -457,7 +471,7 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
               dayStat("Total ziua", duration(row.totalMin), "total"),
               dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted"))
           : null,
-        row ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null),
+        row && !elsewhere ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null),
       row?.alerts.length ? alertList(row.alerts) : null));
   const body = [];
   const pauseOf = new Map(driver.pauses.map((p) => [p.prev, p]));
@@ -584,10 +598,10 @@ export function renderCatbDriver(container, ctx) {
     driver.alerts.length ? alertList(driver.alerts) : null,
     proposals);
 
-  // A trip sits under its work day: the day it leaves, or the day of the shift it continues (see `tripRow`).
+  // A trip sits under the day it leaves (the Excel may count it on another day: see `sameShiftNote`).
   const byDate = new Map();
   for (const trip of driver.trips) {
-    const date = trip.eff.workDay ?? isoDate(trip.eff.departure ?? trip.departure);
+    const date = isoDate(trip.eff.departure ?? trip.departure);
     if (!byDate.has(date)) byDate.set(date, []);
     byDate.get(date).push(trip);
   }
