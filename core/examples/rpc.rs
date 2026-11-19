@@ -72,6 +72,15 @@ fn main() {
                 Err(e) => json!({ "error": e.to_string() }),
             }
         }
+        "catb_move_trip" => {
+            let driver: catb::Driver = serde_json::from_value(get("driver")).expect("driver");
+            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(10) as u32);
+            let (trip, days) = (get("trip").as_str().unwrap_or_default().to_string(), get("days").as_i64().unwrap_or(0) as i32);
+            match catb::move_transfer(driver, &trip, days, year, month, &settings) {
+                Ok(done) => json!(done),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
         _ => Value::Null,
     };
     println!("{out}");

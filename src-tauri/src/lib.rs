@@ -153,6 +153,12 @@ fn catb_resolve_overlap(driver: catb::Driver, prev: String, next: String, year: 
     catb::resolve_overlap(driver, &prev, &next, year, month, &settings).map_err(|e| e.to_string())
 }
 
+/// The move buttons of a drive made by the app: shifts it by whole days (negative = earlier) and returns the recomputed driver.
+#[tauri::command]
+fn catb_move_trip(driver: catb::Driver, trip: String, days: i32, year: i32, month: u32, settings: Settings) -> CmdResult<catb::Driver> {
+    catb::move_transfer(driver, &trip, days, year, month, &settings).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn catb_save(app: AppHandle, sheet: catb::Sheet) -> CmdResult<()> {
     blocking(move || catb::store::save(&catb_dir(&app)?, &sheet).map_err(|e| e.to_string())).await
@@ -250,6 +256,7 @@ pub fn run() {
             catb_recalculate,
             catb_recalculate_driver,
             catb_resolve_overlap,
+            catb_move_trip,
             catb_save,
             catb_export,
             open_file,

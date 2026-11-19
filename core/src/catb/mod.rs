@@ -22,6 +22,7 @@ pub use hidden::HiddenDriver;
 pub use merge::{borrow_neighbors, merge_rows, new_sheet};
 pub use model::*;
 pub use overlap::{resolve_overlap, Resolved};
+pub use transfers::move_transfer;
 
 use crate::settings::Settings;
 

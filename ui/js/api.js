@@ -23,6 +23,8 @@ export const api = {
   catbRecalculateDriver: (driver, year, month, settings) => invoke("catb_recalculate_driver", { driver, year, month, settings }),
   /** Moves the times of two overlapping trips so that they no longer overlap; resolves with { driver, summary }. */
   catbResolveOverlap: (driver, prev, next, year, month, settings) => invoke("catb_resolve_overlap", { driver, prev, next, year, month, settings }),
+  /** Moves a drive made by the app by whole days (negative = earlier); resolves with the recomputed driver. */
+  catbMoveTrip: (driver, trip, days, year, month, settings) => invoke("catb_move_trip", { driver, trip, days, year, month, settings }),
   catbSave: (sheet) => invoke("catb_save", { sheet }),
   catbExport: (sheet, settings) => invoke("catb_export", { sheet, settings }),
   appVersion: () => invoke("app_version"),

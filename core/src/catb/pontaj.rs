@@ -147,27 +147,26 @@ mod tests {
         assert_eq!(timesheet.employees.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["ANGHEL DAN", "POPESCU ION"]);
         assert_eq!(timesheet.norm_hours, 22 * 8, "22 weekdays in October 2026");
 
-        // One trip of 3 h: 2 h 30 min are added before the departure and 2 h 30 min after the arrival, 8 h.
-        assert_eq!(entry(&timesheet, "POPESCU ION", 5).hours, Some(8.0));
+        // One trip of 3 h: an hour is added for it (30 min before the departure, 30 min after the arrival), 4 h.
+        assert_eq!(entry(&timesheet, "POPESCU ION", 5).hours, Some(4.0));
         // 05:00–08:00 and 11:00–14:00 plus the 3 h of waiting in between: 9 h, more than a full day, so nothing is added.
         let twelfth = entry(&timesheet, "POPESCU ION", 12);
         assert_eq!(twelfth.hours, Some(9.0));
         assert_eq!(twelfth.intervals.iter().map(|i| i.end - i.start).sum::<i32>(), 9 * 60, "the intervals add up to the hours");
-        // 3 h 20 min + 4 h 40 min added = 8 h.
-        assert_eq!(entry(&timesheet, "ANGHEL DAN", 6).hours, Some(8.0));
+        // 3 h 20 min + the hour added for the trip = 4 h 20 min, which is written as 5 (20 minutes count as a full hour).
+        assert_eq!(entry(&timesheet, "ANGHEL DAN", 6).hours, Some(5.0));
         assert_eq!(entry(&timesheet, "ANGHEL DAN", 7).hours, None, "a day without trips stays empty");
     }
 
     #[test]
     fn the_time_added_to_a_day_moves_the_written_start_and_end() {
-        // Mon 5 Oct 11:00–14:00 is the only trip of the day: 2 h 30 min before and 2 h 30 min after.
+        // Mon 5 Oct 11:00–14:00 is the only trip of the day: half an hour before and half an hour after.
         let timesheet = to_timesheet(&october(), &Settings::default());
         let day = entry(&timesheet, "POPESCU ION", 5);
-        assert_eq!((day.first_start, day.last_end), (Some(8 * 60 + 30), Some(16 * 60 + 30)), "08:30–16:30 instead of 11:00–14:00");
-        // The day starts at 08:30 and its two intervals add up to the 8 hours (with no room for a break inside the day, the
-        // second interval starts after one, like in the tachograph mode).
-        assert_eq!(day.intervals.first().unwrap().start, 8 * 60 + 30);
-        assert_eq!(day.intervals.iter().map(|i| i.end - i.start).sum::<i32>(), 8 * 60);
+        assert_eq!((day.first_start, day.last_end), (Some(10 * 60 + 30), Some(14 * 60 + 30)), "10:30–14:30 instead of 11:00–14:00");
+        // The day starts at 10:30 and its two intervals add up to the 4 hours.
+        assert_eq!(day.intervals.first().unwrap().start, 10 * 60 + 30);
+        assert_eq!(day.intervals.iter().map(|i| i.end - i.start).sum::<i32>(), 4 * 60);
         // Without the setting the day keeps the hours of the trip.
         let mut settings = Settings::default();
         settings.catb.fill_day = false;

@@ -268,9 +268,9 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, blocks: &[Opt
     ];
     if cfg.fill_day {
         lines.push(format!(
-            "Fiecare zi lucrată se aduce la {} ore: timpul care lipsește se adaugă înainte de prima plecare și după ultima sosire (cel mult {} pe fiecare parte). Apare ca „Completare” în „Detaliu” și în „Pontaj zilnic”.",
-            settings.hours_per_day,
-            fmt_duration(cfg.fill_max_side_min)
+            "Fiecare cursă regulată adaugă {} zilei ei (jumătate înainte de prima plecare, jumătate după ultima sosire), dar o zi nu trece de {} ore din cauza asta. Apare ca „Completare” în „Detaliu” și în „Pontaj zilnic”.",
+            fmt_duration(cfg.fill_per_trip_min),
+            settings.hours_per_day
         ));
     }
     if cfg.show_money {
@@ -1053,17 +1053,17 @@ mod tests {
     #[test]
     fn the_time_added_to_a_day_is_listed_around_its_trips_and_summed_apart_from_them() {
         let sheet = sample();
-        // Ionescu Vasile has one trip of 3 h on the 6th (05:00–08:00): 2 h 30 min are added on each side.
+        // Ionescu Vasile has one trip of 3 h on the 6th (05:00–08:00): an hour is added for it, half an hour on each side.
         let ionescu = sheet.drivers.iter().find(|d| d.id == 2).unwrap();
         let rows = detail_rows(ionescu, 2026, 10);
         let day = NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
         assert_eq!(rows.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), [FILL_KIND, "Eco", FILL_KIND], "the time before comes first, the time after last");
-        assert_eq!((clock(rows[0].start, day), clock(rows[0].end, day)), ("02:30".to_string(), "05:00".to_string()));
-        assert_eq!((clock(rows[2].start, day), clock(rows[2].end, day)), ("08:00".to_string(), "10:30".to_string()));
+        assert_eq!((clock(rows[0].start, day), clock(rows[0].end, day)), ("04:30".to_string(), "05:00".to_string()));
+        assert_eq!((clock(rows[2].start, day), clock(rows[2].end, day)), ("08:00".to_string(), "08:30".to_string()));
         assert!(rows[0].note.contains("la plecare") && rows[2].note.contains("la sosire"), "{:?} {:?}", rows[0].note, rows[2].note);
-        assert!(rows.iter().filter(|r| r.kind == FILL_KIND).all(|r| r.minutes == Some(150) && r.pay.is_none() && !r.out));
+        assert!(rows.iter().filter(|r| r.kind == FILL_KIND).all(|r| r.minutes == Some(30) && r.pay.is_none() && !r.out));
         assert_eq!(rows.iter().filter_map(|r| r.minutes).sum::<i32>(), ionescu.totals.total_min);
-        assert_eq!(ionescu.totals.total_min, 8 * 60);
+        assert_eq!(ionescu.totals.total_min, 4 * 60);
 
         // A day taken out of the pontaj lists its added time grey and counts none of it.
         let mut out = ionescu.clone();

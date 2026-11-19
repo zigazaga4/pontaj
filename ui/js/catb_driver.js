@@ -7,7 +7,7 @@ import { boundInput } from "./table.js";
 import { duration, formatWhen, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, spanText, weekdayName } from "./time.js";
 
 export const KIND_LABELS = { eco: "Eco", private: "Privată", vip: "VIP", bus: "Autocar", passenger: "Pasager", transfer: "Deplasare" };
-const GENERATED_HINT = "Adăugată de aplicație: șoferul a ajuns într-un loc și următoarea cursă pleacă din altul (Otopeni la un capăt), iar drumul ăsta nu apare în API (a mers cu mașina goală sau ca pasager). Se numără ca o cursă regulată. Poți schimba orele și locurile sau o poți scoate cu ✕.";
+const GENERATED_HINT = "Adăugată de aplicație: șoferul a ajuns într-un loc și următoarea cursă pleacă din altul (Otopeni la un capăt), iar drumul ăsta nu apare în API (a mers cu mașina goală sau ca pasager). Se numără ca o cursă regulată. Poți schimba orele și locurile, o poți muta cu o zi înainte sau după (și o pui la loc) sau o poți scoate cu ✕.";
 // The only two things a wait between regular trips can be: waiting at Otopeni (counts) or a break (counts nothing).
 const PAUSE_CHOICES = [
   ["station", "Staționare"],
@@ -194,7 +194,25 @@ function carText(trip) {
   return parts.filter(Boolean).join(" · ");
 }
 
-function tripRow(trip, edit) {
+/** "cu o zi înainte" / "cu 2 zile după": how far a drive made by the app was moved from where the rules put it. */
+function movedText(days) {
+  const count = Math.abs(days);
+  return `${count === 1 ? "cu o zi" : `cu ${count} zile`} ${days < 0 ? "înainte" : "după"}`;
+}
+
+/**
+ * The buttons of a drive made by the app: one day earlier, one day later, and back to where the rules put it (shown only once
+ * it was moved). Rust keeps the drive inside the month and says so when a move would take it out.
+ */
+function moveControls(trip, moveTrip) {
+  const moved = trip.movedDays ?? 0;
+  return h("div", { class: "move-ctl" },
+    h("button", { class: "btn small ghost", type: "button", title: "Mută deplasarea cu o zi înainte, în ziua dinainte (aceeași oră)", onclick: () => moveTrip(trip, -1) }, "◀ −1 zi"),
+    h("button", { class: "btn small ghost", type: "button", title: "Mută deplasarea cu o zi după, în ziua următoare (aceeași oră)", onclick: () => moveTrip(trip, 1) }, "+1 zi ▶"),
+    moved ? h("button", { class: "btn small", type: "button", title: `Pune deplasarea la loc (era mutată ${movedText(moved)})`, onclick: () => moveTrip(trip, -moved) }, "↺ la loc") : null);
+}
+
+function tripRow(trip, edit, moveTrip) {
   const removed = trip.edit.removed;
   const counted = trip.eff.countsHours && trip.eff.minutes > 0;
   const regular = trip.eff.regular;
@@ -202,7 +220,9 @@ function tripRow(trip, edit) {
     h("td", { class: "kind" },
       h("span", { class: `badge ${trip.kind}`, title: trip.generated ? GENERATED_HINT : "" }, KIND_LABELS[trip.kind] ?? trip.kind),
       trip.manual ? h("span", { class: "muted", title: "Adăugată manual" }, " ✎") : null,
-      trip.generated ? h("span", { class: "muted", title: GENERATED_HINT }, " auto") : null),
+      trip.generated ? h("span", { class: "muted", title: GENERATED_HINT }, " auto") : null,
+      trip.generated && trip.movedDays ? h("small", { class: "moved-note" }, `mutată ${movedText(trip.movedDays)}`) : null,
+      trip.generated && !removed ? moveControls(trip, moveTrip) : null),
     h("td", {}, timeInput(trip, "departure", edit)),
     h("td", {}, timeInput(trip, "arrival", edit)),
     h("td", {}, placeInput(trip, "from", edit)),
@@ -317,7 +337,7 @@ function pauseRows(driver, pause, edit, resolveOverlap) {
 const dayStat = (label, value, tone = "") => h("div", { class: `day-stat ${tone}` }, h("b", {}, value), h("small", {}, label));
 
 /**
- * The time added to bring a day up to a full one: before the first departure and after the last arrival. Both boxes show what
+ * The time added to a day, an hour for each regular trip: before the first departure and after the last arrival. Both boxes show what
  * counts now (the rules' value or the office's), and typing changes it; an empty box goes back to the rules, 0 adds nothing.
  */
 function fillStat(driver, row, date, edit) {
@@ -341,7 +361,7 @@ function fillStat(driver, row, date, edit) {
   };
   return h("div", { class: "day-stat fill" },
     h("div", { class: "fill-inputs" }, side("before", "fillBeforeMin", "Timp adăugat înainte de prima plecare"), side("after", "fillAfterMin", "Timp adăugat după ultima sosire")),
-    h("small", {}, "Completare până la ziua întreagă"));
+    h("small", {}, "Completare (o oră pe cursă)"));
 }
 
 /** Types the time added to a day on one side (`"before"` / `"after"`, in minutes; `null` = back to the rules). */
@@ -400,7 +420,7 @@ function leaveRunRows(driver, sheet, run, edit) {
   ];
 }
 
-function dayRows(driver, sheet, date, trips, edit, resolveOverlap) {
+function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip }) {
   const row = driver.days.find((d) => d.date === date);
   const info = dayInfo(sheet, date);
   const outside = !info;
@@ -430,7 +450,7 @@ function dayRows(driver, sheet, date, trips, edit, resolveOverlap) {
   const body = [];
   const pauseOf = new Map(driver.pauses.map((p) => [p.prev, p]));
   for (const trip of trips) {
-    body.push(tripRow(trip, edit));
+    body.push(tripRow(trip, edit, moveTrip));
     const pause = pauseOf.get(trip.id);
     // Two trips that meet with no time between them (a generated drive and the trip it leads to) have nothing to show.
     const meets = pause && pause.gapMin === 0 && !needsControls(pause) && !pause.alerts.length;
@@ -510,7 +530,8 @@ export async function askNewTrip(driver, sheet) {
 
 /**
  * Draws a driver into `container`.
- * `ctx`: { driver(), sheet(), edit(mutate(driver)) → Promise, resolveOverlap(pause) → Promise, addTrip() → Promise }.
+ * `ctx`: { driver(), sheet(), edit(mutate(driver)) → Promise, resolveOverlap(pause) → Promise,
+ * moveTrip(trip, days) → Promise (a drive made by the app, moved by whole days), addTrip() → Promise }.
  */
 export function renderCatbDriver(container, ctx) {
   const driver = ctx.driver();
@@ -539,7 +560,7 @@ export function renderCatbDriver(container, ctx) {
       chip("Curse regulate", t.legs),
       chip("Ore curse", duration(t.tripMin)),
       chip("Ore staționare", duration(t.stationMin), { title: "Dedusă: plecarea cursei următoare minus sosirea celei dinainte" }),
-      t.fillMin > 0 ? chip("Ore completare", duration(t.fillMin), { title: "Timpul adăugat zilelor sub 8 ore, înainte de prima plecare și după ultima sosire, ca fiecare zi lucrată să aibă 8 ore (Reguli → Categoria B). Îl poți schimba pe fiecare zi." }) : null,
+      t.fillMin > 0 ? chip("Ore completare", duration(t.fillMin), { title: "O oră pentru fiecare cursă regulată a zilei (jumătate înainte de prima plecare, jumătate după ultima sosire): o cursă face o zi de 4 ore, două curse 8 ore. O zi nu trece de 8 ore din cauza asta (Reguli → Categoria B). Îl poți schimba pe fiecare zi." }) : null,
       excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
       Object.keys(t.leaveDays ?? {}).length
         ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
@@ -558,7 +579,7 @@ export function renderCatbDriver(container, ctx) {
     byDate.get(date).push(trip);
   }
   // Days with trips and blocks of free days, together, in date order.
-  const blocks = [...byDate.keys()].map((date) => ({ date, rows: () => dayRows(driver, sheet, date, byDate.get(date), edit, ctx.resolveOverlap) }));
+  const blocks = [...byDate.keys()].map((date) => ({ date, rows: () => dayRows(driver, sheet, date, byDate.get(date), edit, ctx) }));
   for (const run of freeRuns(driver.freeDays ?? [])) blocks.push({ date: run[0], rows: () => leaveRunRows(driver, sheet, run, edit) });
   blocks.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const body = h("tbody");

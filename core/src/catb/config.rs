@@ -38,13 +38,12 @@ pub struct CatbSettings {
     pub generate_transfers: bool,
     /// How long such a generated drive lasts (the office can still change each one).
     pub transfer_min: i32,
-    /// A day with hours is brought up to `hours_per_day` (8): the missing time is added before the first departure and
-    /// after the last arrival (getting ready, handing the car over). Off: a day has only the hours the trips and the
-    /// waiting give.
+    /// Every regular trip of a day gets `fill_per_trip_min` more (getting ready, handing the car over): half before the
+    /// first departure and half after the last arrival. A day never goes past `hours_per_day` (8) because of it. Off: a day
+    /// has only the hours the trips and the waiting give.
     pub fill_day: bool,
-    /// The most that is added on one side of a day (before the first departure, after the last arrival), in minutes. The
-    /// usual two trips of 3 h get 1 h on each side; a day with a single trip of 3 h gets 2 h 30 min on each side.
-    pub fill_max_side_min: i32,
+    /// What each regular trip adds to its day, in minutes: a day with one trip of 3 h comes to 4 h, one with two trips to 8 h.
+    pub fill_per_trip_min: i32,
     /// Amounts in the Excel file. Off: the file has hours and warnings only.
     pub show_money: bool,
     /// A driver who drove a category D vehicle is not Categoria B: he is on the tachograph. On: such drivers are left
@@ -80,7 +79,7 @@ impl Default for CatbSettings {
             generate_transfers: true,
             transfer_min: 180,
             fill_day: true,
-            fill_max_side_min: 180,
+            fill_per_trip_min: 60,
             show_money: true,
             exclude_d_drivers: true,
             small_vehicle_max_seats: 8,

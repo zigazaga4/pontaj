@@ -329,6 +329,9 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .badge.bus { background: #dcf3e2; color: #166534; }
 .badge.passenger { background: #fdebd2; color: #92400e; }
 .badge.transfer { background: #d9eef2; color: #0b5360; }
+.move-ctl { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.move-ctl .btn { padding: 1px 7px; font-size: 11px; white-space: nowrap; }
+.moved-note { display: block; color: var(--manual, #b45309); font-weight: 600; }
 .badge.pause { background: #ececf2; color: #52586a; }
 .badge.pause.normal { background: #f6ebc9; color: #6b4e00; }
 .badge.pause.overlap { background: #fbd0d0; color: #8e1b1b; }

@@ -128,6 +128,9 @@ pub struct Trip {
     pub manual: bool,
     /// Made by the app, not read from the API ([`TripKind::Transfer`]): rebuilt on every recompute, the office's edits on it stay.
     pub generated: bool,
+    /// Whole days the office moved a generated drive from where the rules put it (negative = earlier). The rules keep their
+    /// own times up to date on every recompute, and this shift is added to them (see [`super::transfers::move_transfer`]).
+    pub moved_days: i32,
     pub edit: TripEdit,
     pub eff: Effective,
 }

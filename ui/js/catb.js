@@ -103,6 +103,21 @@ export function createCatb({ getSettings, saveSettings }) {
     return queue;
   }
 
+  /**
+   * The buttons of a drive made by the app: moves it by whole days (`days` < 0 = earlier; the way back is the opposite number).
+   * Rust keeps the drive inside the month and recomputes the driver; when a move is not possible it says why.
+   */
+  function moveTrip(trip, days) {
+    queue = queue
+      .then(async () => {
+        const current = driver();
+        if (!current) return;
+        accept(await api.catbMoveTrip(current, trip.id, days, state.sheet.year, state.sheet.month, getSettings()));
+      })
+      .catch((err) => toast(String(err), { kind: "warn", timeout: 9000 }));
+    return queue;
+  }
+
   // ---- drivers taken out of the pontaj ----
 
   const hiddenDrivers = () => getSettings().catb?.hiddenDrivers ?? [];
@@ -173,7 +188,7 @@ export function createCatb({ getSettings, saveSettings }) {
       chip("Plafon lunar", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore, sărbătorile incluse` }),
       chip("Total ore", duration(sum((d) => d.totals.totalMin))),
       chip("Din care staționare", duration(sum((d) => d.totals.stationMin))),
-      chip("Din care completare", duration(sum((d) => d.totals.fillMin ?? 0)), { title: "Timpul adăugat zilelor sub 8 ore (înainte de plecare și după sosire)" }),
+      chip("Din care completare", duration(sum((d) => d.totals.fillMin ?? 0)), { title: "O oră pentru fiecare cursă regulată (jumătate înainte de plecare, jumătate după sosire)" }),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),
       chip("Curse fără tarif", noTariff, { tone: noTariff ? "bad" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
       chip("Estimare plată", `~${lei(sum((d) => d.totals.payTotal))} lei`, { title: "Orientativ" }));
@@ -244,7 +259,7 @@ export function createCatb({ getSettings, saveSettings }) {
     const active = document.activeElement;
     const key = view.contains(active) ? active.dataset?.key : null;
     const scroll = $("#catb-scroll")?.scrollTop ?? 0;
-    renderCatbDriver(view, { driver, sheet: () => state.sheet, edit, resolveOverlap, addTrip: () => askNewTrip(current, state.sheet) });
+    renderCatbDriver(view, { driver, sheet: () => state.sheet, edit, resolveOverlap, moveTrip, addTrip: () => askNewTrip(current, state.sheet) });
     const area = $("#catb-scroll");
     if (area) area.scrollTop = scroll;
     if (key) view.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();

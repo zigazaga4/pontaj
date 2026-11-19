@@ -7,22 +7,29 @@
 //!
 //! - He arrived in Constanța (or anywhere else) and the next trip leaves from Otopeni: the drive *ends* when that trip
 //!   leaves and lasts [`CatbSettings::transfer_min`] before it, so the time that is left stays where he was, in Constanța.
+//!   When the trip before it has no arrival (a private trip, the API gives none for those) it counts as ending when it
+//!   left: the drive never starts before that.
 //! - He arrived at Otopeni and the next trip leaves from Constanța or its county: the drive *starts* when he arrived (he
 //!   does not wait at Otopeni) and lasts as long, but never past the next departure. A next trip that starts far away
-//!   (Tulcea → Otopeni) is not a return: nothing is added, and the pause keeps its "loc diferit" remark.
+//!   (Tulcea → Otopeni) is not a return: nothing is added, and the pause keeps its "loc diferit" remark. Without an
+//!   arrival there is nothing to start from, so no way back is made up.
 //!
 //! Nothing is added when the next regular trip is not known, when the office decided something about the time between
 //! the two trips, or when there is no room (the trips overlap). Across the turn of the month the trips just outside it
 //! ([`Driver::before`], [`Driver::after`]) take part, and a drive belongs to the month in which it starts: two sheets
 //! never count the same one.
+//!
+//! The day on which the driver really made the drive is not in the API, so every drive can be moved by whole days
+//! ([`move_transfer`]) and moved back.
 
 use chrono::{Datelike, Duration, NaiveDateTime};
 
-use super::compute::effective;
+use super::compute::{effective, recompute_driver};
 use super::config::CatbSettings;
 use super::model::*;
 use super::places;
 use crate::settings::Settings;
+use crate::{Error, Result};
 
 /// Where one regular trip of the driver starts and ends.
 struct Leg {
@@ -73,14 +80,17 @@ fn wanted(driver: &Driver, year: i32, month: u32, cfg: &CatbSettings) -> Vec<Tri
     let mut out = Vec::new();
     for pair in legs.windows(2) {
         let (a, b) = (&pair[0], &pair[1]);
-        let Some(arrived) = a.arrival else { continue };
         if a.to.trim().is_empty() || b.from.trim().is_empty() || places::same_area(&a.to, &b.from, &cfg.extra_local_places) || decided(driver, &a.id, &b.id) {
             continue;
         }
         let (id, start, end) = if places::is_bucharest(&b.from) {
-            (before_id(&b.id), (b.departure - length).max(arrived), b.departure)
+            // The drive to Otopeni ends when the trip leaves from there. It cannot start before the driver left the place he
+            // was at: the arrival of the trip before it, or its departure when the API gives no arrival (a private trip).
+            (before_id(&b.id), (b.departure - length).max(a.arrival.unwrap_or(a.departure)), b.departure)
         } else if places::is_bucharest(&a.to) && places::area(&b.from, &cfg.extra_local_places) == places::Area::Constanta {
             // "Came back": only toward Constanța and its county. A trip that starts far away (Tulcea → Otopeni) is not a return.
+            // It starts when the driver arrived, so an unknown arrival leaves nothing to start from.
+            let Some(arrived) = a.arrival else { continue };
             (after_id(&a.id), arrived, (arrived + length).min(b.departure))
         } else {
             continue;
@@ -103,7 +113,11 @@ pub(super) fn sync(driver: &mut Driver, year: i32, month: u32, settings: &Settin
     driver.trips.retain(|t| !t.generated || wanted.iter().any(|w| w.id == t.id));
     for fresh in wanted {
         match driver.trips.iter_mut().find(|t| t.generated && t.id == fresh.id) {
-            Some(trip) => (trip.from, trip.to, trip.departure, trip.arrival, trip.label) = (fresh.from, fresh.to, fresh.departure, fresh.arrival, fresh.label),
+            Some(trip) => {
+                // The rules' times, moved by the days the office moved the drive.
+                let shift = Duration::days(i64::from(trip.moved_days));
+                (trip.from, trip.to, trip.departure, trip.arrival, trip.label) = (fresh.from, fresh.to, fresh.departure + shift, fresh.arrival.map(|a| a + shift), fresh.label);
+            }
             None => driver.trips.push(fresh),
         }
     }
@@ -112,11 +126,35 @@ pub(super) fn sync(driver: &mut Driver, year: i32, month: u32, settings: &Settin
     }
 }
 
+/// The "◀ −1 zi" / "+1 zi ▶" / "↺ la loc" buttons of a drive made by the app: moves it by whole days (negative = earlier).
+///
+/// The API does not say on which day the driver really made the drive (the day before the trip, or the day after the last
+/// one), so the office can put it where it was. The move is remembered in [`Trip::moved_days`], which [`sync`] applies again
+/// whenever the rules give the drive new times, and what was typed on the drive moves with it. Moving it back by the same
+/// number of days (what the revert button does) puts everything as it was. A drive is not moved out of the sheet's month:
+/// the other month's sheet would not count it.
+pub fn move_transfer(mut driver: Driver, id: &str, days: i32, year: i32, month: u32, settings: &Settings) -> Result<Driver> {
+    recompute_driver(&mut driver, year, month, settings);
+    let Some(trip) = driver.trips.iter_mut().find(|t| t.generated && t.id == id) else { return Err(Error::new("Nu găsesc deplasarea.")) };
+    let shift = Duration::days(i64::from(days));
+    let landing = trip.eff.departure.map(|d| d + shift);
+    if landing.is_some_and(|d| (d.year(), d.month()) != (year, month)) {
+        return Err(Error::new("Deplasarea ar ajunge într-o altă lună și nu ar mai fi numărată în foaia asta."));
+    }
+    trip.moved_days += days;
+    trip.departure += shift;
+    trip.arrival = trip.arrival.map(|a| a + shift);
+    trip.edit.departure = trip.edit.departure.map(|d| d + shift);
+    trip.edit.arrival = trip.edit.arrival.map(|a| a + shift);
+    recompute_driver(&mut driver, year, month, settings);
+    Ok(driver)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::api::parse_time;
-    use super::super::compute::recompute_driver;
     use super::*;
+    use chrono::NaiveDate;
 
     const OTOPENI: &str = "Aeroport Otopeni Bucuresti";
 
@@ -166,6 +204,88 @@ mod tests {
         assert_eq!((day.fill_before_min, day.fill_after_min, day.total_min), (60, 60, 480));
         assert!(day.alerts.iter().any(|a| a.code == "transfer" && a.level == Level::Info), "{:?}", day.alerts);
         assert!(d.trips.iter().position(|t| t.id == drive.id) < d.trips.iter().position(|t| t.id == "eco-2"), "sorted by departure");
+    }
+
+    fn private(id: &str, from: &str, to: &str, departure: &str) -> Trip {
+        Trip { id: id.into(), kind: TripKind::Private, from: from.into(), to: to.into(), departure: parse_time(departure).unwrap(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_trip_before_without_an_arrival_does_not_stop_the_drive_to_otopeni() {
+        // The case of Sunday 1 November: the last trip of October is a private one that leaves Otopeni at 23:55 and the API
+        // gives no arrival; the next one leaves from Otopeni at 22:30 on the 1st.
+        let mut d = driver(vec![trip("eco-119601", OTOPENI, "Constanta", "2026-11-01 22:30", "2026-11-02 01:30")]);
+        d.before = vec![private("private-79853", OTOPENI, "Constanta", "2026-10-31 23:55")];
+        run(&mut d, 11);
+        let made = generated(&d);
+        assert_eq!(made.len(), 1, "{:?}", d.trips.iter().map(|t| (&t.id, t.kind)).collect::<Vec<_>>());
+        assert_eq!((made[0].id.as_str(), made[0].eff.from.as_str(), made[0].eff.to.as_str()), ("gen-pre-eco-119601", "Constanta", OTOPENI));
+        assert_eq!(times(made[0]), ("01.11 19:30".into(), "01.11 22:30".into()));
+        assert_eq!(d.days.iter().find(|r| r.date == NaiveDate::from_ymd_opt(2026, 11, 1)).map(|r| r.legs), Some(2));
+    }
+
+    #[test]
+    fn the_drive_to_otopeni_is_shorter_when_the_trip_before_left_later_than_it_would_start() {
+        // The trip before left at 21:00 the same day (no arrival known), the next one leaves from Otopeni at 22:30:
+        // only an hour and a half, not the three hours.
+        let mut d = driver(vec![private("private-1", OTOPENI, "Constanta", "2026-11-01 21:00"), trip("eco-2", OTOPENI, "Constanta", "2026-11-01 22:30", "2026-11-02 01:30")]);
+        run(&mut d, 11);
+        assert_eq!(times(generated(&d)[0]), ("01.11 21:00".into(), "01.11 22:30".into()), "never before the trip before left");
+    }
+
+    #[test]
+    fn the_way_back_needs_the_arrival_of_the_trip_before() {
+        let mut october = driver(vec![private("private-1", "Constanta", OTOPENI, "2026-10-31 20:00")]);
+        october.after = vec![trip("eco-2", "Constanta", OTOPENI, "2026-11-01 08:00", "2026-11-01 11:00")];
+        run(&mut october, 10);
+        assert!(generated(&october).is_empty(), "when he arrived is not known, so when the way back started is not either");
+    }
+
+    #[test]
+    fn a_drive_can_be_moved_by_days_and_put_back() {
+        let id = "gen-pre-eco-2";
+        let mut d = driver(vec![trip("eco-2", OTOPENI, "Constanta", "2026-11-03 05:30", "2026-11-03 08:30")]);
+        d.before = vec![trip("eco-1", OTOPENI, "Constanta", "2026-11-01 11:00", "2026-11-01 14:00")];
+        run(&mut d, 11);
+        assert_eq!(times(generated(&d)[0]), ("03.11 02:30".into(), "03.11 05:30".into()));
+        // The way to the airport goes the day before.
+        let moved = move_transfer(d, id, -1, 2026, 11, &Settings::default()).unwrap();
+        let drive = moved.trips.iter().find(|t| t.id == id).unwrap();
+        assert_eq!((times(drive), drive.moved_days), (("02.11 02:30".into(), "02.11 05:30".into()), -1));
+        assert!(moved.days.iter().any(|r| r.date == NaiveDate::from_ymd_opt(2026, 11, 2) && r.legs == 1), "the day moves with it");
+        // Recomputing keeps it where the office put it.
+        let mut again = moved.clone();
+        run(&mut again, 11);
+        assert_eq!(again, moved);
+        // And a second step, then the revert (the button moves back by what was moved).
+        let two = move_transfer(moved, id, -1, 2026, 11, &Settings::default()).unwrap();
+        assert_eq!(two.trips.iter().find(|t| t.id == id).unwrap().moved_days, -2);
+        let back = move_transfer(two, id, 2, 2026, 11, &Settings::default()).unwrap();
+        let drive = back.trips.iter().find(|t| t.id == id).unwrap();
+        assert_eq!((times(drive), drive.moved_days), (("03.11 02:30".into(), "03.11 05:30".into()), 0));
+        // One day later is possible too (the way back from the airport).
+        let later = move_transfer(back, id, 1, 2026, 11, &Settings::default()).unwrap();
+        assert_eq!(times(later.trips.iter().find(|t| t.id == id).unwrap()), ("04.11 02:30".into(), "04.11 05:30".into()));
+    }
+
+    #[test]
+    fn what_was_typed_on_a_drive_moves_with_it_and_a_move_out_of_the_month_is_refused() {
+        let mut d = driver(vec![trip("eco-2", OTOPENI, "Constanta", "2026-11-03 05:30", "2026-11-03 08:30")]);
+        d.before = vec![trip("eco-1", OTOPENI, "Constanta", "2026-11-01 11:00", "2026-11-01 14:00")];
+        run(&mut d, 11);
+        let id = "gen-pre-eco-2";
+        d.trips.iter_mut().find(|t| t.id == id).unwrap().edit.departure = parse_time("2026-11-03 03:30");
+        run(&mut d, 11);
+        let moved = move_transfer(d, id, -2, 2026, 11, &Settings::default()).unwrap();
+        let drive = moved.trips.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(drive.edit.departure, parse_time("2026-11-01 03:30"));
+        assert_eq!(times(drive), ("01.11 03:30".into(), "01.11 05:30".into()), "typed start moved, the end follows the rules' shift");
+        // Out of the month: refused, nothing changes.
+        let before = moved.clone();
+        let err = move_transfer(moved, id, -1, 2026, 11, &Settings::default()).unwrap_err().to_string();
+        assert!(err.contains("altă lună"), "{err}");
+        let unchanged = move_transfer(before.clone(), "eco-2", 1, 2026, 11, &Settings::default());
+        assert!(unchanged.is_err(), "only drives made by the app can be moved");
     }
 
     #[test]
