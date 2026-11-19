@@ -4,6 +4,7 @@ import { $, h, toast, busy } from "./dom.js";
 import { renderGrid, refreshGrid, renderDetails } from "./grid.js";
 import { renderScanned } from "./scanned.js";
 import { renderDaily } from "./daily.js";
+import { acceptedName } from "./driver_fields.js";
 import { renderSettings } from "./settings.js";
 import { checkForUpdates, watchForUpdates } from "./updater.js";
 import { createCatb } from "./catb.js";
@@ -23,7 +24,7 @@ const TAGLINES = {
   catb: "Din cursele aplicației ALT direct în foaia de pontaj",
 };
 
-const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null, mode: "pdf" };
+const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null, mode: "pdf", focusDate: null };
 
 const catb = createCatb({ getSettings: () => state.settings, saveSettings: persistSettings });
 
@@ -110,6 +111,18 @@ const viewContext = () => ({
     }, { structural: true }),
   onDelete: (ei, ai) => edit((s) => s.employees[ei].activities.splice(ai, 1), { structural: true }),
   onDayEdit: (ei, di, patch) => edit((s) => Object.assign(s.employees[ei].days[di], patch)),
+  onEmployeeEdit: (ei, patch) => edit((s) => Object.assign(s.employees[ei], patch)),
+  // From a day of the pontaj to the rows of that day in the data read from the PDF.
+  onOpenScanned: (isoDate) => {
+    state.focusDate = isoDate;
+    state.tab = "scanned";
+    render();
+  },
+  takeFocusDate: () => {
+    const date = state.focusDate;
+    state.focusDate = null;
+    return date;
+  },
 });
 
 function render() {
@@ -157,7 +170,7 @@ function renderDrivers() {
       const edited = emp.activities.filter((a) => a.manual).length + emp.days.filter((d) => d.overrideHours != null || d.overrideNight != null || d.overrideIntervals || d.code).length;
       return h("button", { class: `driver ${i === state.emp ? "active" : ""}`, onclick: () => selectDriver(i) },
         h("b", {}, emp.name),
-        h("small", {}, `${hoursText(emp.totals.worked)} ore · ${emp.days.filter((d) => d.hours != null).length} zile`, edited ? h("span", { class: "edited" }, ` · ✎ ${edited}`) : null));
+        h("small", {}, `${hoursText(emp.totals.worked)} ore · ${emp.days.filter((d) => d.hours > 0).length} zile`, edited ? h("span", { class: "edited" }, ` · ✎ ${edited}`) : null));
     }));
 }
 
@@ -188,6 +201,12 @@ function renderView() {
       },
       onFunction: (ei, text) => {
         state.sheet.employees[ei].function = text;
+      },
+      onName: (ei, raw) => {
+        const current = state.sheet.employees[ei].name;
+        const value = acceptedName(state.sheet, ei, raw) ?? current; // empty or another driver's name: keep the old one
+        if (value !== current) viewContext().onEmployeeEdit(ei, { name: value });
+        return value;
       },
     });
     state.view = { refresh: () => refreshGrid(wrap, state.sheet) };

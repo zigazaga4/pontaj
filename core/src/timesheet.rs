@@ -89,6 +89,8 @@ pub struct DayEntry {
     /// Working time (driving + other work) attributed to this day.
     pub worked_min: i32,
     pub pdf_night_min: i32,
+    /// The breaks the card recorded on this day (the report's "Pauză" column).
+    pub rest_min: i32,
     /// First activity start / last activity end, minutes from this day's midnight.
     pub first_start: Option<i32>,
     pub last_end: Option<i32>,

@@ -33,6 +33,8 @@ pub struct Shift {
     pub end: i32,
     pub work: i32,
     pub night_work: i32,
+    /// The breaks the card recorded in the shift (the report's "Pauză" column).
+    pub rest: i32,
     pub blocks: Vec<Interval>,
 }
 
@@ -76,6 +78,7 @@ pub fn shifts(segments: &[Segment], merge_gap_min: i32) -> Vec<Shift> {
                 end: group.iter().map(|s| rel(s, s.end)).max().unwrap_or(0),
                 work: group.iter().map(|s| s.work).sum(),
                 night_work: group.iter().map(|s| s.night_work).sum(),
+                rest: group.iter().map(|s| s.rest).sum(),
                 blocks: group.iter().map(|s| Interval { start: rel(s, s.start), end: rel(s, s.end) }).collect(),
             }
         })
@@ -178,9 +181,17 @@ pub(crate) fn recompute_day(entry: &mut DayEntry, s: &Settings) {
     let auto = (entry.worked_min > 0).then(|| f64::from(round_hours(entry.worked_min, s.round_up_from_min)));
     // Typing start/end times on an empty day is enough to give it hours (to the half hour).
     let typed = entry.override_intervals.as_ref().map(|v| round_to_half(f64::from(v.iter().map(|i| i.end - i.start).sum::<i32>()) / 60.0));
-    let hours = entry.override_hours.or(auto).or(typed).filter(|h| *h > 0.0);
+    // Hours typed by hand win, a zero included (an explicit "no work" for a day the card shows work on); then the
+    // card; then the times typed on an empty day.
+    let hours = match entry.override_hours {
+        Some(typed_hours) => Some(typed_hours).filter(|h| *h >= 0.0),
+        None => auto.or(typed).filter(|h| *h > 0.0),
+    };
     entry.hours = hours;
+    // A day set to zero has no times and no night.
+    let zero = hours.is_some_and(|h| h <= 0.0);
     entry.intervals = match (&entry.override_intervals, hours) {
+        _ if zero => Vec::new(),
         (Some(typed), _) => typed.clone(),
         (None, Some(h)) => day_intervals(entry, h, s),
         (None, None) => Vec::new(),
@@ -188,6 +199,7 @@ pub(crate) fn recompute_day(entry: &mut DayEntry, s: &Settings) {
     entry.intervals_off = s.interval_mode == IntervalMode::Grid
         && hours.is_some_and(|h| entry.intervals.iter().map(|i| i.end - i.start).sum::<i32>() != hours_to_min(h));
     entry.night_min = match (s.night_source, entry.worked_min > 0) {
+        _ if zero => 0,
         (NightSource::Card, true) => entry.pdf_night_min,
         _ => night_minutes(&entry.intervals, s.night_window()),
     };
@@ -202,6 +214,7 @@ fn place_activities(employee: &mut Employee, first: NaiveDate, merge_gap_min: i3
     for entry in &mut employee.days {
         entry.worked_min = 0;
         entry.pdf_night_min = 0;
+        entry.rest_min = 0;
         entry.first_start = None;
         entry.last_end = None;
         entry.segments.clear();
@@ -219,6 +232,7 @@ fn place_activities(employee: &mut Employee, first: NaiveDate, merge_gap_min: i3
         };
         entry.worked_min += shift.work;
         entry.pdf_night_min += shift.night_work;
+        entry.rest_min += shift.rest;
         entry.first_start = Some(entry.first_start.map_or(shift.start, |s| s.min(shift.start)));
         entry.last_end = Some(entry.last_end.map_or(shift.end, |e| e.max(shift.end)));
         entry.segments.extend(shift.blocks.iter().cloned());
@@ -525,6 +539,56 @@ mod tests {
         recompute(&mut sheet, &s);
         assert_eq!(day(&sheet, 10).hours, Some(7.5));
         assert!(day(&sheet, 10).intervals_off, "7:40 of intervals against 7.5 h written");
+    }
+
+    #[test]
+    fn a_day_can_be_set_to_zero_hours() {
+        // The card shows 7:29 worked on the 2nd (8 h written, 1 h of it at night under the report's 22–06 window).
+        let s = Settings { night_source: NightSource::Card, night_start: "22:00".into(), night_end: "06:00".into(), night_threshold_min: 0, ..Settings::default() };
+        let mut sheet = sheet_with(vec![seg(2, "0:00", "7:29", "7:29", "5:59"), seg(3, "7:00", "15:00", "7:00", "0:00")], &s);
+        assert_eq!((day(&sheet, 2).hours, day(&sheet, 2).night_hours.is_some()), (Some(8.0), true));
+
+        // Zero typed: the day stays in the sheet as 0 (not empty, not the card's hours), with no times and no night.
+        sheet.employees[0].days[1].override_hours = Some(0.0);
+        // A zero on a day with no card data at all is also kept.
+        sheet.employees[0].days[4].override_hours = Some(0.0);
+        recompute(&mut sheet, &s);
+        let d = day(&sheet, 2);
+        assert_eq!((d.hours, d.night_hours, d.night_min), (Some(0.0), None, 0));
+        assert!(d.intervals.is_empty() && !d.intervals_off);
+        assert_eq!(day(&sheet, 5).hours, Some(0.0));
+        // The totals leave the day out of the hours but still compare the 0 with what the card shows.
+        let t = &sheet.employees[0].totals;
+        assert_eq!((t.worked, t.night), (7.0, 0.0));
+        assert_eq!(t.card_min, 7 * 60 + 29 + 7 * 60);
+
+        // Typed times on a zero day are ignored while it is zero; clearing the zero returns to the card.
+        sheet.employees[0].days[1].override_intervals = Some(vec![Interval { start: hm("08:00"), end: hm("12:00") }]);
+        recompute(&mut sheet, &s);
+        assert!(day(&sheet, 2).intervals.is_empty());
+        sheet.employees[0].days[1].override_hours = None;
+        sheet.employees[0].days[1].override_intervals = None;
+        sheet.employees[0].days[4].override_hours = None;
+        recompute(&mut sheet, &s);
+        assert_eq!(day(&sheet, 2).hours, Some(8.0));
+        assert_eq!(day(&sheet, 5).hours, None);
+    }
+
+    #[test]
+    fn a_day_shows_the_pause_the_card_recorded() {
+        let s = Settings::default();
+        let mut first = seg(2, "6:00", "12:00", "5:00", "0:00");
+        first.rest = hm("1:00");
+        let mut second = seg(2, "12:20", "17:00", "4:00", "0:00");
+        second.rest = hm("0:40");
+        let mut other_day = seg(3, "7:00", "15:00", "7:00", "0:00");
+        other_day.rest = hm("1:00");
+        let mut sheet = sheet_with(vec![first, second, other_day], &s);
+        assert_eq!((day(&sheet, 2).rest_min, day(&sheet, 3).rest_min, day(&sheet, 4).rest_min), (hm("1:40"), hm("1:00"), 0));
+        // Deleting the rows of the 2nd takes its pause away too.
+        sheet.employees[0].activities.retain(|a| a.date.format("%d").to_string() != "02");
+        recompute(&mut sheet, &s);
+        assert_eq!(day(&sheet, 2).rest_min, 0);
     }
 
     #[test]

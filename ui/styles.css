@@ -95,7 +95,8 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .grid .sticky-2 { left: 34px; min-width: 180px; text-align: left; box-shadow: 2px 0 0 var(--border); }
 .grid td.nr { color: var(--muted); }
 .grid td.name { padding: 4px 10px; }
-.emp-name { font-weight: 700; font-size: 12.5px; }
+.emp-name { font-weight: 700; font-size: 12.5px; border: none; background: transparent; color: var(--text); font-family: inherit; width: 100%; padding: 1px 0; }
+.emp-name:focus { outline: 1px solid var(--accent); background: #fff; }
 .emp-func { border: none; background: transparent; color: var(--muted); font: inherit; font-size: 11px; width: 100%; padding: 1px 0; }
 .emp-func:focus { outline: 1px solid var(--accent); background: #fff; }
 
@@ -110,6 +111,9 @@ input.cell.code { background: var(--code); color: var(--code-text); font-size: 1
 input.cell.unknown { background: #fde2e2; color: var(--danger); }
 input.cell.manual { color: var(--manual); box-shadow: inset 0 -2px 0 var(--manual); }
 td.night { height: 18px; font-size: 11px; font-style: italic; color: var(--night); }
+input.cell.night-in { height: 18px; font-size: 11px; font-weight: 400; font-style: italic; color: var(--night); }
+input.cell.night-in.manual { font-weight: 700; }
+input.cell.invalid { background: #fde2e2; }
 .grid .sum { position: sticky; width: 50px; min-width: 50px; max-width: 50px; padding: 0 2px; }
 .grid thead th.sum { z-index: 4; font-size: 11px; }
 td.sum { z-index: 2; background: var(--total); font-weight: 700; }
@@ -217,6 +221,25 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .scan-row.outside { opacity: .55; }
 .icon-btn { border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; padding: 4px 6px; border-radius: 5px; }
 .icon-btn:hover { background: #fde2e2; color: var(--danger); }
+.icon-btn.slot { padding: 2px 5px; font-size: 12px; min-width: 22px; }
+.icon-btn.slot.add, .icon-btn.reset { color: var(--accent); }
+.icon-btn.slot.add:hover, .icon-btn.reset:hover { background: #e3edff; color: var(--accent); }
+
+/* Name and job of the driver (steps 1 and 2); derived columns of the read rows; the pause between intervals */
+.driver-fields { display: flex; gap: 10px; align-items: center; }
+.driver-field { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+.driver-fields .cellin { height: 28px; border-color: var(--border); background: #fff; text-align: left; padding: 0 6px; }
+.driver-fields .driver-name { width: 190px; font-weight: 700; }
+.driver-fields .driver-job { width: 150px; }
+.cellin.derived { color: var(--muted); }
+.cellin.derived:hover, .cellin.derived:focus { color: var(--text); }
+.cellin.pause { width: 52px; }
+.cellin.pause:read-only { cursor: default; background: transparent; border-color: transparent; }
+.card-link { cursor: pointer; }
+.card-link:hover { color: var(--accent); text-decoration: underline; }
+.cellin.hours.zero-day { background: #f1f3f8; }
+.scan-row.flash td { animation: flash-row 2.2s ease-out; }
+@keyframes flash-row { from { background: #fff1b8; } to { background: transparent; } }
 
 .day-row.off td { background: var(--off); }
 .day-row.holiday td.day-name { background: var(--holiday); }

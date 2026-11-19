@@ -1,7 +1,7 @@
 // Editable monthly grid: one hours row + one night row per driver.
 import { h } from "./dom.js";
-import { clock, duration, hoursText } from "./time.js";
-import { KNOWN_CODES, parseCellInput } from "./table.js";
+import { clock, duration, hoursText, parseHours } from "./time.js";
+import { KNOWN_CODES, hoursCellEdit, isCompleteCell, whileTyping } from "./table.js";
 
 // Total columns, pinned to the right edge of the grid.
 const SUMS = [
@@ -31,12 +31,25 @@ function cellClass(info, entry) {
   ].filter(Boolean).join(" ");
 }
 
+const nightClass = (entry) => `cell night-in ${entry.overrideNight != null ? "manual" : ""}`.trim();
+
+/**
+ * Sends a cell once for each text: the sheet follows the typing a moment after it stops and again when the
+ * cell is left, and the second time the text is the same, so nothing is sent twice.
+ */
+function sendOnce(input, send) {
+  if (input.value === input.dataset.sent) return;
+  input.dataset.sent = input.value;
+  send(input.value);
+}
+
 /**
  * Renders the grid. `onEdit(empIndex, dayIndex, edit)` is called after a cell
- * changes, `onSelect(empIndex, dayIndex)` when a cell gets focus,
- * `onFunction(empIndex, text)` when the job title is edited.
+ * changes (also while it is typed), `onSelect(empIndex, dayIndex)` when a cell gets focus,
+ * `onFunction(empIndex, text)` / `onName(empIndex, text)` when the job title / name is edited
+ * (`onName` returns the name now in use).
  */
-export function renderGrid(container, sheet, { onEdit, onSelect, onFunction }) {
+export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onName }) {
   const days = sheet.days;
   const head = h("tr", {},
     h("th", { class: "sticky-1" }, "Nr"),
@@ -51,7 +64,12 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction }) {
     const hoursRow = h("tr", { class: "hours-row" },
       h("td", { class: "sticky-1 nr", rowspan: 2 }, ei + 1),
       h("td", { class: "sticky-2 name", rowspan: 2 },
-        h("div", { class: "emp-name" }, emp.name),
+        h("input", {
+          class: "emp-name",
+          value: emp.name,
+          title: "Numele; îl poți corecta",
+          onchange: (e) => (e.target.value = onName(ei, e.target.value)), // gets back the name in use (the old one if the new is empty or taken)
+        }),
         h("input", { class: "emp-func", value: emp.function, title: "Funcția", onchange: (e) => onFunction(ei, e.target.value) })),
     );
     const nightRow = h("tr", { class: "night-row" });
@@ -61,15 +79,35 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction }) {
       const input = h("input", {
         class: cellClass(info, entry),
         value: cellText(entry),
-        dataset: { e: ei, d: di },
+        dataset: { k: "h", e: ei, d: di, sent: cellText(entry) },
         maxlength: 5,
         spellcheck: "false",
         onfocus: (e) => { e.target.select(); onSelect(ei, di); },
-        onchange: (e) => onEdit(ei, di, parseCellInput(e.target.value)),
+        onchange: (e) => sendOnce(e.target, (text) => onEdit(ei, di, hoursCellEdit(text))),
         onkeydown: (e) => navigate(e, container, ei, di),
       });
+      whileTyping(input, () => sendOnce(input, (text) => onEdit(ei, di, hoursCellEdit(text))), { complete: isCompleteCell });
       hoursRow.append(h("td", { class: info.weekend || info.holiday ? "off" : "" }, input));
-      nightRow.append(h("td", { class: `night ${info.weekend || info.holiday ? "off" : ""}`, dataset: { ne: ei, nd: di } }, nightText(entry)));
+
+      // Night hours of the day: typed here they replace the calculated ones; empty = automatic.
+      const sendNight = (text) => {
+        const value = parseHours(text);
+        input2.classList.toggle("invalid", value === undefined);
+        if (value !== undefined) onEdit(ei, di, { overrideNight: value });
+      };
+      const input2 = h("input", {
+        class: nightClass(entry),
+        value: nightText(entry),
+        dataset: { k: "n", e: ei, d: di, sent: nightText(entry) },
+        maxlength: 5,
+        spellcheck: "false",
+        title: "Ore de noapte; scrise aici înlocuiesc calculul, gol = automat",
+        onfocus: (e) => e.target.select(),
+        onchange: (e) => sendOnce(e.target, sendNight),
+        onkeydown: (e) => navigate(e, container, ei, di),
+      });
+      whileTyping(input2, () => sendOnce(input2, sendNight), { complete: (text) => parseHours(text) != null });
+      nightRow.append(h("td", { class: `night ${info.weekend || info.holiday ? "off" : ""}` }, input2));
     });
 
     SUMS.forEach(({ key }, i) => {
@@ -96,11 +134,9 @@ export function refreshGrid(container, sheet) {
   container.querySelectorAll("input.cell").forEach((input) => {
     const entry = sheet.employees[input.dataset.e].days[input.dataset.d];
     const info = sheet.days[input.dataset.d];
-    if (document.activeElement !== input) input.value = cellText(entry);
-    input.className = cellClass(info, entry);
-  });
-  container.querySelectorAll("td.night").forEach((td) => {
-    td.textContent = nightText(sheet.employees[td.dataset.ne].days[td.dataset.nd]);
+    const night = input.dataset.k === "n";
+    if (document.activeElement !== input) input.value = input.dataset.sent = night ? nightText(entry) : cellText(entry);
+    input.className = night ? nightClass(entry) : cellClass(info, entry);
   });
   container.querySelectorAll("td.sum[data-sum]").forEach((td) => {
     td.textContent = totalValue(sheet.employees[td.dataset.se], td.dataset.sum);
@@ -115,7 +151,7 @@ function navigate(e, container, ei, di) {
   if (!move) return;
   e.preventDefault();
   e.target.dispatchEvent(new Event("change"));
-  container.querySelector(`input.cell[data-e="${ei + move[0]}"][data-d="${di + move[1]}"]`)?.focus();
+  container.querySelector(`input.cell[data-k="${e.target.dataset.k}"][data-e="${ei + move[0]}"][data-d="${di + move[1]}"]`)?.focus();
 }
 
 /** Explains how a day was computed. */

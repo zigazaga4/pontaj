@@ -105,6 +105,15 @@ export const weekdayName = (date) => new Date(`${date}T12:00:00Z`).toLocaleDateS
 /** An amount in lei with thousands separators: 1250 → "1 250". */
 export const lei = (n) => Math.round(n).toLocaleString("ro-RO");
 
+/** A length of time typed as "1:30", "130" (1:30) or just minutes ("45"). Empty → 0, invalid → undefined. */
+export function parseLength(text) {
+  const value = String(text ?? "").trim();
+  if (value === "") return 0;
+  if (/^\d{1,2}$/.test(value)) return Number(value);
+  const minutes = parseHm(value);
+  return Number.isNaN(minutes) ? undefined : minutes;
+}
+
 /** Parses "7:39", "07:39", "7.39", "739" or "0730". Empty → null, invalid → NaN. */
 export function parseHm(text) {
   const value = String(text ?? "").trim();
