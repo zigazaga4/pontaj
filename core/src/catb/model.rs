@@ -105,9 +105,10 @@ pub struct Effective {
     pub price: f64,
     /// Why the amount is what it is: "cursă", "exterior: Tulcea", "fără tarif"…
     pub price_note: String,
-    /// The day the trip counts on in the pontaj: the day it leaves, except a trip that follows a staționare going over
-    /// midnight (the same shift: left at 14:30, arrived at 17:30, waited, left again at 03:30 the next day), which counts on
-    /// the day of the trip before it, as the accountants write it. Derived by [`super::recompute`].
+    /// The day the trip counts on in the pontaj: the day it leaves, except the way back of a trip to Bucharest/Otopeni
+    /// (left at 14:30, arrived at 17:30, left again at 03:30 the next day: by the clock it is the next day, but the
+    /// accountants write it on the day of the way there) and a trip that follows a staționare going over midnight. Both
+    /// count on the day of the trip before them. Derived by [`super::recompute`].
     pub work_day: Option<NaiveDate>,
 }
 
@@ -223,6 +224,10 @@ pub struct Pause {
     /// The day its minutes count on: the day the trip before it counts on when it is a staționare of the same shift (see
     /// [`Effective::work_day`]), else the day it starts.
     pub day: Option<NaiveDate>,
+    /// The trip before the pause went to Bucharest/Otopeni and the one after it comes back from there (and no excursion lies
+    /// between them): the way back always counts on the day of the way there, whatever the wait between them was. Not when
+    /// the office moved one of them (a drive made by the app) to another day: it stays where it was put.
+    pub round_trip: bool,
     pub gap_min: i32,
     /// Minutes of the pause spent on other trips (private, charter): they count as trip hours, not as waiting.
     pub busy_min: i32,

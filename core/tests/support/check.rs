@@ -64,8 +64,8 @@ fn clock(text: &str) -> i32 {
 
 /// The trips of a day as the screen lists them, each from its departure to its arrival (minutes from the midnight that opens
 /// the day; what happens after midnight in a shift that began that day is over 1440): those that count on that day (not
-/// taken out, not an excursion). A trip counts on the day it leaves, except one that follows a staționare going over midnight
-/// (the same shift): that one counts on the day of the trip before it.
+/// taken out, not an excursion). A trip counts on the day it leaves, except the way back of a trip to Bucharest/Otopeni and a
+/// trip after a staționare going over midnight (the same outing): those count on the day of the trip before them.
 pub fn day_trips(driver: &Driver, date: NaiveDate) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
     for t in &driver.trips {
@@ -82,9 +82,17 @@ pub fn day_trips(driver: &Driver, date: NaiveDate) -> Vec<(i32, i32)> {
     out
 }
 
-/// The rule behind the day a trip counts on, checked apart from the app's own code: a trip counts on another day than the
-/// one it leaves only when it follows (in the sheet) a staționare that goes over a single midnight, and then on the day of
-/// the trip before it; a trip that counts on its own day follows no such staționare.
+/// Is the place at the Bucharest end of the route (written like the test months write it)?
+fn bucharest_side(place: &str) -> bool {
+    let place = place.to_lowercase();
+    ["otopeni", "bucuresti", "bucharest", "baneasa", "henri coanda", "hilton garden"].iter().any(|k| place.contains(k))
+}
+
+/// The rule behind the day a trip counts on, checked apart from the app's own code. A trip counts on the day of the trip
+/// before it (the pause between them, as the sheet lists it) when it is the way back of a trip to Bucharest/Otopeni and leaves
+/// on that day or the next one (the wait, long or short, whatever the office chose for it, does not matter; an excursion
+/// between the two breaks the pair), or when the wait is a staționare that goes over a single midnight. Every other trip
+/// counts on the day it leaves.
 pub fn work_day_problems(driver: &Driver) -> Vec<String> {
     let mut problems = Vec::new();
     let station = |p: &pontaj_core::catb::Pause| match p.state {
@@ -92,20 +100,23 @@ pub fn work_day_problems(driver: &Driver) -> Vec<String> {
         pontaj_core::catb::PauseState::Off => false,
         pontaj_core::catb::PauseState::Auto => p.kind == pontaj_core::catb::PauseKind::Normal,
     };
-    for t in &driver.trips {
+    for (index, t) in driver.trips.iter().enumerate() {
         let Some(at) = t.eff.departure else { continue };
-        let day = t.eff.work_day;
         let after = driver.pauses.iter().find(|p| p.next == t.id);
-        let shift = after.filter(|p| station(p) && p.start.zip(p.end).is_some_and(|(s, e)| (e.date() - s.date()).num_days() <= 1));
-        match (day == Some(at.date()), shift) {
-            (true, _) => {}
-            (false, None) => problems.push(format!("{} {}: trece pe {:?} deși pleacă pe {} și nu urmează unei staționări", driver.name, t.id, day, at.date())),
-            (false, Some(p)) => {
-                let before = driver.trips.iter().find(|x| x.id == p.prev).and_then(|x| x.eff.work_day);
-                if before != day {
-                    problems.push(format!("{} {}: trece pe {:?}, dar cursa dinainte ({}) trece pe {:?}", driver.name, t.id, day, p.prev, before));
-                }
-            }
+        let before = after.and_then(|p| driver.trips.iter().position(|x| x.id == p.prev).map(|i| (p, i)));
+        let joined = before.and_then(|(p, i)| {
+            let prev = &driver.trips[i];
+            let day = prev.eff.work_day?;
+            let excursion_between = driver.trips.get(i + 1..index).is_some_and(|between| between.iter().any(|x| !x.edit.removed && x.eff.excursion));
+            // A drive made by the app that the office moved to another day stays where it was put.
+            let moved = prev.moved_days != 0 || t.moved_days != 0;
+            let way_back = bucharest_side(&prev.eff.to) && !bucharest_side(&prev.eff.from) && bucharest_side(&t.eff.from) && !bucharest_side(&t.eff.to) && !excursion_between && !moved && (at.date() - day).num_days() <= 1;
+            let over_midnight = station(p) && p.start.zip(p.end).is_some_and(|(s, e)| (e.date() - s.date()).num_days() <= 1);
+            (way_back || over_midnight).then_some(day)
+        });
+        let expected = joined.unwrap_or(at.date());
+        if t.eff.work_day != Some(expected) {
+            problems.push(format!("{} {}: trece pe {:?}, dar ar trebui pe {} (pleacă pe {})", driver.name, t.id, t.eff.work_day, expected, at.date()));
         }
     }
     problems

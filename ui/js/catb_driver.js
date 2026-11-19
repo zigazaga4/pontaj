@@ -213,15 +213,15 @@ function moveControls(trip, moveTrip) {
 }
 
 /**
- * A trip that leaves after midnight but belongs to the shift of the day before (it follows a staționare over midnight) stays
- * listed on the day it really leaves; the hours, the night and the intervals go to the day of the shift in the Excel. This line
- * says on which day it is counted.
+ * The way back of a trip to Otopeni that leaves after midnight (or after a staționare over midnight) is counted on the day of
+ * the trip before it: it stays listed on the day it really leaves, while the hours, the night and the intervals go to the day of
+ * the way there in the Excel. This line says on which day it is counted.
  */
 function sameShiftNote(trip) {
   const leaves = trip.eff.departure ? isoDate(trip.eff.departure) : null;
   if (!trip.eff.workDay || !leaves || leaves === trip.eff.workDay) return null;
-  return h("small", { class: "moved-note", title: "Pleacă după miezul nopții, dar e din aceeași tură cu cursa dinainte (staționarea trece peste miezul nopții), deci în Excel se trece pe ziua în care a început tura." },
-    `(în Excel se trece pe ziua dinainte, ${shortDate(trip.eff.workDay)}, din aceeași tură)`);
+  return h("small", { class: "moved-note", title: "Este cursa de întoarcere a cursei dinainte: după ceas pleacă în ziua următoare, dar în Excel cursa de venire se trece mereu pe ziua cursei de plecare." },
+    `(în Excel se trece pe ziua cursei de plecare, ${shortDate(trip.eff.workDay)})`);
 }
 
 /** The trips of other days that are counted on `date` (the shift that started on `date` goes on after midnight). */
@@ -456,7 +456,7 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
           info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
           outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
           joined.length
-            ? h("span", { class: "pill", title: "Cursa pleacă după miezul nopții, dar e din aceeași tură: orele, noaptea și intervalele ei sunt pe această zi." },
+            ? h("span", { class: "pill", title: "Cursa de întoarcere pleacă după ceas în ziua următoare, dar se trece pe ziua cursei de plecare: orele, noaptea și intervalele ei sunt pe această zi." },
                 `(include ${joined.length === 1 ? "cursa" : "cursele"} de pe ziua următoare, ${[...new Set(joined.map((t) => shortDate(isoDate(t.eff.departure))))].join(", ")})`)
             : null,
           elsewhere ? h("span", { class: "pill" }, `(orele se numără pe ziua dinainte, ${[...new Set(trips.map((t) => shortDate(t.eff.workDay)))].join(", ")})`) : null,

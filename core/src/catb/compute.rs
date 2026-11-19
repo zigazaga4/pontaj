@@ -100,24 +100,44 @@ fn same_shift(pause: &Pause) -> bool {
     is_station(pause) && (end.date() - start.date()).num_days() <= 1
 }
 
+/// Is the trip a leg toward Bucharest/Otopeni (it leaves from somewhere else)?
+fn goes_out(eff: &Effective) -> bool {
+    places::is_bucharest(&eff.to) && !places::is_bucharest(&eff.from)
+}
+
+/// Is the trip a leg back from Bucharest/Otopeni (it arrives somewhere else)?
+fn comes_back(eff: &Effective) -> bool {
+    places::is_bucharest(&eff.from) && !places::is_bucharest(&eff.to)
+}
+
+/// Does the trip after the pause count on the day of the trip before it? Yes when it is the way back of a trip to
+/// Bucharest/Otopeni: the way back is always put on the day of the way there, even when by the clock it is the next day
+/// (09:00–12:00 and then 01:00–04:00), as long as it leaves on that day or the next one. How long the wait was and what the
+/// office chose for it (staționare or pauză) do not matter. Or when the wait is a staționare over at most one midnight (a
+/// trip inside Bucharest between the two, for example).
+fn same_outing(pause: &Pause, day_before: NaiveDate) -> bool {
+    let way_back = pause.round_trip && pause.end.is_some_and(|end| (end.date() - day_before).num_days() <= 1);
+    way_back || same_shift(pause)
+}
+
 /// Gives every trip and every pause the day it counts on. The trips are sorted by departure and a pause always comes after
-/// the trip before it, so one pass in order is enough: a trip that follows a staționare going over midnight takes the day of
-/// the trip before it (the accountants want "left 14:30, arrived 17:30, left again 03:30, arrived 06:30" on the one day the
-/// shift started), the others their own departure day. A pause counts on the day of the trip before it when it is part of
-/// the shift, else on the day it starts.
+/// the trip before it, so one pass in order is enough: a trip that is the way back of the trip before it (or follows a
+/// staționare going over midnight) takes the day of that trip (the accountants want "left 14:30, arrived 17:30, left again
+/// 03:30, arrived 06:30" on the one day the outing started), the others their own departure day. A pause counts on the day
+/// of the trip before it when it is part of the outing, else on the day it starts.
 fn assign_work_days(driver: &mut Driver) {
     let mut counted_on: std::collections::HashMap<String, NaiveDate> = std::collections::HashMap::new();
     let after: std::collections::HashMap<&str, &Pause> = driver.pauses.iter().map(|p| (p.next.as_str(), p)).collect();
     for trip in &mut driver.trips {
         let own = trip.eff.departure.map(|at| at.date());
-        let shared = after.get(trip.id.as_str()).filter(|pause| same_shift(pause)).and_then(|pause| counted_on.get(&pause.prev).copied());
+        let shared = after.get(trip.id.as_str()).and_then(|pause| counted_on.get(&pause.prev).copied().filter(|day| same_outing(pause, *day)));
         trip.eff.work_day = shared.or(own);
         if let Some(day) = trip.eff.work_day {
             counted_on.insert(trip.id.clone(), day);
         }
     }
     for pause in &mut driver.pauses {
-        let shared = Some(&*pause).filter(|p| same_shift(p)).and_then(|p| counted_on.get(&p.prev).copied());
+        let shared = counted_on.get(&pause.prev).copied().filter(|day| same_outing(pause, *day));
         pause.day = shared.or(pause.start.map(|start| start.date()));
     }
 }
@@ -166,6 +186,8 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
         // He waits (staționare) only at Otopeni; in Constanța he is at home (pauză). A far trip without a tariff is already an
         // excursion (see `effective`), so the pause around it is out too.
         let excursion_inside = between.iter().any(|t| t.eff.excursion);
+        // A drive made by the app that the office moved to another day stays where it was put (see `Trip::moved_days`).
+        pause.round_trip = goes_out(&a.eff) && comes_back(&b.eff) && !excursion_inside && a.moved_days == 0 && b.moved_days == 0;
         pause.kind = if gap_min < 0 {
             PauseKind::Overlap
         } else if excursion_inside || gap_min >= cfg.long_pause_min || !places::is_bucharest(&pause.place_from) {
@@ -542,20 +564,78 @@ mod tests {
     }
 
     #[test]
-    fn a_wait_that_is_not_a_staționare_keeps_each_trip_on_its_own_day() {
-        // 12 h 30 min of waiting is a pauză (over the long limit): he went home, the next day starts a new shift.
-        let mut d = evening_then_back("2026-10-06 06:00", "2026-10-06 09:00");
+    fn the_way_back_counts_on_the_day_of_the_way_there_whatever_the_wait_was() {
+        // The accountants' rule: the trip that comes back is always on the day of the trip that left, even when by the clock
+        // it is the next day. Here: 14:30–17:30, then 01:00–04:00 after a wait of 7 h 30 min.
+        let mut d = evening_then_back("2026-10-06 01:00", "2026-10-06 04:00");
+        run(&mut d);
+        assert_eq!(d.trips[1].eff.work_day, Some(date("2026-10-05")));
+        assert_eq!(d.days.iter().map(|r| r.date).collect::<Vec<_>>(), [Some(date("2026-10-05"))]);
+
+        // A wait of 13 h is a pauză (over the long limit), and still the same day: 09:00–12:00, then 01:00–04:00.
+        let mut d = driver(vec![
+            trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 09:00", Some("2026-10-05 12:00")),
+            trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-06 01:00", Some("2026-10-06 04:00")),
+        ]);
         run(&mut d);
         assert_eq!(d.pauses[0].kind, PauseKind::Rest);
-        assert_eq!((d.trips[1].eff.work_day, d.pauses[0].day), (Some(date("2026-10-06")), Some(date("2026-10-05"))));
-        assert_eq!(d.days.iter().map(|r| r.date).collect::<Vec<_>>(), [Some(date("2026-10-05")), Some(date("2026-10-06"))]);
+        assert!(d.pauses[0].round_trip);
+        assert_eq!((d.trips[1].eff.work_day, d.pauses[0].day), (Some(date("2026-10-05")), Some(date("2026-10-05"))));
+        assert_eq!(d.days.iter().map(|r| r.date).collect::<Vec<_>>(), [Some(date("2026-10-05"))]);
+        assert_eq!((d.days[0].legs, d.days[0].trip_min, d.days[0].station_min, d.days[0].pay_total), (2, 360, 0, 240.0), "a pauză counts no waiting, the pair is still 240 lei");
 
-        // The office says the 10 h wait was a pauză: the trip back is the next day's.
+        // What the office chose for the wait (staționare or pauză) does not move the trip back to another day.
+        for state in [PauseState::Off, PauseState::Stayed, PauseState::Auto] {
+            let mut d = evening_then_back("2026-10-06 03:30", "2026-10-06 06:30");
+            d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state, ..Default::default() });
+            run(&mut d);
+            assert_eq!(d.trips[1].eff.work_day, Some(date("2026-10-05")), "{state:?}");
+            assert_eq!(d.days.iter().map(|r| r.date).collect::<Vec<_>>(), [Some(date("2026-10-05"))], "{state:?}");
+        }
+        // … nor the hours typed for it, nor a note.
         let mut d = evening_then_back("2026-10-06 03:30", "2026-10-06 06:30");
-        d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Off, ..Default::default() });
+        d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Off, hours: Some(0.0), note: "a dormit".into(), ..Default::default() });
         run(&mut d);
-        assert_eq!(d.trips[1].eff.work_day, Some(date("2026-10-06")));
-        assert_eq!(d.days.iter().map(|r| (r.date, r.total_min)).collect::<Vec<_>>(), [(Some(date("2026-10-05")), 4 * 60), (Some(date("2026-10-06")), 4 * 60)]);
+        assert_eq!(d.trips[1].eff.work_day, Some(date("2026-10-05")));
+    }
+
+    #[test]
+    fn a_trip_that_is_not_a_way_back_keeps_its_own_day() {
+        // Two ways there in a row: the second one is not a way back.
+        let mut d = driver(vec![
+            trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 09:00", Some("2026-10-05 12:00")),
+            trip("eco-2", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-06 01:00", Some("2026-10-06 04:00")),
+        ]);
+        run(&mut d);
+        // (The app adds the drive back from Otopeni between them; that one is the way back of the first trip.)
+        let second = d.pauses.iter().find(|p| p.next == "eco-2").unwrap();
+        assert!(!second.round_trip);
+        assert_eq!(d.trips.iter().find(|t| t.id == "eco-2").and_then(|t| t.eff.work_day), Some(date("2026-10-06")));
+
+        // A way back two days later is not "the next day": it counts where it leaves.
+        let mut d = evening_then_back("2026-10-07 01:00", "2026-10-07 04:00");
+        run(&mut d);
+        assert!(d.pauses[0].round_trip);
+        assert_eq!(d.trips[1].eff.work_day, Some(date("2026-10-07")));
+
+        // An excursion between the two: the driver went elsewhere, so each trip stays on its own day.
+        let mut d = evening_then_back("2026-10-06 18:00", "2026-10-06 21:00");
+        d.trips.push(trip("priv-1", TripKind::Private, "Constanta", "Brasov", "2026-10-06 06:00", Some("2026-10-06 12:00")));
+        run(&mut d);
+        assert!(d.trips.iter().find(|t| t.id == "priv-1").is_some_and(|t| t.eff.excursion), "a far trip with no tariff is an excursion");
+        assert!(!d.pauses[0].round_trip);
+        assert_eq!(d.trips.iter().find(|t| t.id == "eco-2").and_then(|t| t.eff.work_day), Some(date("2026-10-06")));
+    }
+
+    #[test]
+    fn a_pair_after_a_pair_keeps_its_own_days() {
+        // 14:30–17:30 there, 01:00–04:00 back (counts on the 5th); then the next pair on the 6th at 14:30 is a new day.
+        let mut d = evening_then_back("2026-10-06 01:00", "2026-10-06 04:00");
+        d.trips.push(trip("eco-3", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-06 14:30", Some("2026-10-06 17:30")));
+        d.trips.push(trip("eco-4", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", "2026-10-07 01:00", Some("2026-10-07 04:00")));
+        run(&mut d);
+        let days: Vec<_> = d.trips.iter().map(|t| t.eff.work_day).collect();
+        assert_eq!(days, [Some(date("2026-10-05")), Some(date("2026-10-05")), Some(date("2026-10-06")), Some(date("2026-10-06"))]);
     }
 
     #[test]
