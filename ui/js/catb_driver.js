@@ -221,7 +221,7 @@ function sameShiftNote(trip) {
   const leaves = trip.eff.departure ? isoDate(trip.eff.departure) : null;
   if (!trip.eff.workDay || !leaves || leaves === trip.eff.workDay) return null;
   return h("small", { class: "moved-note", title: "Pleacă după miezul nopții, dar e din aceeași tură cu cursa dinainte (staționarea trece peste miezul nopții), deci în Excel se trece pe ziua în care a început tura." },
-    `se numără pe ${shortDate(trip.eff.workDay)}, din aceeași tură`);
+    `(în Excel se trece pe ziua dinainte, ${shortDate(trip.eff.workDay)}, din aceeași tură)`);
 }
 
 /** The trips of other days that are counted on `date` (the shift that started on `date` goes on after midnight). */
@@ -457,9 +457,9 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
           outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
           joined.length
             ? h("span", { class: "pill", title: "Cursa pleacă după miezul nopții, dar e din aceeași tură: orele, noaptea și intervalele ei sunt pe această zi." },
-                `include ${joined.length === 1 ? "cursa" : "cursele"} de pe ${[...new Set(joined.map((t) => shortDate(isoDate(t.eff.departure))))].join(", ")}`)
+                `(include ${joined.length === 1 ? "cursa" : "cursele"} de pe ziua următoare, ${[...new Set(joined.map((t) => shortDate(isoDate(t.eff.departure))))].join(", ")})`)
             : null,
-          elsewhere ? h("span", { class: "pill" }, `orele se numără pe ${[...new Set(trips.map((t) => shortDate(t.eff.workDay)))].join(", ")}`) : null,
+          elsewhere ? h("span", { class: "pill" }, `(orele se numără pe ziua dinainte, ${[...new Set(trips.map((t) => shortDate(t.eff.workDay)))].join(", ")})`) : null,
           excursionOnly ? h("span", { class: "pill excursion" }, "excursie · se pontează din tahograf") : null,
           excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null),
         row && !elsewhere
