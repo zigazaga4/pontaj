@@ -28,13 +28,19 @@ fn main() {
             recompute(&mut sheet, &settings);
             json!(sheet)
         }
-        // Categoria B: no network here. `catb_fetch` reads an answer of the API saved in the file named by `CATB_API_JSON`.
-        "catb_fetch" => {
-            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(10) as u32);
-            let previous: Option<catb::Sheet> = serde_json::from_value(get("previous")).ok().flatten();
+        // Categoria B: no network here. `catb_download` reads an answer of the API saved in the file named by `CATB_API_JSON`.
+        "catb_download" => {
             let body = std::env::var("CATB_API_JSON").ok().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
             match catb::api::parse_rows(&body) {
-                Ok(parsed) => json!(catb::apply_download(previous, year, month, &parsed, "preview", &settings)),
+                Ok(parsed) => json!(parsed),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "catb_merge" => {
+            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(10) as u32);
+            let previous: Option<catb::Sheet> = serde_json::from_value(get("sheet")).ok().flatten();
+            match serde_json::from_value::<catb::api::Parsed>(get("parsed")) {
+                Ok(parsed) => json!(catb::merge_download(previous, year, month, &parsed, &settings)),
                 Err(e) => json!({ "error": e.to_string() }),
             }
         }

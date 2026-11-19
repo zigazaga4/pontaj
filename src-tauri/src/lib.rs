@@ -121,20 +121,17 @@ async fn catb_open(app: AppHandle, year: i32, month: u32, settings: Settings) ->
     .await
 }
 
-/// Downloads the month from the API and merges it into what is already there (the open sheet, else the saved one).
+/// The network half of a download: asks the API for the month and gives the rows back, merging nothing. The screen merges
+/// them (`catb_merge`) into the sheet as it is at that moment, so a quiet refresh never overwrites an edit made meanwhile.
 #[tauri::command]
-async fn catb_fetch(app: AppHandle, year: i32, month: u32, settings: Settings, previous: Option<catb::Sheet>) -> CmdResult<catb::Sheet> {
-    blocking(move || {
-        let dir = catb_dir(&app)?;
-        let previous = match previous.filter(|s| (s.year, s.month) == (year, month)) {
-            Some(open) => Some(open),
-            None => catb::store::load(&dir, year, month).map_err(|e| e.to_string())?,
-        };
-        let sheet = catb::download_month(previous, year, month, &settings).map_err(|e| e.to_string())?;
-        catb::store::save(&dir, &sheet).map_err(|e| e.to_string())?;
-        Ok(sheet)
-    })
-    .await
+async fn catb_download(year: i32, month: u32, settings: Settings) -> CmdResult<catb::api::Parsed> {
+    blocking(move || catb::api::fetch_month(&settings.catb, year, month).map_err(|e| e.to_string())).await
+}
+
+/// The other half: puts rows from `catb_download` into the open sheet (nothing is saved here; the screen saves).
+#[tauri::command]
+async fn catb_merge(sheet: Option<catb::Sheet>, parsed: catb::api::Parsed, year: i32, month: u32, settings: Settings) -> CmdResult<catb::Sheet> {
+    blocking(move || Ok(catb::merge_download(sheet, year, month, &parsed, &settings))).await
 }
 
 #[tauri::command]
@@ -248,7 +245,8 @@ pub fn run() {
             export_excel,
             catb_months,
             catb_open,
-            catb_fetch,
+            catb_download,
+            catb_merge,
             catb_recalculate,
             catb_recalculate_driver,
             catb_resolve_overlap,

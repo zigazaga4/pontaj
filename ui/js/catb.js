@@ -8,6 +8,10 @@ import { duration, lei } from "./time.js";
 
 const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
 const SAVE_DELAY_MS = 1200;
+/** The month on screen is asked from the API again this often (a correction made there shows up without a click). */
+const REFRESH_EVERY_MS = 10 * 60 * 1000;
+const REFRESH_RETRY_MS = 2 * 60 * 1000;
+const REFRESH_TICK_MS = 30 * 1000;
 const COMMON_PLACES = ["Constanta", "Aeroport Otopeni Bucuresti", "Bucuresti"];
 
 /** Remarks that ask for a look (information-level ones do not count as attention). */
@@ -33,9 +37,11 @@ const untariffed = (driver) => driver.trips.filter((t) => !t.edit.removed && t.e
 export function createCatb({ getSettings, saveSettings }) {
   const today = new Date();
   const previous = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const state = { sheet: null, year: previous.getFullYear(), month: previous.getMonth() + 1, saved: [], driverId: null, filter: "", onlyIssues: false, dirty: false, loaded: false };
+  const state = { sheet: null, year: previous.getFullYear(), month: previous.getMonth() + 1, saved: [], driverId: null, filter: "", onlyIssues: false, dirty: false, loaded: false, refreshError: null };
   let queue = Promise.resolve();
   let saveTimer = null;
+  let refreshing = false;
+  let nextRefreshAt = 0;
 
   const fail = (err) => toast(String(err), { kind: "error", timeout: 0 });
   const driver = () => state.sheet?.drivers.find((d) => d.id === state.driverId);
@@ -143,9 +149,11 @@ export function createCatb({ getSettings, saveSettings }) {
     $("#catb-bar").replaceChildren(
       h("label", { class: "bar-field" }, "Luna", month),
       h("label", { class: "bar-field" }, "Anul", year),
-      h("button", { class: "btn primary", title: "Aduce din API doar cursele și șoferii care nu sunt încă în foaie. Nimic din ce ai deja nu se schimbă.", onclick: fetchMonth }, state.sheet ? "⟳ Descarcă din nou (doar cele noi)" : "⬇ Descarcă din API"),
+      h("button", { class: "btn primary", title: "Aduce acum din API ultimele date ale lunii. Corecturile din API (mașină, oră, loc) înlocuiesc datele vechi; ce ai modificat tu rămâne neschimbat.", onclick: fetchMonth }, state.sheet ? "⟳ Actualizează din API" : "⬇ Descarcă din API"),
       h("span", { class: "muted" },
-        state.sheet?.fetchedAt ? `Descărcat la ${state.sheet.fetchedAt}. O nouă descărcare adaugă doar ce e nou; ce ai deja în foaie nu se schimbă.` : saved ? "Luna este salvată pe acest calculator." : "Luna nu a fost descărcată încă."));
+        state.sheet?.fetchedAt
+          ? `Actualizat din API la ${state.sheet.fetchedAt}. Se actualizează singură la câteva minute; ce ai modificat tu rămâne neschimbat.${state.refreshError ? " Ultima încercare n-a mers (internet?); se mai încearcă." : ""}`
+          : saved ? "Luna este salvată pe acest calculator." : "Luna nu a fost descărcată încă."));
   }
 
   function renderSummary() {
@@ -175,7 +183,7 @@ export function createCatb({ getSettings, saveSettings }) {
     const notes = state.sheet?.notices ?? [];
     const box = $("#catb-notices");
     box.hidden = !notes.length;
-    box.replaceChildren(h("b", {}, "De reținut de la ultima descărcare"), h("ul", {}, notes.map((n) => h("li", {}, n))));
+    box.replaceChildren(h("b", {}, "De reținut de la ultima actualizare din API"), h("ul", {}, notes.map((n) => h("li", {}, n))));
   }
 
   function renderDrivers() {
@@ -276,7 +284,7 @@ export function createCatb({ getSettings, saveSettings }) {
 
   async function openMonth(year, month) {
     await flush();
-    Object.assign(state, { year, month, sheet: null, driverId: null });
+    Object.assign(state, { year, month, sheet: null, driverId: null, refreshError: null });
     renderAll();
     busy("Se deschide luna…");
     try {
@@ -288,33 +296,125 @@ export function createCatb({ getSettings, saveSettings }) {
       busy(null);
     }
     renderAll();
+    nextRefreshAt = 0;
+    refreshQuietly(); // the saved month may be behind the API: look right away, without a word
   }
 
+  // ---- the API ----
+
+  /** Text typed into a field of the driver view and not confirmed yet (Enter, or leaving the field). */
+  let unconfirmed = false;
+
+  /** Someone is typing (or a dialog is open): redrawing now would eat what they have not confirmed yet. */
+  function busyTyping() {
+    const active = document.activeElement;
+    const inField = Boolean(active?.matches?.("input, textarea") && $("#catb-view").contains(active));
+    if (!inField) unconfirmed = false; // the field was redrawn or left: nothing is waiting to be confirmed
+    return (inField && unconfirmed) || Boolean(document.querySelector(".modal-back"));
+  }
+
+  function watchTyping() {
+    const view = $("#catb-view");
+    view.addEventListener("input", () => (unconfirmed = true));
+    for (const event of ["change", "focusout"]) view.addEventListener(event, () => (unconfirmed = false));
+  }
+
+  const tripKeys = (sheet) => new Set(sheet ? sheet.drivers.flatMap((d) => d.trips.map((t) => `${d.id}|${t.id}`)) : []);
+  const withoutStamp = (sheet) => JSON.stringify({ ...sheet, fetchedAt: null });
+
+  /**
+   * Brings the month from the API into the open sheet. The download (a few seconds, no sheet involved) runs outside the edit
+   * queue; the merge runs inside it, on the sheet as it is at that moment, so an edit is never lost or overwritten. The API's
+   * version replaces the sheet's data (a corrected car, hour or place; a cancelled trip); what the office changed stays.
+   * Resolves with { first, added, left, changed }, or null when nothing was applied (another month was opened meanwhile, or
+   * `skipIf()` said the moment is wrong).
+   */
+  async function syncMonth({ skipIf = () => false } = {}) {
+    const { year, month } = state;
+    const parsed = await api.catbDownload(year, month, getSettings());
+    const turn = queue.then(async () => {
+      if (state.year !== year || state.month !== month || skipIf()) return null;
+      const before = state.sheet;
+      const merged = await api.catbMerge(before, parsed, year, month, getSettings());
+      const had = tripKeys(before);
+      const has = tripKeys(merged);
+      const result = {
+        first: !before,
+        added: [...has].filter((key) => !had.has(key)).length,
+        left: [...had].filter((key) => !has.has(key)).length,
+        changed: !before || withoutStamp(before) !== withoutStamp(merged),
+      };
+      if (result.changed) {
+        state.sheet = merged;
+        if (!merged.drivers.some((d) => d.id === state.driverId)) state.driverId = merged.drivers[0]?.id ?? null;
+        markDirty();
+        renderAll();
+      } else {
+        before.fetchedAt = merged.fetchedAt; // nothing new: the sheet on screen stays as it is
+        renderBar();
+      }
+      return result;
+    });
+    queue = turn.catch(() => {}); // a failed merge must not block the edits behind it
+    return turn;
+  }
+
+  /** What a refresh changed, in a few words (null when nothing changed). */
+  function describeSync({ added, left, changed }) {
+    if (!changed) return null;
+    const parts = [];
+    if (added) parts.push(`${added} ${added === 1 ? "cursă nouă" : "curse noi"}`);
+    if (left) parts.push(`${left} ${left === 1 ? "cursă scoasă" : "curse scoase"}`);
+    return parts.length ? parts.join(", ") : "corecturi la cursele existente";
+  }
+
+  /** The silent refresh of the month on screen: no overlay, and a failure is only a line in the bar (it tries again soon). */
+  async function refreshQuietly() {
+    if (refreshing || !state.sheet || document.hidden || $("#catb").hidden || busyTyping()) return;
+    refreshing = true;
+    try {
+      const done = await syncMonth({ skipIf: busyTyping });
+      state.refreshError = null;
+      nextRefreshAt = Date.now() + (done ? REFRESH_EVERY_MS : REFRESH_TICK_MS);
+      const what = done && describeSync(done);
+      if (what) toast(`Actualizat din API: ${what}. Ce ai modificat tu a rămas neschimbat.${state.sheet.notices.length ? " Vezi observațiile de sub bară." : ""}`, { kind: "ok", timeout: 7000 });
+      renderBar();
+    } catch (err) {
+      state.refreshError = String(err);
+      nextRefreshAt = Date.now() + REFRESH_RETRY_MS;
+      renderBar();
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  const refreshIfDue = () => Date.now() >= nextRefreshAt && refreshQuietly();
+
+  /** The button: the same refresh, with the overlay and with the errors shown. A month never downloaded is saved right away. */
   async function fetchMonth() {
     await flush();
     busy("Se descarcă cursele din API…");
+    refreshing = true;
     try {
-      // A new download only adds what the sheet does not have yet: remember what it has, to say what came in.
-      const had = state.sheet ? new Set(state.sheet.drivers.flatMap((d) => d.trips.map((t) => `${d.id}|${t.id}`))) : null;
-      const sheet = await api.catbFetch(state.year, state.month, getSettings(), state.sheet);
-      state.sheet = sheet;
+      const done = await syncMonth();
+      if (!done) return;
+      await flush();
       state.saved = await api.catbMonths();
-      if (!sheet.drivers.some((d) => d.id === state.driverId)) state.driverId = sheet.drivers[0]?.id ?? null;
-      state.dirty = false;
-      renderAll();
-      const trips = sheet.drivers.reduce((n, d) => n + d.trips.length, 0);
-      if (!had) {
-        toast(`${sheet.drivers.length} șoferi, ${trips} curse. Verifică staționările și avertizările.`, { kind: "ok", timeout: 5000 });
+      state.refreshError = null;
+      nextRefreshAt = Date.now() + REFRESH_EVERY_MS;
+      renderBar();
+      const note = state.sheet.notices.length ? " Vezi observațiile de sub bară." : "";
+      if (done.first) {
+        const trips = state.sheet.drivers.reduce((n, d) => n + d.trips.length, 0);
+        toast(`${state.sheet.drivers.length} șoferi, ${trips} curse. Verifică staționările și avertizările.`, { kind: "ok", timeout: 5000 });
       } else {
-        const added = sheet.drivers.reduce((n, d) => n + d.trips.filter((t) => !had.has(`${d.id}|${t.id}`)).length, 0);
-        const note = sheet.notices.length ? " Vezi observațiile de sub bară." : "";
-        toast(added
-          ? `${added} ${added === 1 ? "cursă nouă adăugată" : "curse noi adăugate"}. Ce aveai deja în foaie a rămas neatins.${note}`
-          : `Nicio cursă nouă. Ce aveai deja în foaie a rămas neatins.${note}`, { kind: "ok", timeout: 6000 });
+        const what = describeSync(done);
+        toast(`${what ? `Actualizat din API: ${what}.` : "Nimic nou în API."} Ce ai modificat tu a rămas neschimbat.${note}`, { kind: "ok", timeout: 6000 });
       }
     } catch (err) {
       fail(err);
     } finally {
+      refreshing = false;
       busy(null);
     }
   }
@@ -380,8 +480,13 @@ export function createCatb({ getSettings, saveSettings }) {
   async function show() {
     $("#catb").hidden = false;
     fillPlaces();
-    if (state.loaded) return renderAll();
+    if (state.loaded) {
+      renderAll();
+      return refreshIfDue(); // back on the tab after a while: it may be due
+    }
     state.loaded = true;
+    watchTyping();
+    setInterval(refreshIfDue, REFRESH_TICK_MS);
     try {
       state.saved = await api.catbMonths();
       const [year, month] = state.saved[0] ?? [state.year, state.month];
@@ -398,7 +503,7 @@ export function createCatb({ getSettings, saveSettings }) {
   }
 
   window.addEventListener("pagehide", flush);
-  document.addEventListener("visibilitychange", () => document.hidden && flush());
+  document.addEventListener("visibilitychange", () => (document.hidden ? flush() : refreshIfDue()));
 
   return { show, hide, fetchMonth, exportExcel, settingsChanged, flush };
 }

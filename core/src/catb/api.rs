@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::config::CatbSettings;
 use super::model::TripKind;
@@ -14,7 +14,8 @@ use crate::calendar::days_in_month;
 use crate::{Error, Result};
 
 /// A row of the API, flattened.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiRow {
     pub driver_id: i64,
     pub driver_name: String,
@@ -36,8 +37,10 @@ pub struct ApiRow {
     pub passengers: i32,
 }
 
-/// The rows of an answer, and how many could not be read.
-#[derive(Debug, Clone, Default)]
+/// The rows of an answer, and how many could not be read. It goes to the screen and comes back (the download and the
+/// merge into the open sheet are two steps, so an edit made while the API answers is never lost).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Parsed {
     /// Besides the month's trips, those of the days around it (see [`DAYS_BEFORE`], [`DAYS_AFTER`]): the caller keeps
     /// only the month's as trips and uses the others to tell where each driver was when the month began and ended.

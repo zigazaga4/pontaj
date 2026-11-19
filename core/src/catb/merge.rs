@@ -1,10 +1,12 @@
-//! Puts a fresh download of the API into the month's sheet and brings in only what is new.
+//! Puts a fresh answer of the API into the month's sheet: the API is right about what the API knows, the office about
+//! what the office decided.
 //!
-//! The office works on the sheet for days (checking and correcting), so a second download must not touch any of that:
-//! a driver or a trip (by its `trip.id`) that is already in the sheet stays exactly as it is, edits, pause decisions,
-//! excluded days and trips added by hand included. Only drivers and trips the sheet does not have yet are added.
-//! If the API now says something else about a trip the sheet already has, or no longer has it, nothing changes: a
-//! notice tells the office, who decides.
+//! The dispatchers correct trips in the other application for days (a wrong car, a moved hour, a cancelled trip), so every
+//! download takes the API's version of a trip (by its `trip.id`): new trips come in, changed ones are replaced, ones the
+//! API no longer lists leave. What the office did is never touched: the changes it typed on a trip (`Trip::edit`), trips
+//! added by hand, pause decisions, excluded days, leave, completion hours. A trip or a driver the office changed stays even
+//! if the API no longer lists it, and where the API now says something else than the office typed, the office's value
+//! stays and a notice says so.
 
 use std::collections::BTreeMap;
 
@@ -40,27 +42,43 @@ fn from_row(row: &ApiRow) -> Trip {
 }
 
 /// Does the API say something else about `trip` than the sheet has (the API side of the trip, not the office's edits)?
+/// The car's make and seats are not compared: a month saved before they were kept learns them without it being a correction.
 fn differs(trip: &Trip, row: &ApiRow) -> bool {
     let fresh = from_row(row);
     (trip.kind, &trip.label, &trip.from, &trip.to, trip.departure, trip.arrival, trip.return_at, &trip.car, trip.passengers)
         != (fresh.kind, &fresh.label, &fresh.from, &fresh.to, fresh.departure, fresh.arrival, fresh.return_at, &fresh.car, fresh.passengers)
 }
 
-/// The car's make and seats are filled in only where the sheet has none: a month saved before they were kept learns
-/// them now, and nothing the sheet already has is replaced.
-fn fill_car_details(trip: &mut Trip, row: &ApiRow) {
-    if trip.car_model.is_empty() && trip.car_seats == 0 && trip.car_category.is_empty() {
-        (trip.car_model, trip.car_seats, trip.car_category) = (row.car_model.clone(), row.car_seats, row.car_category.clone());
-    }
+/// Does the API now say something else about a field the office typed a value for? (The office's value stays.)
+fn contradicts_edit(trip: &Trip, row: &ApiRow) -> bool {
+    let (edit, fresh) = (&trip.edit, from_row(row));
+    (edit.departure.is_some() && trip.departure != fresh.departure)
+        || (edit.arrival.is_some() && trip.arrival != fresh.arrival)
+        || (edit.from.is_some() && trip.from != fresh.from)
+        || (edit.to.is_some() && trip.to != fresh.to)
+}
+
+/// Takes the API's side of the trip. The office's edits are a layer on top (`Trip::edit`) and are not part of it.
+fn refresh(trip: &mut Trip, row: &ApiRow) {
+    let fresh = from_row(row);
+    (trip.kind, trip.label, trip.from, trip.to, trip.departure, trip.arrival, trip.return_at) =
+        (fresh.kind, fresh.label, fresh.from, fresh.to, fresh.departure, fresh.arrival, fresh.return_at);
+    (trip.car, trip.car_model, trip.car_seats, trip.car_category, trip.passengers) = (fresh.car, fresh.car_model, fresh.car_seats, fresh.car_category, fresh.passengers);
 }
 
 fn is_edited(trip: &Trip) -> bool {
     trip.edit != TripEdit::default()
 }
 
-/// Has the office decided anything about this driver (so he must not disappear on his own)?
+/// Has the office decided anything about this driver (so he must not disappear on his own)? A decision about the time
+/// between two trips counts while both trips are still there.
 pub(super) fn has_decisions(driver: &Driver) -> bool {
-    !driver.pause_edits.is_empty() || !driver.excluded_days.is_empty() || !driver.leaves.is_empty() || !driver.fills.is_empty() || driver.trips.iter().any(|t| t.manual || is_edited(t))
+    let there = |id: &str| driver.trips.iter().any(|t| t.id == id);
+    driver.pause_edits.iter().any(|p| there(&p.prev) && there(&p.next))
+        || !driver.excluded_days.is_empty()
+        || !driver.leaves.is_empty()
+        || !driver.fills.is_empty()
+        || driver.trips.iter().any(|t| t.manual || is_edited(t))
 }
 
 fn short(trip: &Trip) -> String {
@@ -76,9 +94,74 @@ fn listed(items: &[String]) -> String {
     }
 }
 
-/// Adds what is new in the answer of the API to the sheet and leaves the rest untouched (the derived parts must be
-/// recomputed afterwards).
+/// The notice about what the API corrected in the sheet starts like this. It stays on screen until the next correction:
+/// a quiet download that finds nothing to correct does not wipe it.
+pub(super) const CORRECTED_NOTICE: &str = "Din API:";
+
+/// The notice about the office's trips that the API now disagrees with has this in it. It stays like the one above: the
+/// refreshes that follow find nothing new to say, but the office should still be able to read it.
+const CONFLICT_MARK: &str = "am lăsat ce ai scris tu:";
+
+/// Notices that tell what happened once, when the API changed (the others are rebuilt from the sheet on every download).
+fn is_event_notice(notice: &str) -> bool {
+    notice.starts_with(CORRECTED_NOTICE) || notice.contains(CONFLICT_MARK)
+}
+
+/// Do both notices tell about the same kind of event (so that a new one replaces the old one)?
+fn same_event(a: &str, b: &str) -> bool {
+    a.starts_with(CORRECTED_NOTICE) == b.starts_with(CORRECTED_NOTICE) && a.contains(CONFLICT_MARK) == b.contains(CONFLICT_MARK)
+}
+
+/// What a download changed in the trips the sheet already had.
+#[derive(Default)]
+struct Report {
+    /// Replaced by the API's version (nothing of the office's was in the way).
+    corrected: Vec<String>,
+    /// Trips the office edited, where the API now says something else than the office typed: the office's value stays.
+    contradicted: Vec<String>,
+    /// Trips the API no longer lists (cancelled, moved to another month, now on a category D car): taken out.
+    removed: Vec<String>,
+    /// The same, but the office had changed them, so they stay.
+    kept: Vec<String>,
+    /// Drivers who have no trip left in the month and nothing the office decided: taken out.
+    dropped: Vec<String>,
+}
+
+impl Report {
+    fn notices(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut done = Vec::new();
+        if !self.corrected.is_empty() {
+            done.push(format!("{} corectat{} (mașina, ora sau locul): {}", count_trips(self.corrected.len()), if self.corrected.len() == 1 { "ă" } else { "e" }, listed(&self.corrected)));
+        }
+        if !self.removed.is_empty() {
+            done.push(format!("{} scoas{} (nu mai sunt în API pentru Categoria B): {}", count_trips(self.removed.len()), if self.removed.len() == 1 { "ă" } else { "e" }, listed(&self.removed)));
+        }
+        if !self.dropped.is_empty() {
+            done.push(format!("fără curse în lună: {}", listed(&self.dropped)));
+        }
+        if !done.is_empty() {
+            out.push(format!("{CORRECTED_NOTICE} {}.", done.join("; ")));
+        }
+        if !self.contradicted.is_empty() {
+            out.push(format!("{} modificat{} de tine {} alte date în API; {CONFLICT_MARK} {}.", count_trips(self.contradicted.len()), if self.contradicted.len() == 1 { "ă" } else { "e" }, if self.contradicted.len() == 1 { "are" } else { "au" }, listed(&self.contradicted)));
+        }
+        if !self.kept.is_empty() {
+            out.push(format!("{} modificat{} de tine nu {} în lista API pentru Categoria B (șterse, mutate în altă lună sau pe o mașină de categoria D); {}: {}.", count_trips(self.kept.len()), if self.kept.len() == 1 { "ă" } else { "e" }, if self.kept.len() == 1 { "mai este" } else { "mai sunt" }, if self.kept.len() == 1 { "am păstrat-o" } else { "le-am păstrat" }, listed(&self.kept)));
+        }
+        out
+    }
+}
+
+/// Puts the answer of the API into the sheet (the derived parts must be recomputed afterwards). Nothing is taken out
+/// when the answer has no rows: an empty answer is far more likely a hiccup of the API than a month wiped clean.
 pub fn merge_rows(sheet: &mut Sheet, rows: &[ApiRow], skipped: usize, fetched_at: &str) {
+    sync_rows(sheet, rows, skipped, fetched_at, !rows.is_empty());
+}
+
+/// [`merge_rows`], with the caller saying whether the answer is complete enough to take trips out of the sheet.
+pub(super) fn sync_rows(sheet: &mut Sheet, rows: &[ApiRow], skipped: usize, fetched_at: &str, complete: bool) {
+    let carried: Vec<String> = sheet.notices.iter().filter(|n| is_event_notice(n)).cloned().collect();
     sheet.notices.clear();
     sheet.fetched_at = Some(fetched_at.to_string());
     if skipped > 0 {
@@ -89,8 +172,7 @@ pub fn merge_rows(sheet: &mut Sheet, rows: &[ApiRow], skipped: usize, fetched_at
     for row in rows {
         by_driver.entry(row.driver_id).or_default().push(row);
     }
-    // Trips already in the sheet that the API now describes differently / no longer has.
-    let (mut changed, mut gone): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let mut report = Report::default();
 
     for (id, rows) in &by_driver {
         let position = sheet.drivers.iter().position(|d| d.id == *id);
@@ -101,11 +183,9 @@ pub fn merge_rows(sheet: &mut Sheet, rows: &[ApiRow], skipped: usize, fetched_at
                 sheet.drivers.last_mut().expect("just pushed")
             }
         };
-        // A name the sheet already has stays (the office may have corrected it).
-        if driver.name.is_empty() {
-            if let Some(name) = rows.iter().map(|r| r.driver_name.as_str()).find(|n| !n.is_empty()) {
-                driver.name = name.to_string();
-            }
+        // The name is the API's (the sheet has no way to change it by hand), so a corrected spelling arrives too.
+        if let Some(name) = rows.iter().map(|r| r.driver_name.as_str()).find(|n| !n.is_empty()) {
+            driver.name = name.to_string();
         }
 
         let mut seen: Vec<&str> = Vec::new();
@@ -116,39 +196,61 @@ pub fn merge_rows(sheet: &mut Sheet, rows: &[ApiRow], skipped: usize, fetched_at
             }
             seen.push(&row.trip_id);
             match driver.trips.iter_mut().find(|t| !t.manual && t.id == row.trip_id) {
-                // Already in the sheet: untouched, only reported when the API now says something else.
+                // Already in the sheet: the API's side is replaced; the office's edits are another layer and stay.
                 Some(trip) => {
-                    fill_car_details(trip, row);
-                    if differs(trip, row) {
-                        changed.push(format!("{}: {}", driver.name, short(trip)));
+                    let (changed, contradicted) = (differs(trip, row), contradicts_edit(trip, row));
+                    refresh(trip, row);
+                    if changed {
+                        let list = if contradicted { &mut report.contradicted } else { &mut report.corrected };
+                        list.push(format!("{}: {}", driver.name, short(trip)));
                     }
                 }
                 None => driver.trips.push(from_row(row)),
             }
         }
+    }
 
-        for trip in driver.trips.iter().filter(|t| !t.manual && !t.generated && !seen.contains(&t.id.as_str())) {
-            gone.push(format!("{}: {}", driver.name, short(trip)));
+    if complete {
+        // A trip the API no longer lists leaves, unless the office changed it. A driver left with no trip leaves too,
+        // unless the office decided something about him.
+        for driver in &mut sheet.drivers {
+            let listed_ids: Vec<&str> = by_driver.get(&driver.id).map(|rows| rows.iter().map(|r| r.trip_id.as_str()).collect()).unwrap_or_default();
+            let name = driver.name.clone();
+            driver.trips.retain(|trip| {
+                if trip.manual || trip.generated || listed_ids.contains(&trip.id.as_str()) {
+                    return true;
+                }
+                if is_edited(trip) {
+                    report.kept.push(format!("{name}: {}", short(trip)));
+                    return true;
+                }
+                report.removed.push(format!("{name}: {}", short(trip)));
+                false
+            });
         }
-    }
-
-    if !changed.is_empty() {
-        let what = if changed.len() == 1 { "are alte date în API; am lăsat-o neatinsă" } else { "au alte date în API; le-am lăsat neatinse" };
-        sheet.notices.push(format!("{} din foaie {what}: {}.", count_trips(changed.len()), listed(&changed)));
-    }
-    if !gone.is_empty() {
-        let what = if gone.len() == 1 { "nu mai apare în API; am păstrat-o" } else { "nu mai apar în API; le-am păstrat" };
-        sheet.notices.push(format!("{} din foaie {what}: {}.", count_trips(gone.len()), listed(&gone)));
-    }
-
-    // Drivers the API no longer lists stay too, with everything they have.
-    let notices = &mut sheet.notices;
-    for driver in sheet.drivers.iter().filter(|d| !by_driver.contains_key(&d.id)) {
-        notices.push(if has_decisions(driver) {
-            format!("{}: nu mai apare în API, dar are modificări; l-am păstrat.", driver.name)
-        } else {
-            format!("{}: nu mai apare în API; l-am păstrat cu cursele pe care le avea.", driver.name)
+        sheet.drivers.retain(|driver| {
+            let keeps = driver.trips.iter().any(|t| !t.generated) || has_decisions(driver);
+            if !keeps {
+                report.dropped.push(driver.name.clone());
+            }
+            keeps
         });
+    }
+
+    // What happened earlier stays until something of the same kind happens again.
+    let notices = report.notices();
+    sheet.notices.extend(carried.into_iter().filter(|old| !notices.iter().any(|new| same_event(new, old))));
+    sheet.notices.extend(notices);
+
+    if !complete {
+        if !sheet.drivers.is_empty() {
+            sheet.notices.push("API-ul nu a trimis nicio cursă, așa că n-am scos nimic din foaie.".into());
+        }
+        return;
+    }
+    // A driver the API lists nothing for but who has changes of the office stays: say why he is still there.
+    for driver in sheet.drivers.iter().filter(|d| !by_driver.contains_key(&d.id)) {
+        sheet.notices.push(format!("{}: nu mai are curse în API pentru luna aceasta, dar are modificări; l-am păstrat.", driver.name));
     }
 }
 
@@ -274,7 +376,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_second_download_brings_in_only_the_new_trips_and_touches_nothing_else() {
+    fn a_second_download_brings_in_the_new_trips_and_never_touches_what_the_office_did() {
         let mut sheet = first_download();
         let popescu = sheet.drivers.iter_mut().find(|d| d.id == 1).unwrap();
         popescu.trips[0].edit.departure = parse_time("2026-10-05 06:00");
@@ -298,9 +400,9 @@ pub(super) mod tests {
 
         assert!(sheet.notices.is_empty(), "nothing differs, so nothing to report: {:?}", sheet.notices);
         assert_eq!(sheet.drivers.len(), 3);
+        assert_eq!(sheet.drivers.iter().find(|d| d.id == 2).unwrap().name, "Ionescu Vasile", "the name is the API's: a corrected spelling arrives");
         for old in &before.drivers {
             let now = sheet.drivers.iter().find(|d| d.id == old.id).unwrap();
-            assert_eq!(now.name, old.name, "a corrected name stays");
             assert_eq!((&now.pause_edits, &now.excluded_days), (&old.pause_edits, &old.excluded_days));
             for trip in &old.trips {
                 assert_eq!(now.trips.iter().find(|t| t.id == trip.id), Some(trip), "{} is as it was", trip.id);
@@ -328,32 +430,72 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_trip_the_api_no_longer_has_stays_and_a_notice_says_so() {
+    fn a_trip_the_api_no_longer_lists_leaves_unless_the_office_changed_it() {
         let mut sheet = first_download();
         sheet.drivers.iter_mut().find(|d| d.id == 1).unwrap().trips[1].edit.price = Some(100.0);
-        // eco-1 and eco-2 are both gone from the API (edited or not), eco-9 is new.
+        // eco-1 and eco-2 are both gone from the API; the office changed eco-2. eco-9 is new.
         let rows = vec![row(1, "Popescu Ion", "eco-9", "2026-10-08 05:00", "2026-10-08 08:00"), row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:00")];
         merge_rows(&mut sheet, &rows, 2, "x");
         let ids: Vec<&str> = sheet.drivers.iter().find(|d| d.id == 1).unwrap().trips.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, ["eco-1", "eco-2", "eco-9"]);
-        assert!(sheet.notices.iter().any(|n| n.starts_with("2 curse din foaie nu mai apar în API") && n.contains("eco-1") && n.contains("eco-2")), "{:?}", sheet.notices);
+        assert_eq!(ids, ["eco-2", "eco-9"], "eco-1 is out, eco-2 stays because of the office's price");
+        assert!(sheet.notices.iter().any(|n| n.starts_with("Din API: 1 cursă scoasă") && n.contains("eco-1") && !n.contains("eco-2")), "{:?}", sheet.notices);
+        assert!(sheet.notices.iter().any(|n| n.contains("modificată de tine nu mai este în lista API") && n.contains("eco-2") && n.contains("am păstrat-o")), "{:?}", sheet.notices);
         assert!(sheet.notices.iter().any(|n| n.starts_with("2 rânduri")));
-        // Notices are rebuilt by each download.
+        // Notices are rebuilt by each download; the line about what the API corrected stays until the next correction.
         merge_rows(&mut sheet, &rows, 0, "y");
         assert!(sheet.notices.iter().all(|n| !n.starts_with("2 rânduri")));
+        assert!(sheet.notices.iter().any(|n| n.starts_with("Din API: 1 cursă scoasă") && n.contains("eco-1")), "{:?}", sheet.notices);
     }
 
     #[test]
-    fn a_trip_the_api_now_describes_differently_is_left_as_it_is_and_reported() {
+    fn the_api_replaces_what_it_corrected_and_the_office_keeps_what_it_typed() {
         let mut sheet = first_download();
-        sheet.drivers.iter_mut().find(|d| d.id == 1).unwrap().trips[0].edit.arrival = parse_time("2026-10-05 09:00");
-        let rows = vec![row(1, "Popescu Ion", "eco-1", "2026-10-05 05:15", "2026-10-05 08:15"), back(row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00")), row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:00")];
-        merge_rows(&mut sheet, &rows, 0, "z");
-        assert_eq!(sheet.notices.len(), 1, "{:?}", sheet.notices);
-        assert!(sheet.notices[0].starts_with("1 cursă din foaie are alte date în API") && sheet.notices[0].contains("eco-1"), "{:?}", sheet.notices);
-        let trip = &sheet.drivers.iter().find(|d| d.id == 1).unwrap().trips[0];
-        assert_eq!(trip.departure, parse_time("2026-10-05 05:00").unwrap(), "the sheet keeps what it had");
-        assert_eq!(trip.edit.arrival, parse_time("2026-10-05 09:00"));
+        let popescu = sheet.drivers.iter_mut().find(|d| d.id == 1).unwrap();
+        popescu.trips[0].edit.departure = parse_time("2026-10-05 06:00"); // eco-1: the office moved the hour
+        // The dispatchers changed eco-1's hour again, eco-2's car and eco-3's arrival.
+        let mut moved = row(1, "Popescu Ion", "eco-1", "2026-10-05 05:30", "2026-10-05 08:30");
+        moved.car = "CT-22-XDD".into();
+        let mut other_car = back(row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00"));
+        (other_car.car, other_car.car_model, other_car.car_seats) = ("B-704-ALT".into(), "VITO".into(), 7);
+        let longer = row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:30");
+        merge_rows(&mut sheet, &[moved, other_car, longer], 0, "later");
+        recompute(&mut sheet, &Settings::default());
+
+        let popescu = sheet.drivers.iter().find(|d| d.id == 1).unwrap();
+        let (eco1, eco2) = (&popescu.trips[0], &popescu.trips[1]);
+        assert_eq!((eco1.id.as_str(), eco1.edit.departure), ("eco-1", parse_time("2026-10-05 06:00")), "the office's hour is kept");
+        assert_eq!(eco1.eff.departure, parse_time("2026-10-05 06:00"));
+        assert_eq!(eco1.departure, parse_time("2026-10-05 05:30").unwrap(), "while the API's side is up to date");
+        assert_eq!((eco2.car.as_str(), eco2.car_model.as_str(), eco2.car_seats), ("B-704-ALT", "VITO", 7), "a corrected car replaces the old one");
+        let ionescu = sheet.drivers.iter().find(|d| d.id == 2).unwrap();
+        assert_eq!(ionescu.trips[0].arrival, parse_time("2026-10-06 08:30"));
+        assert!(sheet.notices.iter().any(|n| n.starts_with("Din API: 2 curse corectate") && n.contains("eco-2") && n.contains("eco-3") && !n.contains("eco-1")), "{:?}", sheet.notices);
+        assert!(sheet.notices.iter().any(|n| n.starts_with("1 cursă modificată de tine are alte date în API") && n.contains("eco-1")), "{:?}", sheet.notices);
+
+        // The same answer again: nothing new, so the sheet is the same and both lines (the corrections, the office's trip) stay.
+        let again = vec![row(1, "Popescu Ion", "eco-1", "2026-10-05 05:30", "2026-10-05 08:30"), { let mut r = back(row(1, "Popescu Ion", "eco-2", "2026-10-05 10:00", "2026-10-05 13:00")); (r.car, r.car_model, r.car_seats) = ("B-704-ALT".into(), "VITO".into(), 7); r }, row(2, "Ionescu Vasile", "eco-3", "2026-10-06 05:00", "2026-10-06 08:30")];
+        let (before, notices) = (sheet.drivers.clone(), sheet.notices.clone());
+        merge_rows(&mut sheet, &again, 0, "even later");
+        assert_eq!(sheet.drivers.iter().map(|d| &d.trips).collect::<Vec<_>>(), before.iter().map(|d| &d.trips).collect::<Vec<_>>());
+        assert_eq!(sheet.notices, notices, "a refresh that finds nothing new says nothing new");
+        assert!(sheet.notices.iter().any(|n| n.starts_with("Din API: 2 curse corectate")), "{:?}", sheet.notices);
+        assert!(sheet.notices.iter().any(|n| n.starts_with("1 cursă modificată de tine are alte date în API") && n.contains("eco-1")), "{:?}", sheet.notices);
+
+        // A new disagreement replaces the old line instead of piling up.
+        let mut again_moved = again.clone();
+        again_moved[0].departure = parse_time("2026-10-05 05:45").unwrap();
+        merge_rows(&mut sheet, &again_moved, 0, "much later");
+        assert_eq!(sheet.notices.iter().filter(|n| n.contains("alte date în API")).count(), 1, "{:?}", sheet.notices);
+        assert!(sheet.notices.iter().any(|n| n.contains("05:45")), "{:?}", sheet.notices);
+    }
+
+    #[test]
+    fn an_empty_answer_takes_nothing_out_of_the_sheet() {
+        let mut sheet = first_download();
+        let before = sheet.drivers.clone();
+        merge_rows(&mut sheet, &[], 0, "hiccup");
+        assert_eq!(sheet.drivers, before);
+        assert!(sheet.notices.iter().any(|n| n.contains("n-am scos nimic")), "{:?}", sheet.notices);
     }
 
     #[test]
@@ -370,12 +512,12 @@ pub(super) mod tests {
             row(2, "Doar Context", "eco-40", "2026-10-30 05:00", "2026-10-30 08:00"),
         ];
         let sheet = super::super::apply_download(None, 2026, 11, &Parsed { rows, ..Default::default() }, "x", &Settings::default());
-        // Driver 1 drove a coach in September (outside the month): that does not make him category D. Driver 2 has no trip
-        // in November, so he is not in the sheet at all.
+        // Driver 1 drove a coach in September (outside the month): a category D trip is no neighbor for Categoria B, and it
+        // does not take him out of the sheet. Driver 2 has no trip in November, so he is not in the sheet at all.
         assert_eq!(sheet.drivers.len(), 1);
         let badea = &sheet.drivers[0];
         let ids = |trips: &[Trip]| trips.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
-        assert_eq!(ids(&badea.before), ["eco-1", "eco-30"]);
+        assert_eq!(ids(&badea.before), ["eco-30"]);
         assert_eq!(ids(&badea.after), ["eco-33"]);
         // The sheet's trips are those of November, and the drive that explains how he got to Otopeni on the 1st is there.
         assert_eq!(ids(&badea.trips), ["gen-pre-eco-31", "eco-31", "eco-32"]);
@@ -386,7 +528,7 @@ pub(super) mod tests {
         assert!(empty.notices.iter().any(|n| n.contains("nicio cursă")), "{:?}", empty.notices);
         let again = super::super::apply_download(Some(sheet.clone()), 2026, 11, &Parsed { rows: vec![], ..Default::default() }, "y", &Settings::default());
         assert_eq!(again.drivers[0].trips, sheet.drivers[0].trips, "generated trips are not 'gone from the API'");
-        assert!(again.notices.iter().all(|n| !n.contains("din foaie")), "{:?}", again.notices);
+        assert!(again.notices.iter().all(|n| !n.starts_with("Din API:")), "an empty answer corrects and removes nothing: {:?}", again.notices);
     }
 
     #[test]
@@ -440,17 +582,28 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_driver_the_api_forgets_stays() {
+    fn a_driver_the_api_forgets_leaves_unless_the_office_decided_something_about_him() {
         let mut sheet = first_download();
         sheet.drivers.iter_mut().find(|d| d.id == 2).unwrap().excluded_days.push(chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap());
         let rows = vec![row(1, "Popescu Ion", "eco-1", "2026-10-05 05:00", "2026-10-05 08:00")];
         merge_rows(&mut sheet, &rows, 0, "z");
         assert_eq!(sheet.drivers.len(), 2);
-        assert!(sheet.notices.iter().any(|n| n.contains("Ionescu Vasile") && n.contains("dar are modificări; l-am păstrat")));
-        // Without any change by the office he stays too, with a plainer notice.
+        assert!(sheet.drivers.iter().find(|d| d.id == 2).unwrap().trips.is_empty(), "his trip is gone from the API");
+        assert!(sheet.notices.iter().any(|n| n.contains("Ionescu Vasile: nu mai are curse în API") && n.contains("dar are modificări; l-am păstrat")), "{:?}", sheet.notices);
+        // Without any change by the office he leaves the list.
         sheet.drivers.iter_mut().find(|d| d.id == 2).unwrap().excluded_days.clear();
         merge_rows(&mut sheet, &rows, 0, "w");
-        assert_eq!(sheet.drivers.len(), 2);
-        assert!(sheet.notices.iter().any(|n| n.contains("Ionescu Vasile: nu mai apare în API; l-am păstrat")), "{:?}", sheet.notices);
+        assert_eq!(sheet.drivers.len(), 1);
+        assert!(sheet.notices.iter().any(|n| n.starts_with("Din API:") && n.contains("fără curse în lună: Ionescu Vasile")), "{:?}", sheet.notices);
+    }
+
+    #[test]
+    fn a_decision_about_a_pause_counts_only_while_both_trips_are_there() {
+        let mut sheet = first_download();
+        let popescu = sheet.drivers.iter_mut().find(|d| d.id == 1).unwrap();
+        popescu.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Stayed, ..Default::default() });
+        assert!(has_decisions(popescu));
+        popescu.trips.retain(|t| t.id != "eco-2");
+        assert!(!has_decisions(popescu), "the pause it was about is gone");
     }
 }

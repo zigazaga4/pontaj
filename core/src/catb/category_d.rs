@@ -1,25 +1,31 @@
-//! Category D drivers are not Categoria B: they work on the tachograph, so a download leaves them out.
+//! Trips on category D vehicles are not Categoria B: they are on the tachograph, so a download leaves them out.
 //!
-//! A driver counts as category D when he drove at least one category D vehicle in the month — judged by the make/model
-//! and the passenger seats the API gives for the car (see [`CatbSettings::is_d_vehicle`]). All of his trips leave, also
-//! those on small cars: a notice lists them so nothing disappears unseen.
+//! It is decided trip by trip, by the car the trip was driven with — its make/model and passenger seats as the API gives
+//! them (see [`CatbSettings::is_d_vehicle`]). A driver who drives both has his small-car trips in the sheet and only the
+//! category D ones leave; one whose trips of the month are all category D is not in the sheet at all. It is decided again
+//! by every download, so a trip whose car is corrected in the API comes back (or leaves) at the next one.
 
 use std::collections::BTreeMap;
 
 use super::api::ApiRow;
 use super::config::CatbSettings;
 
-/// A driver left out of the sheet.
+/// A driver with trips left out of the sheet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Excluded {
     pub id: i64,
     pub name: String,
-    /// Trips on category D vehicles / on small vehicles.
+    /// Trips on category D vehicles (left out) / on small vehicles (they stay in the sheet).
     pub d_trips: usize,
     pub small_trips: usize,
 }
 
-/// Splits the rows of a download: the rows of drivers who stay in Categoria B, and the drivers who leave.
+/// Is this trip on a category D vehicle (and the rule on)?
+fn is_d(row: &ApiRow, cfg: &CatbSettings) -> bool {
+    cfg.exclude_d_drivers && cfg.is_d_vehicle(&row.car_model, row.car_seats)
+}
+
+/// Splits the rows of a download: the rows that stay in Categoria B, and the drivers who have rows that leave.
 pub fn split(rows: &[ApiRow], cfg: &CatbSettings) -> (Vec<ApiRow>, Vec<Excluded>) {
     if !cfg.exclude_d_drivers {
         return (rows.to_vec(), Vec::new());
@@ -30,14 +36,14 @@ pub fn split(rows: &[ApiRow], cfg: &CatbSettings) -> (Vec<ApiRow>, Vec<Excluded>
         if entry.name.is_empty() {
             entry.name = row.driver_name.clone();
         }
-        if cfg.is_d_vehicle(&row.car_model, row.car_seats) {
+        if is_d(row, cfg) {
             entry.d_trips += 1;
         } else {
             entry.small_trips += 1;
         }
     }
     drivers.retain(|_, d| d.d_trips > 0);
-    let kept = rows.iter().filter(|r| !drivers.contains_key(&r.driver_id)).cloned().collect();
+    let kept = keep_small(rows, cfg);
     let mut excluded: Vec<Excluded> = drivers.into_values().collect();
     for driver in &mut excluded {
         if driver.name.is_empty() {
@@ -48,25 +54,33 @@ pub fn split(rows: &[ApiRow], cfg: &CatbSettings) -> (Vec<ApiRow>, Vec<Excluded>
     (kept, excluded)
 }
 
+/// The rows on small cars (also used for the days around the month: a coach trip says nothing about where a Categoria B
+/// driver was).
+pub fn keep_small(rows: &[ApiRow], cfg: &CatbSettings) -> Vec<ApiRow> {
+    rows.iter().filter(|row| !is_d(row, cfg)).cloned().collect()
+}
+
 fn trips_text(count: usize) -> String {
     if count == 1 { "1 cursă".into() } else { format!("{count} curse") }
 }
 
-/// The notices for the office: who left and why, and which of their trips on small cars are not counted here either.
+/// The notices for the office: which trips are on the tachograph, and who is not in the sheet at all because of it.
 pub fn notices(excluded: &[Excluded], cfg: &CatbSettings) -> Vec<String> {
     if excluded.is_empty() {
         return Vec::new();
     }
-    let names = excluded.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ");
-    let who = if excluded.len() == 1 { "1 șofer de categoria D nu intră".to_string() } else { format!("{} șoferi de categoria D nu intră", excluded.len()) };
+    let trips = excluded.iter().map(|d| d.d_trips).sum::<usize>();
+    let who = excluded.iter().map(|d| format!("{} ({})", d.name, trips_text(d.d_trips))).collect::<Vec<_>>().join(", ");
     let mut out = vec![format!(
-        "{who} în Categoria B (au condus mașini cu peste {} locuri sau de modelele {}): se pontează din tahograf. {names}.",
+        "{} cu mașini de categoria D (peste {} locuri sau de modelele {}) nu intră în Categoria B, se pontează din tahograf: {who}.",
+        trips_text(trips),
         cfg.small_vehicle_max_seats,
         cfg.d_models.join(", ")
     )];
-    let mixed: Vec<String> = excluded.iter().filter(|d| d.small_trips > 0).map(|d| format!("{} ({})", d.name, trips_text(d.small_trips))).collect();
-    if !mixed.is_empty() {
-        out.push(format!("Dintre ei, au condus și mașini mici (aceste curse nu intră nici în Categoria B, verifică-le la tahograf sau oprește excluderea din Setări): {}.", mixed.join(", ")));
+    let only: Vec<&str> = excluded.iter().filter(|d| d.small_trips == 0).map(|d| d.name.as_str()).collect();
+    if !only.is_empty() {
+        let lead = if only.len() == 1 { "1 șofer a condus în lună doar mașini de categoria D și nu apare în foaie".to_string() } else { format!("{} șoferi au condus în lună doar mașini de categoria D și nu apar în foaie", only.len()) };
+        out.push(format!("{lead}: {}.", only.join(", ")));
     }
     out
 }
@@ -111,42 +125,77 @@ mod tests {
         ]
     }
 
+    fn trip_ids(sheet: &super::super::model::Sheet, driver: i64) -> Vec<String> {
+        sheet.drivers.iter().find(|d| d.id == driver).map(|d| d.trips.iter().map(|t| t.id.clone()).collect()).unwrap_or_default()
+    }
+
+    fn download(previous: Option<super::super::model::Sheet>, rows: Vec<ApiRow>, settings: &Settings) -> super::super::model::Sheet {
+        super::super::apply_download(previous, 2026, 10, &super::super::api::Parsed { rows, ..Default::default() }, "x", settings)
+    }
+
     #[test]
-    fn a_driver_of_category_d_leaves_with_all_his_trips() {
+    fn only_the_trips_on_category_d_cars_leave() {
         let (kept, excluded) = split(&fleet(), &CatbSettings::default());
-        let ids: Vec<i64> = kept.iter().map(|r| r.driver_id).collect();
-        assert_eq!(ids, vec![1, 1, 4], "only the drivers of small cars (and the one the API says nothing about) stay");
+        let ids: Vec<&str> = kept.iter().map(|r| r.trip_id.as_str()).collect();
+        assert_eq!(ids, ["eco-1", "eco-2", "eco-6", "eco-7", "eco-8"], "the small-car trips of everybody stay, also those of a mixed driver");
         let names: Vec<&str> = excluded.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["Amestecat Gabriel", "Mare Vasile"], "sorted by name");
         let mixed = excluded.iter().find(|d| d.id == 3).unwrap();
         assert_eq!((mixed.d_trips, mixed.small_trips), (1, 2));
+        let only_d = excluded.iter().find(|d| d.id == 2).unwrap();
+        assert_eq!((only_d.d_trips, only_d.small_trips), (2, 0));
     }
 
     #[test]
-    fn a_download_leaves_the_d_drivers_out_of_the_sheet_and_says_so() {
-        let parsed = super::super::api::Parsed { rows: fleet(), ..Default::default() };
-        let sheet = super::super::apply_download(None, 2026, 10, &parsed, "17.11.2026 10:00", &Settings::default());
+    fn a_download_keeps_the_small_car_trips_of_a_mixed_driver_and_drops_one_who_drove_only_d() {
+        let sheet = download(None, fleet(), &Settings::default());
         let names: Vec<&str> = sheet.drivers.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, vec!["Fără Detalii", "Mic Ion"]);
+        assert_eq!(names, vec!["Amestecat Gabriel", "Fără Detalii", "Mic Ion"], "Mare Vasile drove only category D cars this month");
+        assert_eq!(trip_ids(&sheet, 3), ["eco-6", "eco-7"]);
         assert_eq!(sheet.notices.len(), 2, "{:?}", sheet.notices);
-        assert!(sheet.notices[0].contains("2 șoferi de categoria D"), "{:?}", sheet.notices);
+        assert!(sheet.notices[0].starts_with("3 curse cu mașini de categoria D") && sheet.notices[0].contains("Amestecat Gabriel (1 cursă)") && sheet.notices[0].contains("Mare Vasile (2 curse)"), "{:?}", sheet.notices);
+        assert!(sheet.notices[1].starts_with("1 șofer a condus în lună doar mașini de categoria D") && sheet.notices[1].contains("Mare Vasile"), "{:?}", sheet.notices);
     }
 
     #[test]
-    fn a_d_driver_the_office_already_changed_stays_with_a_clear_notice() {
-        // First download with the exclusion off (as before this feature): everybody is in the sheet.
-        let off = Settings { catb: CatbSettings { exclude_d_drivers: false, ..CatbSettings::default() }, ..Settings::default() };
-        let parsed = super::super::api::Parsed { rows: fleet(), ..Default::default() };
-        let mut sheet = super::super::apply_download(None, 2026, 10, &parsed, "1", &off);
-        assert_eq!(sheet.drivers.len(), 4);
-        sheet.drivers.iter_mut().find(|d| d.id == 2).unwrap().excluded_days.push(chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap());
+    fn a_trip_whose_car_is_corrected_in_the_api_comes_back_and_one_that_becomes_d_leaves() {
+        let mut sheet = download(None, fleet(), &Settings::default());
+        assert_eq!(trip_ids(&sheet, 3), ["eco-6", "eco-7"]);
+        // Somebody in the other application put the Sprinter by mistake: eco-5 is really on a Vito (it comes back), eco-4 of
+        // the driver who had only D cars too (he is back in the list), and eco-6 was moved to a Sprinter (it leaves).
+        let mut corrected = fleet();
+        for row in &mut corrected {
+            match row.trip_id.as_str() {
+                "eco-5" | "eco-4" => (row.car_model, row.car_seats) = ("VITO".into(), 8),
+                "eco-6" => (row.car_model, row.car_seats) = ("SPRINTER".into(), 20),
+                _ => {}
+            }
+        }
+        sheet = download(Some(sheet), corrected.clone(), &Settings::default());
+        assert_eq!(trip_ids(&sheet, 3), ["eco-5", "eco-7"].map(String::from), "{:?}", trip_ids(&sheet, 3));
+        assert_eq!(trip_ids(&sheet, 2), ["eco-4"], "Mare Vasile has a small-car trip now, so he is in the list again");
 
-        // Download again with the exclusion on: Mare Vasile (D) leaves, except that he has a change by the office.
-        let sheet = super::super::apply_download(Some(sheet), 2026, 10, &parsed, "2", &Settings::default());
+        // A trip the office changed stays even if its car becomes D: what the office did is never taken away.
+        sheet.drivers.iter_mut().find(|d| d.id == 3).unwrap().trips.iter_mut().find(|t| t.id == "eco-7").unwrap().edit.price = Some(100.0);
+        for row in &mut corrected {
+            if row.trip_id == "eco-7" {
+                (row.car_model, row.car_seats) = ("SPRINTER".into(), 20);
+            }
+        }
+        sheet = download(Some(sheet), corrected, &Settings::default());
+        assert_eq!(trip_ids(&sheet, 3), ["eco-5", "eco-7"].map(String::from));
+        assert!(sheet.notices.iter().any(|n| n.contains("modificată de tine") && n.contains("eco-7")), "{:?}", sheet.notices);
+    }
+
+    #[test]
+    fn a_driver_whose_only_trips_become_d_leaves_the_list_unless_the_office_changed_something() {
+        let mut sheet = download(None, vec![row(5, "Schimbat Dan", "eco-1", "VITO", 8), row(6, "Ținut Radu", "eco-2", "VITO", 8)], &Settings::default());
+        sheet.drivers.iter_mut().find(|d| d.id == 6).unwrap().excluded_days.push(chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap());
+        let now_d = vec![row(5, "Schimbat Dan", "eco-1", "SPRINTER", 20), row(6, "Ținut Radu", "eco-2", "SPRINTER", 20)];
+        sheet = download(Some(sheet), now_d, &Settings::default());
         let names: Vec<&str> = sheet.drivers.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, vec!["Fără Detalii", "Mare Vasile", "Mic Ion"], "Amestecat Gabriel had no changes, so he is gone");
-        assert!(sheet.notices.iter().any(|n| n == "Mare Vasile: e de categoria D (nu intră în Categoria B), dar ai modificări la el; l-am păstrat."), "{:?}", sheet.notices);
-        assert!(sheet.notices.iter().all(|n| !n.contains("nu mai apare în API")), "{:?}", sheet.notices);
+        assert_eq!(names, ["Ținut Radu"], "the one with a day taken out by the office stays, with his notice");
+        assert!(sheet.notices.iter().any(|n| n.starts_with("Ținut Radu:") && n.contains("l-am păstrat")), "{:?}", sheet.notices);
     }
 
     #[test]
@@ -158,18 +207,17 @@ mod tests {
     }
 
     #[test]
-    fn the_notices_name_everybody_and_the_small_trips_that_go_with_them() {
+    fn the_notices_count_the_trips_per_driver_and_name_those_who_are_not_in_the_sheet() {
         let cfg = CatbSettings::default();
         let (_, excluded) = split(&fleet(), &cfg);
         let text = notices(&excluded, &cfg);
         assert_eq!(text.len(), 2);
-        assert!(text[0].starts_with("2 șoferi de categoria D nu intră în Categoria B"), "{}", text[0]);
-        assert!(text[0].contains("Mare Vasile") && text[0].contains("peste 8 locuri") && text[0].contains("Tourismo"), "{}", text[0]);
-        assert!(text[1].contains("Amestecat Gabriel (2 curse)") && !text[1].contains("Mare Vasile"), "{}", text[1]);
-        // One driver, none with small trips: a single notice, in the singular.
-        let one = vec![excluded[1].clone()];
-        let single = notices(&one, &cfg);
-        assert_eq!(single.len(), 1);
-        assert!(single[0].starts_with("1 șofer de categoria D nu intră"), "{}", single[0]);
+        assert!(text[0].starts_with("3 curse cu mașini de categoria D"), "{}", text[0]);
+        assert!(text[0].contains("peste 8 locuri") && text[0].contains("Tourismo") && text[0].contains("Amestecat Gabriel (1 cursă)") && text[0].contains("Mare Vasile (2 curse)"), "{}", text[0]);
+        assert_eq!(text[1], "1 șofer a condus în lună doar mașini de categoria D și nu apare în foaie: Mare Vasile.");
+        // Only a mixed driver: a single notice.
+        let mixed = vec![excluded[0].clone()];
+        assert_eq!(notices(&mixed, &cfg).len(), 1);
+        assert!(notices(&[], &cfg).is_empty());
     }
 }
