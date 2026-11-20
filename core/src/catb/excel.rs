@@ -208,7 +208,9 @@ fn driver_remarks(driver: &Driver) -> Vec<(Option<NaiveDate>, &Alert)> {
 }
 
 /// Remark codes in the order the short summary lists them, with their singular and plural.
-const PIECES: [(&str, &str, &str); 6] = [
+const PIECES: [(&str, &str, &str); 8] = [
+    ("week_hours", "săptămână peste limita de ore", "săptămâni peste limita de ore"),
+    ("week_rest", "săptămână fără zilele libere cerute", "săptămâni fără zilele libere cerute"),
     ("station_long", "staționare lungă", "staționări lungi"),
     ("long_day", "zi peste norma zilnică", "zile peste norma zilnică"),
     ("place_differs", "loc diferit între curse", "locuri diferite între curse"),
@@ -856,6 +858,8 @@ fn detail(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, all_lines: &[V
 fn remark_label(code: &str) -> &'static str {
     match code {
         "over_cap" => "Peste plafon",
+        "week_hours" => "Săptămână peste limita de ore",
+        "week_rest" => "Săptămână fără zilele libere cerute",
         "station_long" => "Staționare lungă",
         "long_day" => "Zi peste norma zilnică",
         "place_differs" => "Loc diferit între curse",
@@ -1114,6 +1118,36 @@ mod tests {
         write_xlsx(&sheet, &Settings::default(), &path).unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() > 3000);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_weekly_checks_reach_the_summary_and_the_warnings_sheet() {
+        // A driver with there and back (2 × 3 h) on each of the first 7 days of the month: no free day in the week and 42 h on
+        // trips.
+        let rows: Vec<String> = (1..=7)
+            .flat_map(|day| {
+                [("a", "Constanta", "Aeroport Otopeni Bucuresti", "05:00"), ("b", "Aeroport Otopeni Bucuresti", "Constanta", "10:00")].map(|(part, from, to, at)| {
+                    format!(r#"{{"driver_id":9,"driver_name":"Weekend Ion","trip":{{"type":"eco","id":"eco-{day}{part}"}},"route":{{"from":"{from}","to":"{to}"}},"departure":"2026-10-{day:02} {at}","duration_minutes":180}}"#)
+                })
+            })
+            .collect();
+        let body = format!(r#"{{"data":[{}]}}"#, rows.join(","));
+        let sheet = apply_download(None, 2026, 10, &parse_rows(&body).unwrap(), "x", &Settings::default());
+        let driver = &sheet.drivers[0];
+        let summary = warning_summary(driver);
+        assert!(summary.contains("1 săptămână peste limita de ore") && summary.contains("1 săptămână fără zilele libere cerute"), "{summary}");
+        let remarks = remark_rows(&sheet, &Settings::default());
+        let labels: Vec<&str> = remarks.iter().map(|r| r.label).collect();
+        assert!(labels.contains(&"Săptămână peste limita de ore") && labels.contains(&"Săptămână fără zilele libere cerute"), "{labels:?}");
+
+        // Making two of the days free (taken out of the pontaj) fixes both: two free days, and 30 h on trips.
+        let mut freed = sheet.clone();
+        freed.drivers[0].excluded_days.push(NaiveDate::from_ymd_opt(2026, 10, 3).unwrap());
+        freed.drivers[0].excluded_days.push(NaiveDate::from_ymd_opt(2026, 10, 4).unwrap());
+        super::super::compute::recompute(&mut freed, &Settings::default());
+        let summary = warning_summary(&freed.drivers[0]);
+        assert!(!summary.contains("săptămână"), "{summary}");
+        assert!(summary.contains("2 zile scoase din pontaj"), "{summary}");
     }
 
     #[test]

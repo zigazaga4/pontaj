@@ -29,6 +29,9 @@ const urgent = (driver) => worryingAlerts(driver).filter((alert) => alert.level 
 
 const untariffed = (driver) => driver.trips.filter((t) => !t.edit.removed && t.eff.priceNote === "fără tarif").length;
 
+/** Weeks of 7 days that pass the limit of hours on trips or lack the free days (see the weeks panel of the driver). */
+const weeksToCheck = (driver) => (driver.weeks ?? []).filter((w) => w.tooLong || w.fewFree).length;
+
 /**
  * @param {{ getSettings: () => object, saveSettings: (settings: object) => Promise<void> }} host
  * Returns the functions the page needs: show/hide the mode, download, export, react to changed settings.
@@ -166,6 +169,8 @@ export function createCatb({ getSettings, saveSettings }) {
     const sum = (pick) => drivers.reduce((acc, d) => acc + pick(d), 0);
     const over = drivers.filter((d) => d.totals.overMin > 0).length;
     const noTariff = sum(untariffed);
+    const weekIssues = sum(weeksToCheck);
+    const limits = getSettings().catb ?? {};
     box.replaceChildren(
       h("div", { class: "title" }, h("h2", {}, `${MONTHS[sheet.month - 1]} ${sheet.year}`), h("span", {}, "Categoria B · curse din API")),
       chip("Șoferi", drivers.length),
@@ -175,6 +180,11 @@ export function createCatb({ getSettings, saveSettings }) {
       }),
       chip("Staționare (nu intră în total)", duration(sum((d) => d.totals.stationMin)), { title: "Așteptarea dintre curse: se arată doar ca informație și se plătește după regula ei, dar nu intră în orele de lucru." }),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),
+      chip("Săptămâni de verificat", weekIssues, {
+        tone: weekIssues ? "warn" : "",
+        title: `Săptămâni de 7 zile (de la începutul lunii) cu peste ${duration(limits.weekMaxActiveMin ?? 2400)} ore active pe cursă sau cu mai puțin de ${limits.weekMinFreeDays ?? 2} zile libere. Click: arată doar șoferii care au ceva de verificat`,
+        onclick: toggleIssues,
+      }),
       chip("Curse fără tarif", noTariff, { tone: noTariff ? "bad" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
       chip("Estimare plată", `~${lei(sum((d) => d.totals.payTotal))} lei`, { title: "Orientativ" }));
   }

@@ -25,7 +25,7 @@ use chrono::{Datelike, NaiveDate};
 
 use super::config::CatbSettings;
 use super::model::*;
-use super::{cap, hidden, places, tariffs, transfers};
+use super::{cap, hidden, places, tariffs, transfers, weeks};
 use crate::calendar;
 use crate::settings::Settings;
 use crate::time::{fmt_duration, round_hours};
@@ -66,6 +66,7 @@ pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &S
     super::pontaj::mark_day_edges(driver);
     let cap_min = monthly_cap_min(year, month, settings);
     driver.totals = totals(&driver.days, cap_min);
+    driver.weeks = weeks::build(driver, year, month, cfg);
     driver.alerts = driver_alerts(driver, cap_min);
     driver.proposals = cap::propose(driver, cap_min);
 }
@@ -207,18 +208,16 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
 /// The days of the month on which the driver has no trip at all (a trip that runs past midnight takes both days; a
 /// removed trip takes none): the days the office can mark as leave.
 fn free_days(trips: &[Trip], year: i32, month: u32) -> Vec<NaiveDate> {
-    let mut busy: BTreeSet<NaiveDate> = BTreeSet::new();
-    for trip in trips.iter().filter(|t| !t.edit.removed) {
-        let Some(from) = trip.eff.departure else { continue };
-        let to = trip.eff.arrival.filter(|arrival| *arrival >= from).unwrap_or(from);
-        let mut day = from.date();
-        while day <= to.date() {
-            busy.insert(day);
-            let Some(next) = day.succ_opt() else { break };
-            day = next;
-        }
-    }
+    let busy: BTreeSet<NaiveDate> = trips.iter().filter(|t| !t.edit.removed).flat_map(trip_days).collect();
     (1..=calendar::days_in_month(year, month)).filter_map(|d| NaiveDate::from_ymd_opt(year, month, d)).filter(|day| !busy.contains(day)).collect()
+}
+
+/// The calendar days a trip takes, from its departure to its arrival (a trip that runs past midnight takes both days; one
+/// with no known arrival takes the day it leaves).
+pub(super) fn trip_days(trip: &Trip) -> Vec<NaiveDate> {
+    let Some(from) = trip.eff.departure else { return Vec::new() };
+    let to = trip.eff.arrival.filter(|arrival| *arrival >= from).unwrap_or(from);
+    from.date().iter_days().take_while(|day| *day <= to.date()).collect()
 }
 
 /// Months saved by 0.3.11–0.3.12 chose a leave for a whole pause: it becomes a leave on each free working day of that pause.
@@ -484,6 +483,7 @@ fn driver_alerts(driver: &Driver, cap_min: i32) -> Vec<Alert> {
     if !blocked.is_empty() {
         alerts.push(Alert::new("leave_blocked", Level::Warn, format!("Ai ales concediu pe {}, dar în {} există acum o cursă, deci concediul nu se numără. Scoate concediul sau cursa.", blocked.join(", "), if blocked.len() == 1 { "ziua aceea" } else { "zilele acelea" })));
     }
+    alerts.extend(weeks::alerts(&driver.weeks));
     alerts
 }
 

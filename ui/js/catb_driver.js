@@ -4,6 +4,7 @@
 import { h } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { boundInput } from "./table.js";
+import { weeksPanel } from "./catb_weeks.js";
 import { duration, formatWhen, hhmm, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, spanText, weekdayName } from "./time.js";
 
 export const KIND_LABELS = { eco: "Eco", private: "Privată", vip: "VIP", bus: "Autocar", passenger: "Pasager", transfer: "Deplasare" };
@@ -616,6 +617,7 @@ export function renderCatbDriver(container, ctx) {
       t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,
       chip("Estimare plată", `~${lei(t.payTotal)} lei`, { title: `Curse ${lei(t.payLegs)} · exterioare ${lei(t.payExterior)} · staționare ${lei(t.payStation)}. Orientativ.` })),
     driver.alerts.length ? alertList(driver.alerts) : null,
+    weeksPanel(driver, { info: (date) => dayInfo(sheet, date), onToggle: (date) => edit((d) => toggleDay(d, date)) }),
     proposals);
 
   // A trip sits under the day it leaves (the Excel may count it on another day: see `sameShiftNote`).

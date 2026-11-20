@@ -316,6 +316,54 @@ pub struct Proposal {
     pub text: String,
 }
 
+/// What a day of a week is for the weekly checks, as the pontaj shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WeekDayState {
+    /// No work in the pontaj (a leave day is one of these).
+    #[default]
+    Free,
+    /// Has hours in the pontaj: the office can turn it into a free day (take it out of the pontaj).
+    Worked,
+    /// Only an excursion, which is on the tachograph: the driver worked, but the day has no hours here to take out.
+    Tachograph,
+    /// Had work, and the office took the day out of the pontaj: it is free now (and can be put back).
+    Out,
+}
+
+/// One day of a [`Week`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WeekDay {
+    pub date: Option<NaiveDate>,
+    pub state: WeekDayState,
+    /// Time on trips that day (0 unless [`WeekDayState::Worked`] or [`WeekDayState::Out`]).
+    pub trip_min: i32,
+    /// The leave the office chose for a free day (code), if any.
+    pub leave: Option<String>,
+}
+
+/// Seven days counted from the 1st of the month (the last one of the month may be shorter): the unit of the two weekly
+/// checks, see [`super::weeks`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Week {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub days: Vec<WeekDay>,
+    /// Time on trips in the week, days taken out of the pontaj left out.
+    pub active_min: i32,
+    /// Days without work (free, or taken out of the pontaj).
+    pub free_count: i32,
+    /// All seven days (the free-day check only applies to those).
+    pub full: bool,
+    /// The limits the week was checked against (0 = that check is off).
+    pub limit_active_min: i32,
+    pub need_free_days: i32,
+    pub too_long: bool,
+    pub few_free: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Driver {
@@ -341,6 +389,8 @@ pub struct Driver {
     pub free_days: Vec<NaiveDate>,
     pub pauses: Vec<Pause>,
     pub days: Vec<DayRow>,
+    /// The weekly checks (time on trips, days without work), one per block of 7 days.
+    pub weeks: Vec<Week>,
     pub totals: Totals,
     pub alerts: Vec<Alert>,
     pub proposals: Vec<Proposal>,

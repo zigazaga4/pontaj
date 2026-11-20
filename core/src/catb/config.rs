@@ -45,6 +45,11 @@ pub struct CatbSettings {
     pub fill_day: bool,
     /// What each regular trip adds to its day, in minutes: a day with one trip of 3 h comes to 4 h, one with two trips to 8 h.
     pub fill_per_trip_min: i32,
+    /// The most time a driver may be active on trips in one week (a block of 7 days counted from the 1st of the month), in
+    /// minutes: more than this is a warning. 0 = no check.
+    pub week_max_active_min: i32,
+    /// The least days without work a full week (7 days from the 1st of the month) must have: fewer is a warning. 0 = no check.
+    pub week_min_free_days: i32,
     /// Amounts in the Excel file. Off: the file has hours and warnings only.
     pub show_money: bool,
     /// A driver who drove a category D vehicle is not Categoria B: he is on the tachograph. On: such drivers are left
@@ -81,6 +86,8 @@ impl Default for CatbSettings {
             transfer_min: 180,
             fill_day: true,
             fill_per_trip_min: 60,
+            week_max_active_min: 40 * 60,
+            week_min_free_days: 2,
             show_money: true,
             exclude_d_drivers: true,
             small_vehicle_max_seats: 8,
