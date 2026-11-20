@@ -79,6 +79,9 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
 .warnings { background: #fff7e6; border: 1px solid #f5d38a; border-radius: var(--radius); padding: 8px 14px; max-height: 90px; overflow: auto; }
 .warnings ul { margin: 4px 0 0; padding-left: 18px; }
+.warnings summary { cursor: pointer; }
+#catb-notices { max-height: none; }
+#catb-notices ul { max-height: 24vh; overflow: auto; }
 
 /* ---------- Grid ---------- */
 .grid-wrap { flex: 1; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
@@ -268,6 +271,13 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 #catb { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px 20px; overflow: hidden; }
 #catb .split { min-height: 0; }
 .catb-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* The page above the driver view stays slim, so the days get the room. */
+#catb .summary { gap: 8px; }
+#catb .summary .title h2 { font-size: 18px; }
+#catb .summary .title span { display: none; }
+#catb .summary .chip { min-width: 0; padding: 3px 10px; }
+#catb .summary .chip b { font-size: 15px; }
+#catb .catb-bar .btn { padding: 6px 12px; }
 .bar-field { display: flex; align-items: center; gap: 6px; color: var(--muted); font-weight: 600; }
 .bar-field select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; font: inherit; background: #fff; color: var(--text); text-transform: capitalize; }
 .chip.bad { border-color: #f0b4b4; background: #fdeeee; }
@@ -300,20 +310,39 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .flag.bad { color: var(--danger); font-weight: 700; }
 .flag.warn { color: #b45309; font-weight: 600; }
 
-.driver-head { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
-.driver-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.driver-title h3 { font-size: 16px; }
+/* The whole driver view is ONE scroll area (#catb-view): a bar with his name and the figures that matter stays on top, and
+   everything else (facts, checks, days) scrolls under it. */
+#catb-view { display: block; overflow-y: auto; overflow-anchor: none; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+#catb-view > .empty-note { border: 0; }
+.driver-sticky { position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: 0 2px 8px rgba(20, 30, 60, .07); }
+.driver-bar { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; padding: 8px 14px; }
+.driver-bar h3 { font-size: 16px; margin-right: auto; }
+.bar-figures { display: flex; gap: 8px; flex-wrap: wrap; }
+.bar-figures .chip { min-width: 0; padding: 3px 10px; display: flex; align-items: baseline; gap: 6px; }
+.bar-figures .chip small { display: inline; }
+.bar-figures .chip b { font-size: 14px; }
+.driver-body { padding: 10px 14px 28px; display: flex; flex-direction: column; gap: 10px; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
-.chips .chip { min-width: 84px; padding: 4px 12px; }
-.chips .chip b { font-size: 15px; }
-.alerts { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.driver-facts .chip { min-width: 0; padding: 3px 10px; }
+.driver-facts .chip b { font-size: 14px; }
+.alerts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .alert { padding: 4px 9px; border-radius: 6px; font-size: 12px; background: #f1f3f8; color: #414a5e; text-align: left; white-space: normal; }
 .alert.level-warn { background: #fff4d6; color: #7a4a05; }
 .alert.level-alert { background: #fde2e2; color: #8e1b1b; font-weight: 600; }
-.weeks { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: #fafbfd; }
-.weeks.flagged { border-color: #f5d38a; background: #fffaf0; }
-.weeks > summary { cursor: pointer; }
-.weeks-body { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; max-height: 30vh; overflow: auto; }
+/* One collapsible panel for everything that asks for a look: remarks, weeks, suggestions. */
+.review { border: 1px solid var(--border); border-radius: 8px; background: #fafbfd; }
+.review.warn { border-color: #f5d38a; background: #fffaf0; }
+.review.red { border-color: #f0b4b4; background: #fff8f8; }
+.review > summary { cursor: pointer; padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; list-style: none; }
+.review > summary::-webkit-details-marker { display: none; }
+.review > summary::before { content: "▸"; color: var(--muted); width: 10px; }
+.review[open] > summary::before { content: "▾"; }
+.review-counts { display: flex; flex-wrap: wrap; font-weight: 600; color: #b45309; }
+.review.red .review-counts { color: var(--danger); }
+.review-counts span + span::before { content: "·"; margin: 0 8px; color: var(--muted); }
+.review-body { display: flex; flex-direction: column; gap: 12px; padding: 2px 12px 12px; }
+.weeks-body { display: flex; flex-direction: column; gap: 5px; }
+.weeks-title { margin: 0 0 2px; font-size: 12px; }
 .week { display: flex; gap: 12px; align-items: center; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
 .week.bad { border-color: #f5d38a; box-shadow: inset 3px 0 0 #e0a030; }
 .week-head { display: flex; flex-direction: column; gap: 1px; width: 196px; flex: none; white-space: nowrap; }
@@ -336,54 +365,64 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .proposals ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
 .proposals li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
-.catb-table { min-width: 940px; }
-.catb-table th, .catb-table td { vertical-align: middle; }
-.catb-table td.left, .catb-table td.places { text-align: left; }
-.catb-table td.money { min-width: 56px; }
-.catb-table td.kind { text-align: left; min-width: 96px; }
-.catb-table td.actions { text-align: right; min-width: 90px; }
-.catb-table .car { margin-left: 6px; }
-.catb-table .cellin.place { width: 178px; text-align: left; padding-left: 5px; font-size: 12px; }
-.catb-table .cellin.clock { width: 54px; }
-.catb-table .cellin.price { width: 56px; font-weight: 700; }
-.catb-table .cellin.warn { background: #fde2e2; color: var(--danger); }
-.day-gap td { height: 18px; padding: 0; background: var(--bg); border: 0; }
-.day-head td { background: #dfe7f6; text-align: left; padding: 8px 12px; border-top: 2px solid #b9c6e0; }
-.day-head.off td { background: #e1e4ea; border-top-color: #c3c8d3; }
-.day-head.holiday td { background: var(--holiday); border-top-color: #efc3a5; }
-.day-line { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-.day-title { display: flex; align-items: baseline; gap: 10px; min-width: 190px; }
-.day-title b { font-size: 16px; text-transform: capitalize; }
+/* Days: a card per day. Every trip and pause is a row of the same grid, so the columns line up from the first day to the last
+   (the captions in the sticky bar use the same grid; their side padding = driver-body 14 + card border 1 + row 10). */
+.days { display: flex; flex-direction: column; gap: 12px; }
+.day { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.day-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 18px; padding: 8px 12px; background: #e6ecf7; border-bottom: 1px solid #cfd8ea; }
+.day.off > .day-head { background: #e8eaef; border-bottom-color: #d3d7e0; }
+.day.holiday > .day-head { background: var(--holiday); border-bottom-color: #efc3a5; }
+.day-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.day-title b { font-size: 15px; text-transform: capitalize; }
 .day-date { font-size: 14px; color: var(--muted); font-weight: 600; }
-.day-stats { display: flex; align-items: flex-end; gap: 18px; margin-right: auto; }
-.day-stat { display: flex; flex-direction: column; line-height: 1.15; }
-.day-stat b { font-size: 14px; }
-.day-stat small { color: var(--muted); font-size: 10.5px; }
-.day-stat.total b { font-size: 16px; color: var(--accent-dark); }
+.day-stats { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 16px; margin-left: auto; }
+.day-stat small { color: var(--muted); font-size: 11px; margin-right: 5px; }
+.day-stat b { font-size: 13px; }
+.day-stat.total b { font-size: 15px; color: var(--accent-dark); }
 .day-stat.muted b { font-weight: 500; color: var(--muted); }
+.day-alerts { padding: 6px 12px 0; }
+.day-rows > * + * { border-top: 1px solid var(--border); }
+.col-head, .row { display: grid; grid-template-columns: 80px 136px 136px minmax(120px, 1fr) minmax(120px, 1fr) 54px 48px 76px; column-gap: 8px; align-items: center; }
+.row.col-head { padding: 5px 25px; font-size: 11.5px; font-weight: 700; color: var(--muted); background: #f3f6fb; border-top: 1px solid var(--border); }
+.row { padding: 4px 10px; }
+.c-kind, .c-place { text-align: left; min-width: 0; }
+.col-head .c-time, .row .c-time { text-align: center; min-width: 0; }
+.c-num { text-align: right; font-variant-numeric: tabular-nums; }
+.c-act { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+.c-place .cellin { width: 100%; text-align: left; padding-left: 5px; font-size: 12px; }
+.c-time .cellin.clock { width: 54px; }
+.row .cellin.price { width: 100%; font-weight: 700; }
+.row .cellin.warn { background: #fde2e2; color: var(--danger); }
+.trip-notes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 0 0 2px 88px; }
+.trip-notes .moved-note { display: inline; }
+.trip-notes .move-ctl { margin-top: 0; }
 /* A departure / arrival that carries time added to the day: the time that counts, and under it what it was and how much was added. */
 .timed { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
 .timed .counted { font-size: 14px; color: var(--accent-dark); }
 .timed .was { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 10px; font-weight: 600; }
 .timed .was .cellin { font-size: 11px; }
-.catb-table .timed .was .cellin.clock { width: 44px; padding: 1px 3px; }
-.catb-table .timed .cellin.fill-input { width: 40px; padding: 1px 3px; text-align: center; }
+.timed .was .cellin.clock { width: 42px; padding: 1px 3px; }
+.timed .cellin.fill-input { width: 38px; padding: 1px 3px; text-align: center; }
 .timed .add-time { position: static; opacity: .3; font-size: 12px; line-height: 1; padding: 0 3px; }
 .trip-row:hover .timed .add-time, .timed .add-time:focus { opacity: 1; }
 .timed:not(.has-added) { flex-direction: row; }
-.day-excluded td { opacity: .5; }
-.day-excluded td .btn { opacity: 1; }
-.trip-row.removed td:not(.actions) { text-decoration: line-through; opacity: .55; }
-.trip-row.edited td:first-child { box-shadow: inset 3px 0 0 var(--manual); }
-.trip-row.generated td { background: #f2f9fb; }
-.trip-row.excursion td { background: #f1f1f4; color: var(--muted); }
-.trip-row.excursion td input { color: var(--muted); }
+.day.excluded .day-rows { opacity: .5; }
+.trip-row.removed > :not(.c-act):not(.trip-notes) { text-decoration: line-through; opacity: .55; }
+.trip-row.edited { box-shadow: inset 3px 0 0 var(--manual); }
+.trip-row.generated { background: #f2f9fb; }
+.trip-row.excursion { background: #f1f1f4; color: var(--muted); }
+.trip-row.excursion input { color: var(--muted); }
 .pill.excursion { background: #e6e8ef; color: #4b5266; }
-.pause-row td { background: #fbfaf3; }
-.pause-row.rest td, .pause-row.quiet td { background: #fafbfd; color: var(--muted); }
-.pause-row.overlap td { background: #fde9e9; }
-.alert-row td { border-bottom: 1px solid var(--border); padding-top: 0; }
-.alert-row .alerts { margin-bottom: 4px; }
+.pause { background: #fbfaf3; }
+.pause.rest, .pause.quiet { background: #fafbfd; color: var(--muted); }
+.pause.overlap { background: #fde9e9; }
+.pause-line .pause-what { grid-column: 2 / 6; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; text-align: left; min-width: 0; }
+.pause-detail { padding: 0 10px 6px 98px; }
+/* The row being worked on (see anchor.js): marked like with a highlighter, and a flash when the view had to scroll to it. */
+.row.working, .pause.working { background: #fffbe0; box-shadow: inset 3px 0 0 #e0a030; }
+.day.working > .day-head { box-shadow: inset 3px 0 0 #e0a030; }
+.row.working.jumped, .pause.working.jumped { animation: work-flash 1.6s ease-out; }
+@keyframes work-flash { from { background: #ffe58a; } to { background: #fffbe0; } }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px; font-weight: 700; background: #e8eefc; color: #1e3a8a; }
 .badge.private, .badge.vip { background: #efe3fb; color: #5b21b6; }
 .badge.bus { background: #dcf3e2; color: #166534; }
@@ -395,13 +434,13 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .badge.pause { background: #ececf2; color: #52586a; }
 .badge.pause.normal { background: #f6ebc9; color: #6b4e00; }
 .badge.pause.overlap { background: #fbd0d0; color: #8e1b1b; }
-.catb-table td.pause-what, .catb-table td.pause-cell { text-align: left; }
-.pause-what > * { margin-right: 12px; }
 .pause-span { font-weight: 600; }
-.leave-run td { background: #f1f7f2; text-align: left; padding: 8px 12px; border-top: 2px solid #c5dccb; }
+.pause-line .btn.ghost { border-color: transparent; color: var(--muted); }
+.pause-line:hover .btn.ghost, .pause-line .btn.ghost:focus-visible { border-color: var(--border); color: var(--text); }
+.leave-run > .day-head { background: #e3f0e6; border-bottom-color: #c5dccb; }
 .leave-run .day-title b { font-size: 14px; text-transform: none; }
 .leave-run .ctl.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
-.leave-days { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.leave-days { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px; background: #f6faf7; }
 .leave-day { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: #fff; min-width: 178px; }
 .leave-day b { font-size: 12px; text-transform: capitalize; }
 .leave-day.off { background: #eef0f4; }
@@ -410,11 +449,6 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .leave-day.excluded { opacity: .6; }
 .leave-select { padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12.5px; color: var(--text); background: #fff; }
 .leave-select.manual { border-color: var(--manual); color: var(--manual); font-weight: 600; }
-.pause-row.with-controls td { border-bottom: 0; }
-.pause-ctl-row td { padding-top: 0; }
-.pause-ctl-row.overlap td { background: #fde9e9; }
-.pause-ctl-row.normal td { background: #fbfaf3; }
-.pause-ctl-row.rest td, .pause-ctl-row.quiet td { background: #fafbfd; }
 .pause-ctl { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .pause-fields { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
 .pause-ctl .ctl { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 11px; font-weight: 600; }

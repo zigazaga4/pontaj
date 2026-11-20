@@ -42,24 +42,18 @@ function weekBlock(week, ctx) {
   return h("div", { class: `week ${bad ? "bad" : ""} ${expanded ? "" : "compact"}` }, head, expanded ? h("div", { class: "week-days" }, week.days.map((day) => dayCard(day, ctx))) : null);
 }
 
-/** Panels the office opened or closed by hand (driver id → open), so a redraw after an edit does not undo it. */
-const chosen = new Map();
+/** How many weeks of `driver` ask for a look (over the hours, or short of free days). */
+export const flaggedWeeks = (driver) => (driver.weeks ?? []).filter((w) => w.tooLong || w.fewFree).length;
 
 /**
- * The weeks of `driver`. `ctx`: { info(date) → calendar entry of the day (weekend, holiday), onToggle(date) → called when the
- * button of a worked day (make it free) or of a taken-out day (put it back) is pressed }. Open by itself when a week has
- * something to look at.
+ * The weeks of `driver`, one block each (null when there are none). `ctx`: { info(date) → calendar entry of the day (weekend,
+ * holiday), onToggle(date) → called when the button of a worked day (make it free) or of a taken-out day (put it back) is
+ * pressed }. Where it sits (and whether it is open) is up to the caller: the driver view puts it under "De verificat".
  */
-export function weeksPanel(driver, ctx) {
+export function weeksBody(driver, ctx) {
   const weeks = driver.weeks ?? [];
   if (!weeks.length) return null;
-  const flagged = weeks.filter((w) => w.tooLong || w.fewFree).length;
-  const open = chosen.get(driver.id) ?? flagged > 0;
-  const panel = h("details", { class: `weeks ${flagged ? "flagged" : ""}`, open, ontoggle: (e) => chosen.set(driver.id, e.target.open) },
-    h("summary", {},
-      h("b", {}, "Săptămâni"),
-      h("span", { class: flagged ? "flag warn" : "muted" }, flagged ? ` · ${flagged} de verificat` : " · în regulă"),
-      h("small", { class: "muted" }, " (câte 7 zile de la începutul lunii)")),
-    h("div", { class: "weeks-body" }, weeks.map((week) => weekBlock(week, ctx))));
-  return panel;
+  return h("div", { class: "weeks-body" },
+    h("h4", { class: "weeks-title" }, "Săptămâni", h("small", { class: "muted" }, " (câte 7 zile de la începutul lunii)")),
+    weeks.map((week) => weekBlock(week, ctx)));
 }

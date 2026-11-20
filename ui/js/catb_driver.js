@@ -4,7 +4,7 @@
 import { h } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { boundInput } from "./table.js";
-import { weeksPanel } from "./catb_weeks.js";
+import { flaggedWeeks, weeksBody } from "./catb_weeks.js";
 import { duration, formatWhen, hhmm, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, spanText, weekdayName } from "./time.js";
 
 export const KIND_LABELS = { eco: "Eco", private: "Privată", vip: "VIP", bus: "Autocar", passenger: "Pasager", transfer: "Deplasare" };
@@ -238,30 +238,34 @@ function tripRow(trip, edit, moveTrip, driver) {
   const hoursTitle = counted
     ? added > 0 ? `${duration(trip.eff.minutes)} în cursă + ${duration(added)} adăugat (vezi orele de plecare și de sosire)` : ""
     : trip.eff.arrival ? "" : "Sosire necunoscută: durata nu se numără";
+  // What does not fit the columns goes on a line of its own under the row (only when there is something to say).
+  const notes = [
+    trip.generated && trip.movedDays ? h("small", { class: "moved-note" }, `mutată ${movedText(trip.movedDays)}`) : null,
+    sameShiftNote(trip),
+    trip.generated && !removed ? moveControls(trip, moveTrip) : null,
+  ].filter(Boolean);
   const cells = [
-    h("td", { class: "kind" },
-      h("span", { class: `badge ${trip.kind}`, title: trip.generated ? GENERATED_HINT : "" }, KIND_LABELS[trip.kind] ?? trip.kind),
+    h("div", { class: "c-kind" },
+      h("span", { class: `badge ${trip.kind}`, title: trip.generated ? GENERATED_HINT : trip.car ? `Mașina din API: ${carText(trip)}` : "" }, KIND_LABELS[trip.kind] ?? trip.kind),
       trip.manual ? h("span", { class: "muted", title: "Adăugată manual" }, " ✎") : null,
-      trip.generated ? h("span", { class: "muted", title: GENERATED_HINT }, " auto") : null,
-      trip.generated && trip.movedDays ? h("small", { class: "moved-note" }, `mutată ${movedText(trip.movedDays)}`) : null,
-      sameShiftNote(trip),
-      trip.generated && !removed ? moveControls(trip, moveTrip) : null),
-    h("td", {}, timeCell(driver, trip, "departure", edit)),
-    h("td", {}, timeCell(driver, trip, "arrival", edit)),
-    h("td", {}, placeInput(trip, "from", edit)),
-    h("td", {}, placeInput(trip, "to", edit)),
-    h("td", { class: `calc ${counted ? "strong" : ""}`, title: hoursTitle }, counted ? duration(trip.eff.minutes + added) : "–"),
-    h("td", { class: "money" }, trip.eff.excursion ? h("small", { class: "muted", title: trip.eff.priceNote }, "tahograf") : regular ? lei(trip.eff.price) : priceInput(trip, edit)),
-    h("td", { class: "actions" },
+      trip.generated ? h("span", { class: "muted", title: GENERATED_HINT }, " auto") : null),
+    h("div", { class: "c-time" }, timeCell(driver, trip, "departure", edit)),
+    h("div", { class: "c-time" }, timeCell(driver, trip, "arrival", edit)),
+    h("div", { class: "c-place" }, placeInput(trip, "from", edit)),
+    h("div", { class: "c-place" }, placeInput(trip, "to", edit)),
+    h("div", { class: `c-num calc ${counted ? "strong" : ""}`, title: hoursTitle }, counted ? duration(trip.eff.minutes + added) : "–"),
+    h("div", { class: "c-num money" }, trip.eff.excursion ? h("small", { class: "muted", title: trip.eff.priceNote }, "tahograf") : regular ? lei(trip.eff.price) : priceInput(trip, edit)),
+    h("div", { class: "c-act" },
       removed
         ? h("button", { class: "icon-btn", title: "Pune cursa la loc", onclick: () => edit((d) => (d.trips.find((x) => x.id === trip.id).edit.removed = false)) }, "↺")
         : h("button", { class: "icon-btn", title: trip.manual ? "Șterge cursa adăugată" : trip.generated ? "Scoate deplasarea (nu se mai generează la locul ăsta)" : "Scoate cursa din pontaj", onclick: () => edit((d) => {
             if (trip.manual) d.trips.splice(d.trips.findIndex((x) => x.id === trip.id), 1);
             else d.trips.find((x) => x.id === trip.id).edit.removed = true;
-          }) }, "✕"),
-      trip.car ? h("small", { class: "muted car", title: "Mașina, modelul și locurile din API" }, carText(trip)) : null),
+          }) }, "✕")),
+    notes.length ? h("div", { class: "trip-notes" }, notes) : null,
   ];
-  return h("tr", { class: `trip-row ${removed ? "removed" : ""} ${trip.eff.excursion ? "excursion" : ""} ${trip.generated ? "generated" : ""} ${trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null ? "edited" : ""}` }, cells);
+  const edited = trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null;
+  return h("div", { class: `row trip-row ${removed ? "removed" : ""} ${trip.eff.excursion ? "excursion" : ""} ${trip.generated ? "generated" : ""} ${edited ? "edited" : ""}`, "data-row": `trip:${trip.id}` }, cells);
 }
 
 /** A caption above a control, so nobody has to guess what an empty box is for. */
@@ -330,34 +334,34 @@ function needsControls(pause) {
   return decided || pause.kind === "overlap" || pause.alerts.some((a) => a.level !== "info") || opened.has(pauseId(pause));
 }
 
-function pauseRows(driver, pause, edit, resolveOverlap) {
+/** The wait between two trips: one line (what, from when to when, how much counts), and under it the controls and remarks if it needs them. */
+function pauseBlock(driver, pause, edit, resolveOverlap) {
   const quiet = pause.kind === "rest" && pause.state === "auto" && !pause.alerts.length;
   const cls = pauseClass(pause);
   const counted = pause.countedMin > 0;
   const overlap = pause.kind === "overlap";
   const controls = needsControls(pause);
   const change = h("button", { class: "btn small ghost", title: "Alege ce a fost, scrie orele sau o notă", onclick: () => { opened.add(pauseId(pause)); edit(() => {}); } }, "Schimbă");
-  const rows = [
-    h("tr", { class: `pause-row ${cls} ${quiet ? "quiet" : ""} ${controls ? "with-controls" : ""}` },
-      h("td", { class: "kind" }, h("span", { class: `badge pause ${cls}` }, PAUSE_BADGES[cls])),
-      h("td", { colspan: 4, class: "pause-what" },
-        h("b", {}, `${formatWhen(pause.start, pause.start)} → ${formatWhen(pause.end, pause.start)}`),
-        h("span", { class: "pause-span" }, overlap ? `se suprapun cu ${spanText(-pause.gapMin)}` : `pauză de ${spanText(pause.gapMin)}`),
-        h("span", { class: "muted" }, pausePlace(pause)),
-        overlap
-          ? h("button", { class: "btn small primary", title: "Ora de plecare a fiecărei curse e reală, sosirea e doar estimată. Mută sosirea cursei dinainte (iar dacă ar rămâne prea scurtă, și plecarea celei de după) ca să nu se mai suprapună. Se schimbă doar aceste două curse.", onclick: () => resolveOverlap(pause) }, "Rezolvă suprapunerea")
-          : null),
-      h("td", { class: `calc ${counted ? "strong" : ""}`, title: counted ? "Cât se numără din pauză, în ore" : "Nu se numără în ore" }, counted ? duration(pause.countedMin) : "–"),
-      h("td", { class: "money calc" }, pause.extraPay > 0 ? lei(pause.extraPay) : ""),
-      h("td", { class: "actions" }, controls ? null : change)),
-  ];
-  if (controls) rows.push(h("tr", { class: `pause-ctl-row ${cls} ${quiet ? "quiet" : ""}` }, h("td"), h("td", { colspan: 7, class: "pause-cell" }, pauseControls(driver, pause, edit))));
-  if (pause.alerts.length) rows.push(h("tr", { class: "alert-row" }, h("td"), h("td", { colspan: 7 }, alertList(pause.alerts))));
-  return rows;
+  const line = h("div", { class: "row pause-line" },
+    h("div", { class: "c-kind" }, h("span", { class: `badge pause ${cls}` }, PAUSE_BADGES[cls])),
+    h("div", { class: "pause-what" },
+      h("b", {}, `${formatWhen(pause.start, pause.start)} → ${formatWhen(pause.end, pause.start)}`),
+      h("span", { class: "pause-span" }, overlap ? `se suprapun cu ${spanText(-pause.gapMin)}` : `pauză de ${spanText(pause.gapMin)}`),
+      h("span", { class: "muted" }, pausePlace(pause)),
+      overlap
+        ? h("button", { class: "btn small primary", title: "Ora de plecare a fiecărei curse e reală, sosirea e doar estimată. Mută sosirea cursei dinainte (iar dacă ar rămâne prea scurtă, și plecarea celei de după) ca să nu se mai suprapună. Se schimbă doar aceste două curse.", onclick: () => resolveOverlap(pause) }, "Rezolvă suprapunerea")
+        : null),
+    h("div", { class: `c-num calc ${counted ? "strong" : ""}`, title: counted ? "Cât se numără din pauză, în ore" : "Nu se numără în ore" }, counted ? duration(pause.countedMin) : "–"),
+    h("div", { class: "c-num money calc" }, pause.extraPay > 0 ? lei(pause.extraPay) : ""),
+    h("div", { class: "c-act" }, controls ? null : change));
+  return h("div", { class: `pause ${cls} ${quiet ? "quiet" : ""}`, "data-row": `pause:${pause.prev}` },
+    line,
+    controls ? h("div", { class: "pause-detail" }, pauseControls(driver, pause, edit)) : null,
+    pause.alerts.length ? h("div", { class: "pause-detail" }, alertList(pause.alerts)) : null);
 }
 
-/** One figure of the day header with its caption under it. */
-const dayStat = (label, value, tone = "", title) => h("div", { class: `day-stat ${tone}`, title }, h("b", {}, value), h("small", {}, label));
+/** One figure of the day header, the caption before the value ("Ore zi 8:00"). */
+const dayStat = (label, value, tone = "", title) => h("span", { class: `day-stat ${tone}`, title }, h("small", {}, label), h("b", {}, value));
 
 /** The clock minutes of an ISO date-time ("2026-10-05T12:00:00" → 720). */
 const isoMinutes = (iso) => Number(iso.slice(11, 13)) * 60 + Number(iso.slice(14, 16));
@@ -473,51 +477,46 @@ function leaveRunRows(driver, sheet, run, edit) {
         ...kinds(code)),
       excluded ? h("button", { class: "btn small ghost", title: "Pune ziua la loc în pontaj", onclick: () => edit((d) => toggleDay(d, date)) }, "Pune ziua la loc") : null);
   });
-  return [
-    h("tr", { class: "day-gap" }, h("td", { colspan: 8 })),
-    h("tr", { class: "leave-run" },
-      h("td", { colspan: 8 },
-        h("div", { class: "day-line" },
-          h("div", { class: "day-title" }, h("b", {}, title), h("span", { class: "muted" }, "fără nicio cursă")),
-          marked ? h("span", { class: "pill code" }, `${marked} ${marked === 1 ? "zi" : "zile"} de concediu`) : null,
-          all),
-        h("div", { class: "leave-days" }, days))),
-  ];
+  return h("section", { class: "day leave-run", "data-row": `leave:${first}` },
+    h("header", { class: "day-head" },
+      h("div", { class: "day-title" }, h("b", {}, title), h("span", { class: "muted" }, "fără nicio cursă")),
+      marked ? h("span", { class: "pill code" }, `${marked} ${marked === 1 ? "zi" : "zile"} de concediu`) : null,
+      all),
+    h("div", { class: "leave-days" }, days));
 }
 
-function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip }) {
+function daySection(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip }) {
   const row = driver.days.find((d) => d.date === date);
   const info = dayInfo(sheet, date);
   const outside = !info;
   const excursionOnly = trips.length > 0 && trips.every((t) => t.eff.excursion);
   const excluded = !!row?.excluded;
   const joined = joinedTrips(driver, date);
+  const cars = [...new Set(trips.map(carText).filter(Boolean))];
   // Every trip listed here is counted on the day of an earlier shift: this day has no hours of its own to show.
   const elsewhere = trips.length > 0 && trips.every((t) => t.eff.workDay && t.eff.workDay !== date);
-  const head = h("tr", { class: `day-head ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${excluded ? "excluded" : ""}` },
-    h("td", { colspan: 8 },
-      h("div", { class: "day-line" },
-        h("div", { class: "day-title" },
-          h("b", {}, weekdayName(date)),
-          h("span", { class: "day-date" }, shortDate(date)),
-          info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
-          outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
-          joined.length
-            ? h("span", { class: "pill", title: "Cursa de întoarcere pleacă după ceas în ziua următoare, dar se trece pe ziua cursei de plecare: orele, noaptea și intervalele ei sunt pe această zi." },
-                `(include ${joined.length === 1 ? "cursa" : "cursele"} de pe ziua următoare, ${[...new Set(joined.map((t) => shortDate(isoDate(t.eff.departure))))].join(", ")})`)
-            : null,
-          elsewhere ? h("span", { class: "pill" }, `(orele se numără pe ziua dinainte, ${[...new Set(trips.map((t) => shortDate(t.eff.workDay)))].join(", ")})`) : null,
-          excursionOnly ? h("span", { class: "pill excursion" }, "excursie · se pontează din tahograf") : null,
-          excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null),
-        row && !elsewhere
-          ? h("div", { class: "day-stats" },
-              dayStat("Curse regulate", row.legs),
-              dayStat("Staționare (nu intră în total)", duration(row.stationMin), "muted", STATION_NOT_COUNTED),
-              dayStat("Ore zi", duration(row.totalMin), "total", "Cât a fost în cursă, cu timpul adăugat la prima plecare și la ultima sosire (se vede în orele cursei, mai jos). Staționarea nu intră aici."),
-              dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted"))
-          : null,
-        row && !elsewhere ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null),
-      row?.alerts.length ? alertList(row.alerts) : null));
+  const head = h("header", { class: "day-head" },
+    h("div", { class: "day-title" },
+      h("b", {}, weekdayName(date)),
+      h("span", { class: "day-date" }, shortDate(date)),
+      info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
+      outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
+      joined.length
+        ? h("span", { class: "pill", title: "Cursa de întoarcere pleacă după ceas în ziua următoare, dar se trece pe ziua cursei de plecare: orele, noaptea și intervalele ei sunt pe această zi." },
+            `(include ${joined.length === 1 ? "cursa" : "cursele"} de pe ziua următoare, ${[...new Set(joined.map((t) => shortDate(isoDate(t.eff.departure))))].join(", ")})`)
+        : null,
+      elsewhere ? h("span", { class: "pill" }, `(orele se numără pe ziua dinainte, ${[...new Set(trips.map((t) => shortDate(t.eff.workDay)))].join(", ")})`) : null,
+      excursionOnly ? h("span", { class: "pill excursion" }, "excursie · se pontează din tahograf") : null,
+      excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null,
+      cars.length ? h("small", { class: "muted", title: "Mașina, modelul și locurile din API (model sau locuri mari = vehicul de categoria D)" }, cars.join(" / ")) : null),
+    row && !elsewhere
+      ? h("div", { class: "day-stats" },
+          dayStat("Curse", row.legs, "", "Curse regulate în ziua asta"),
+          dayStat("Ore zi", duration(row.totalMin), "total", "Cât a fost în cursă, cu timpul adăugat la prima plecare și la ultima sosire (se vede în orele cursei, mai jos). Staționarea nu intră aici."),
+          dayStat("Staționare", duration(row.stationMin), "muted", STATION_NOT_COUNTED),
+          dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted", "Plată orientativă pentru ziua asta"))
+      : null,
+    row && !elsewhere ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null);
   const body = [];
   const pauseOf = new Map(driver.pauses.map((p) => [p.prev, p]));
   for (const trip of trips) {
@@ -525,11 +524,12 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
     const pause = pauseOf.get(trip.id);
     // Two trips that meet with no time between them (a generated drive and the trip it leads to) have nothing to show.
     const meets = pause && pause.gapMin === 0 && !needsControls(pause) && !pause.alerts.length;
-    if (pause && !meets) body.push(...pauseRows(driver, pause, edit, resolveOverlap));
+    if (pause && !meets) body.push(pauseBlock(driver, pause, edit, resolveOverlap));
   }
-  const group = [h("tr", { class: "day-gap" }, h("td", { colspan: 8 })), head, ...body];
-  if (excluded) group.forEach((tr) => tr.classList.add("day-excluded"));
-  return group;
+  return h("section", { class: `day ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${excluded ? "excluded" : ""}`, "data-row": `day:${date}` },
+    head,
+    row?.alerts.length ? h("div", { class: "day-alerts" }, alertList(row.alerts)) : null,
+    h("div", { class: "day-rows" }, body));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -621,29 +621,54 @@ export function renderCatbDriver(container, ctx) {
           h("li", {}, h("span", {}, p.text, p.pay >= 0.5 ? h("small", { class: "muted" }, ` (~${lei(p.pay)} lei din estimare)`) : null), h("button", { class: "btn small", onclick: () => edit((d) => applyProposal(d, p)) }, "Aplică")))))
     : null;
 
-  const head = h("div", { class: "driver-head" },
-    h("div", { class: "driver-title" },
+  // The weeks live in the checks panel; their remarks (week_hours / week_rest) say the same as the weeks, so they are not listed twice.
+  const weekRemark = (a) => a.code === "week_hours" || a.code === "week_rest";
+  const alerts = (driver.weeks?.length ? driver.alerts.filter((a) => !weekRemark(a)) : driver.alerts);
+  const weekFlags = flaggedWeeks(driver);
+  const weeks = weeksBody(driver, { info: (date) => dayInfo(sheet, date), onToggle: (date) => edit((d) => toggleDay(d, date)) });
+  const red = alerts.some((a) => a.level === "alert");
+  const todo = alerts.length + weekFlags + driver.proposals.length;
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const review = alerts.length || weeks || proposals
+    ? h("details", { class: `review ${todo ? (red ? "red" : "warn") : ""}`, open: reviewOpen.get(driver.id) ?? false, ontoggle: (e) => reviewOpen.set(driver.id, e.target.open) },
+        h("summary", {},
+          h("b", {}, todo ? "De verificat" : "Verificări"),
+          todo
+            ? h("span", { class: "review-counts" },
+                alerts.length ? h("span", {}, count(alerts.length, "avertisment", "avertismente")) : null,
+                weekFlags ? h("span", { title: "Săptămâni peste limita de ore în cursă sau fără zilele libere cerute" }, count(weekFlags, "săptămână cu probleme", "săptămâni cu probleme")) : null,
+                driver.proposals.length ? h("span", {}, count(driver.proposals.length, "sugestie", "sugestii")) : null)
+            : h("span", { class: "muted" }, "totul în regulă")),
+        h("div", { class: "review-body" }, alerts.length ? alertList(alerts) : null, weeks, proposals))
+    : null;
+
+  const addTrip = async () => {
+    const trip = await ctx.addTrip();
+    if (trip) edit((d) => d.trips.push(trip));
+  };
+  // Name, the figures that matter and the column captions stay on screen while the days scroll under them.
+  const sticky = h("div", { class: "driver-sticky" },
+    h("div", { class: "driver-bar" },
       h("h3", {}, driver.name),
-      h("div", { class: "driver-actions" },
-        h("button", { class: "btn small", onclick: async () => { const trip = await ctx.addTrip(); if (trip) edit((d) => d.trips.push(trip)); } }, "＋ Adaugă cursă"))),
-    h("div", { class: "chips" },
-      chip("Zile", t.days),
-      chip("Curse regulate", t.legs),
-      chip("Staționare (nu intră în total)", duration(t.stationMin), { title: `Dedusă: plecarea cursei următoare minus sosirea celei dinainte. ${STATION_NOT_COUNTED}` }),
-      excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
-      Object.keys(t.leaveDays ?? {}).length
-        ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
-        : null,
-      chip("Total ore", duration(t.totalMin), {
-        tone: t.overMin > 0 ? "bad" : "",
-        title: "Orele din curse, cu timpul adăugat în orele de plecare și de sosire ale zilei (o oră pe cursă regulată, fără ca o zi să treacă de 8 ore: Reguli → Categoria B). Staționarea nu intră aici.",
-      }),
-      chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
-      t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,
-      chip("Estimare plată", `~${lei(t.payTotal)} lei`, { title: `Curse ${lei(t.payLegs)} · exterioare ${lei(t.payExterior)} · staționare ${lei(t.payStation)}. Orientativ.` })),
-    driver.alerts.length ? alertList(driver.alerts) : null,
-    weeksPanel(driver, { info: (date) => dayInfo(sheet, date), onToggle: (date) => edit((d) => toggleDay(d, date)) }),
-    proposals);
+      h("div", { class: "bar-figures" },
+        chip("Total ore", duration(t.totalMin), {
+          tone: t.overMin > 0 ? "bad" : "",
+          title: "Orele din curse, cu timpul adăugat în orele de plecare și de sosire ale zilei (o oră pe cursă regulată, fără ca o zi să treacă de 8 ore: Reguli → Categoria B). Staționarea nu intră aici.",
+        }),
+        chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
+        t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,
+        chip("Estimare plată", `~${lei(t.payTotal)} lei`, { title: `Curse ${lei(t.payLegs)} · exterioare ${lei(t.payExterior)} · staționare ${lei(t.payStation)}. Orientativ.` })),
+      h("button", { class: "btn small", onclick: addTrip }, "＋ Adaugă cursă")),
+    h("div", { class: "row col-head" }, COLUMNS.map(([text, cls]) => h("div", { class: cls }, text))));
+
+  const facts = h("div", { class: "chips driver-facts" },
+    chip("Zile", t.days),
+    chip("Curse regulate", t.legs),
+    chip("Staționare (nu intră în total)", duration(t.stationMin), { title: `Dedusă: plecarea cursei următoare minus sosirea celei dinainte. ${STATION_NOT_COUNTED}` }),
+    excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
+    Object.keys(t.leaveDays ?? {}).length
+      ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
+      : null);
 
   // A trip sits under the day it leaves (the Excel may count it on another day: see `sameShiftNote`).
   const byDate = new Map();
@@ -653,16 +678,20 @@ export function renderCatbDriver(container, ctx) {
     byDate.get(date).push(trip);
   }
   // Days with trips and blocks of free days, together, in date order.
-  const blocks = [...byDate.keys()].map((date) => ({ date, rows: () => dayRows(driver, sheet, date, byDate.get(date), edit, ctx) }));
-  for (const run of freeRuns(driver.freeDays ?? [])) blocks.push({ date: run[0], rows: () => leaveRunRows(driver, sheet, run, edit) });
+  const blocks = [...byDate.keys()].map((date) => ({ date, draw: () => daySection(driver, sheet, date, byDate.get(date), edit, ctx) }));
+  for (const run of freeRuns(driver.freeDays ?? [])) blocks.push({ date: run[0], draw: () => leaveRunRows(driver, sheet, run, edit) });
   blocks.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  const body = h("tbody");
-  for (const block of blocks) body.append(...block.rows());
 
-  const table = h("table", { class: "data-table catb-table" },
-    h("thead", {}, h("tr", {}, ["Tip", "Plecare", "Sosire", "Din", "Spre", "Ore", "Lei", ""].map((text) => h("th", {}, text)))),
-    body);
   container.replaceChildren(
-    head,
-    blocks.length ? h("div", { class: "table-scroll", id: "catb-scroll" }, table) : h("div", { class: "empty-note" }, "Șoferul nu are curse în luna aceasta."));
+    sticky,
+    h("div", { class: "driver-body" },
+      facts,
+      review,
+      blocks.length ? h("div", { class: "days" }, blocks.map((block) => block.draw())) : h("div", { class: "empty-note" }, "Șoferul nu are curse în luna aceasta.")));
 }
+
+/** Column captions of the trip rows, with the class of the cell they sit over (the rows use the same grid). */
+const COLUMNS = [["Tip", "c-kind"], ["Plecare", "c-time"], ["Sosire", "c-time"], ["Din", "c-place"], ["Spre", "c-place"], ["Ore", "c-num"], ["Lei", "c-num"], ["", "c-act"]];
+
+/** Whether the checks panel of a driver (driver id → open) is open, so a redraw after an edit does not close it. */
+const reviewOpen = new Map();
