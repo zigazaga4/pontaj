@@ -66,7 +66,7 @@ pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &S
     let cap_min = monthly_cap_min(year, month, settings);
     driver.totals = totals(&driver.days, cap_min);
     driver.alerts = driver_alerts(driver, cap_min);
-    driver.proposals = cap::propose(driver, cap_min, settings);
+    driver.proposals = cap::propose(driver, cap_min);
 }
 
 pub(super) fn effective(trip: &Trip, cfg: &CatbSettings) -> Effective {
@@ -344,9 +344,9 @@ pub(super) fn split_fill(total: i32, room_before: i32) -> (i32, i32) {
     (before, total - before)
 }
 
-/// What the rules add to a day with `legs` regular trips and `work_min` of trips and waiting: `fill_per_trip_min` for every
-/// trip, but never past a full day (`hours_per_day`): one trip of 3 h makes 4 h, two make 8 h, and a day that is already
-/// full (or more) gets nothing.
+/// What the rules add to a day with `legs` regular trips and `work_min` of time on trips (waiting is not work time):
+/// `fill_per_trip_min` for every trip, but never past a full day (`hours_per_day`): one trip of 3 h makes 4 h, two trips of
+/// 3 h make 8 h, and a day that is already full (or more) gets nothing.
 fn auto_fill_min(legs: i32, work_min: i32, settings: &Settings) -> i32 {
     let cfg = &settings.catb;
     if !cfg.fill_day {
@@ -355,8 +355,8 @@ fn auto_fill_min(legs: i32, work_min: i32, settings: &Settings) -> i32 {
     (legs.max(0) * cfg.fill_per_trip_min.max(0)).min(settings.hours_per_day * 60 - work_min).max(0)
 }
 
-/// The time added to a day with `legs` regular trips and `work_min` of trips and waiting: the rules' split (when the setting is
-/// on), with whatever the office typed for either side on top. Nothing is added to a day without hours.
+/// The time added to a day with `legs` regular trips and `work_min` of time on trips: the rules' split (when the setting is
+/// on), with whatever the office typed for either side on top. Nothing is added to a day without trips.
 fn fill_of(driver: &Driver, date: NaiveDate, legs: i32, work_min: i32, settings: &Settings) -> (i32, i32, bool) {
     if work_min <= 0 {
         return (0, 0, false);
@@ -417,15 +417,17 @@ fn days(driver: &Driver, year: i32, month: u32, settings: &Settings) -> Vec<DayR
     let mut list: Vec<DayRow> = rows.into_values().collect();
     for row in &mut list {
         if let Some(date) = row.date {
-            (row.fill_before_min, row.fill_after_min, row.fill_manual) = fill_of(driver, date, row.legs, row.trip_min + row.station_min, settings);
+            (row.fill_before_min, row.fill_after_min, row.fill_manual) = fill_of(driver, date, row.legs, row.trip_min, settings);
         }
         row.fill_min = row.fill_before_min + row.fill_after_min;
-        row.total_min = row.trip_min + row.station_min + row.fill_min;
-        // A day is not shortened when it already has more than a full day, but the office is told.
-        let work_min = row.trip_min + row.station_min;
+        // The waiting between trips is shown (`station_min`) and paid by its own rule, but it is not work time: the hours of a
+        // day are the time on the trips and the time added to them.
+        row.total_min = row.trip_min + row.fill_min;
+        // A day is not shortened when its trips alone pass a full day, but the office is told.
+        let work_min = row.trip_min;
         if work_min > settings.hours_per_day * 60 {
             let text = format!(
-                "Ziua are {} de lucru (curse și staționare), peste cele {} ore ale unei zile. Nu se completează nimic, dar verifică foaia șoferului: poate a plecat sau s-a întors altfel.",
+                "Ziua are {} de curse, peste cele {} ore ale unei zile. Nu se completează nimic, dar verifică foaia șoferului: poate a plecat sau s-a întors altfel.",
                 fmt_duration(work_min),
                 settings.hours_per_day
             );
@@ -554,7 +556,7 @@ mod tests {
         assert_eq!(d.days.len(), 1, "the 6th has no day of its own");
         let day = &d.days[0];
         assert_eq!(day.date, Some(date("2026-10-05")));
-        assert_eq!((day.legs, day.trip_min, day.station_min, day.total_min), (2, 360, 600, 960), "6 h of trips and 10 h of waiting; nothing is added to a day over 8 h");
+        assert_eq!((day.legs, day.trip_min, day.station_min, day.total_min), (2, 360, 600, 480), "6 h of trips and 2 h added; the 10 h of waiting are not hours");
         // The times of the day: the second trip starts after 24:00 (03:30 = 27:30).
         let trips = super::super::pontaj::trip_intervals(&d, date("2026-10-05"));
         assert_eq!(trips.iter().map(|i| (i.start, i.end)).collect::<Vec<_>>(), [(14 * 60 + 30, 17 * 60 + 30), (27 * 60 + 30, 30 * 60 + 30)]);
@@ -706,26 +708,39 @@ mod tests {
         ]);
         run(&mut d);
         assert_eq!(filled(&d), (30, 30, 8 * 60));
-        // Two trips of 3 h with 2 h of waiting are 8 h already: nothing is added.
+        // Two trips of 3 h are 6 h on the trips and 2 h are added to reach 8 h. The 2 h of waiting between them are not hours.
         let mut d = round_trip("2026-10-05 10:00", "2026-10-05 13:00");
         run(&mut d);
-        assert_eq!(filled(&d), (0, 0, 8 * 60));
+        assert_eq!(filled(&d), (60, 60, 8 * 60));
+    }
+
+    /// Constanța → Otopeni 05:00–`middle`, back `middle`–`end` (no waiting between the two trips).
+    fn there_and_back(middle: &str, end: &str) -> Driver {
+        driver(vec![
+            trip("eco-1", TripKind::Eco, "Constanta", "Aeroport Otopeni Bucuresti", "2026-10-05 05:00", Some(&format!("2026-10-05 {middle}"))),
+            trip("eco-2", TripKind::Eco, "Aeroport Otopeni Bucuresti", "Constanta", &format!("2026-10-05 {middle}"), Some(&format!("2026-10-05 {end}"))),
+        ])
     }
 
     #[test]
     fn a_day_with_eight_hours_or_more_is_left_as_it_is_and_the_long_one_is_flagged() {
-        // Exactly 8 h (3 + 2 waiting + 3): nothing added, nothing said.
-        let mut d = round_trip("2026-10-05 10:00", "2026-10-05 13:00");
+        // Exactly 8 h on the trips (4 + 4): nothing added, nothing said.
+        let mut d = there_and_back("09:00", "13:00");
         run(&mut d);
         assert_eq!((d.days[0].fill_min, d.days[0].total_min), (0, 480));
         assert!(d.days[0].alerts.iter().all(|a| a.code != "long_day"));
-        // 10 h (3 + 4 waiting + 3): not shortened, but the office is warned.
-        let mut d = round_trip("2026-10-05 12:00", "2026-10-05 15:00");
+        // 10 h on the trips (5 + 5): not shortened, but the office is warned.
+        let mut d = there_and_back("10:00", "15:00");
         run(&mut d);
         assert_eq!((d.days[0].fill_min, d.days[0].total_min), (0, 600));
         let warning = d.days[0].alerts.iter().find(|a| a.code == "long_day").expect("a warning for a day over 8 hours");
         assert_eq!(warning.level, Level::Warn);
         assert!(warning.text.contains("10:00") && warning.text.contains("8 ore"), "{}", warning.text);
+        // A long wait between short trips is not a long day: only the time on the trips counts (6 h + 2 h added).
+        let mut d = round_trip("2026-10-05 12:00", "2026-10-05 15:00");
+        run(&mut d);
+        assert_eq!((d.days[0].station_min, d.days[0].fill_min, d.days[0].total_min), (240, 120, 480));
+        assert!(d.days[0].alerts.iter().all(|a| a.code != "long_day"));
     }
 
     #[test]
@@ -789,12 +804,13 @@ mod tests {
     }
 
     #[test]
-    fn waiting_beyond_three_hours_adds_ten_lei_an_hour_and_counts_in_the_hours() {
+    fn waiting_beyond_three_hours_adds_ten_lei_an_hour_but_is_not_in_the_hours() {
         // Arrives 08:00, leaves 12:00: 4 h of waiting, 1 h beyond the included 3.
         let mut d = round_trip("2026-10-05 12:00", "2026-10-05 15:00");
         run(&mut d);
         assert_eq!((d.days[0].station_min, d.days[0].pay_station, d.days[0].pay_total), (240, 10.0, 250.0));
-        assert_eq!(d.totals.total_min, 360 + 240, "the waiting is part of the hours");
+        assert_eq!((d.totals.trip_min, d.totals.station_min), (360, 240));
+        assert_eq!(d.totals.total_min, 360 + 120, "the waiting is shown and paid, but it is not work time: 6 h of trips and 2 h added");
         // 5 h of waiting → 2 extra hours.
         let mut d = round_trip("2026-10-05 13:00", "2026-10-05 16:00");
         run(&mut d);
@@ -1031,7 +1047,9 @@ mod tests {
         // 6 h between the legs, 40 min of them on the private trip: that time is trip time, the rest is waiting.
         assert_eq!((pause.gap_min, pause.busy_min, pause.counted_min), (360, 40, 320));
         let day = &d.days[0];
-        assert_eq!((day.trip_min, day.station_min, day.total_min), (180 + 40 + 180, 320, 720), "every minute between 05:00 and 17:00 counts once");
+        // Every minute between 05:00 and 17:00 counts once, as trip or as waiting; only the trips are hours (6 h 40 min),
+        // and 1 h 20 min is added to reach 8 h.
+        assert_eq!((day.trip_min, day.station_min, day.total_min), (180 + 40 + 180, 320, 480));
         // The office saying he stayed does not count the private trip twice either.
         d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: "eco-2".into(), state: PauseState::Stayed, ..Default::default() });
         run(&mut d);
@@ -1273,7 +1291,7 @@ mod tests {
 
     #[test]
     fn a_driver_over_the_ceiling_is_flagged() {
-        // 23 days of two 3-hour legs and 3 hours of waiting: 9 h a day = 207 h > 176 h.
+        // 23 days of two 3-hour legs (and 3 hours of waiting that are not hours), 2 h added to each: 8 h a day = 184 h > 176 h.
         let mut trips = Vec::new();
         for day in 1..=23 {
             trips.push(trip(&format!("a{day}"), TripKind::Eco, "Constanta", "Otopeni", &format!("2026-10-{day:02} 05:00"), Some(&format!("2026-10-{day:02} 08:00"))));
@@ -1281,8 +1299,8 @@ mod tests {
         }
         let mut d = driver(trips);
         run(&mut d);
-        assert_eq!(d.totals.total_min, 23 * 540);
-        assert_eq!(d.totals.over_min, 23 * 540 - 176 * 60);
+        assert_eq!(d.totals.total_min, 23 * 480);
+        assert_eq!(d.totals.over_min, 23 * 480 - 176 * 60);
         assert!(d.alerts.iter().any(|a| a.code == "over_cap" && a.level == Level::Alert));
         assert!(!d.proposals.is_empty());
     }

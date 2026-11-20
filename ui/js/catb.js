@@ -186,9 +186,9 @@ export function createCatb({ getSettings, saveSettings }) {
       h("div", { class: "title" }, h("h2", {}, `${MONTHS[sheet.month - 1]} ${sheet.year}`), h("span", {}, "Categoria B · curse din API")),
       chip("Șoferi", drivers.length),
       chip("Plafon lunar", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore, sărbătorile incluse` }),
-      chip("Total ore", duration(sum((d) => d.totals.totalMin))),
-      chip("Din care staționare", duration(sum((d) => d.totals.stationMin))),
+      chip("Total ore", duration(sum((d) => d.totals.totalMin)), { title: "Cât au fost în cursă, plus completarea. Staționarea nu intră aici." }),
       chip("Din care completare", duration(sum((d) => d.totals.fillMin ?? 0)), { title: "O oră pentru fiecare cursă regulată (jumătate înainte de plecare, jumătate după sosire)" }),
+      chip("Staționare (nu intră în total)", duration(sum((d) => d.totals.stationMin)), { title: "Așteptarea dintre curse: se arată doar ca informație și se plătește după regula ei, dar nu intră în orele de lucru." }),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),
       chip("Curse fără tarif", noTariff, { tone: noTariff ? "bad" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
       chip("Estimare plată", `~${lei(sum((d) => d.totals.payTotal))} lei`, { title: "Orientativ" }));

@@ -235,7 +235,7 @@ pub struct Pause {
     pub state: PauseState,
     pub hours_override: Option<f64>,
     pub note: String,
-    /// Minutes that count as waiting (in the hours and in the amount).
+    /// Minutes that count as waiting (in the amount and in the staționare column, not in the work hours).
     pub counted_min: i32,
     /// Added to the estimate for the waiting beyond the included time.
     pub extra_pay: f64,
@@ -251,6 +251,8 @@ pub struct DayRow {
     /// Regular legs made that day (what the 240 lei per pair is made of).
     pub legs: i32,
     pub trip_min: i32,
+    /// Waiting between two trips (the staționare). Shown and paid by its own rule, but NOT part of `total_min`: waiting is
+    /// not work time.
     pub station_min: i32,
     /// Time added to bring the day up to the hours of a full day: before the first departure and after the last arrival
     /// (see [`FillEdit`]). Part of `total_min`.
@@ -259,7 +261,7 @@ pub struct DayRow {
     pub fill_min: i32,
     /// The office typed one of the two values.
     pub fill_manual: bool,
-    /// Trips + waiting + the time added.
+    /// The hours of the day: time on the trips + the time added (no waiting).
     pub total_min: i32,
     pub pay_legs: f64,
     pub pay_exterior: f64,
@@ -278,9 +280,11 @@ pub struct Totals {
     pub days: i32,
     pub legs: i32,
     pub trip_min: i32,
+    /// Waiting between trips: shown, paid by its own rule, not part of `total_min`.
     pub station_min: i32,
     /// Time added to the days to bring them up to a full day (part of `total_min`).
     pub fill_min: i32,
+    /// Time on the trips + the time added (no waiting).
     pub total_min: i32,
     pub pay_legs: f64,
     pub pay_exterior: f64,
@@ -292,25 +296,12 @@ pub struct Totals {
     pub leave_days: BTreeMap<String, i32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ProposalKind {
-    /// Shorten the counted waiting of one pause.
-    Pause,
-    /// Take a whole day out of the pontaj.
-    Day,
-}
-
-/// A way to bring a driver under the monthly ceiling. Only a suggestion: the office applies it or not.
+/// A way to bring a driver under the monthly ceiling: take the whole day `date` out of the pontaj. Only a suggestion: the
+/// office applies it or not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
-    pub kind: ProposalKind,
     pub date: NaiveDate,
-    /// For a pause: the trips around it, and the waiting hours it would keep.
-    pub prev: Option<String>,
-    pub next: Option<String>,
-    pub set_hours: Option<f64>,
     /// Minutes taken out and the amount that goes with them.
     pub minutes: i32,
     pub pay: f64,

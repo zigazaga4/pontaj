@@ -25,6 +25,8 @@ export const LEAVE_TYPES = [
 ];
 const leaveName = (code) => LEAVE_TYPES.find(([c]) => c === code)?.[1] ?? code;
 
+const STATION_NOT_COUNTED = "Staționarea nu intră în orele de lucru (nici în Excel): se arată doar ca informație și se plătește după regula ei (primele ore sunt incluse în preț).";
+
 /** Staționare as it counts now: chosen by the office, or by the rules (waiting at Otopeni). */
 const isStation = (pause) => pause.state === "stayed" || (pause.state === "auto" && pause.kind === "normal");
 
@@ -36,12 +38,12 @@ function pauseHint(pause) {
   if (pause.kind === "overlap") return "Sosirea e doar estimată (plecarea + durata fixă a traseului), plecările sunt reale. Apasă „Rezolvă suprapunerea” ca aplicația să mute orele celor două curse, sau corectează-le tu.";
   if (isStation(pause)) {
     return pause.state === "stayed"
-      ? "Ai ales staționare: se numără toată pauza de mai sus (sau scrie tu orele)."
-      : "Staționare la Otopeni: toată așteptarea dintre cele două curse se numără (sau scrie tu orele).";
+      ? "Ai ales staționare: toată pauza de mai sus se arată ca staționare (sau scrie tu orele). Nu intră în orele de lucru; contează doar la plată."
+      : "Staționare la Otopeni: așteptarea dintre cele două curse (sau scrie tu orele). Nu intră în orele de lucru; contează doar la plată.";
   }
   return pause.state === "off"
     ? "Ai ales pauză: nu se numără nimic din ea și nu se plătește."
-    : "Pauză: nu se numără în ore și nu se plătește (stă acasă, are o pauză lungă sau a fost în excursie între curse). Staționarea e doar la Otopeni; dacă a stat totuși acolo, alege „Staționare”.";
+    : "Pauză: nu se numără și nu se plătește (stă acasă, are o pauză lungă sau a fost în excursie între curse). Staționarea e doar la Otopeni; dacă a stat totuși acolo, alege „Staționare”.";
 }
 
 /** Pauses whose optional fields (hours, note) were opened by hand although nothing was decided yet. */
@@ -70,12 +72,9 @@ function setTripField(trip, field, value, original) {
   trip.edit[field] = value === original || value === "" ? null : value;
 }
 
+/** A proposal takes its whole day out of the pontaj (the waiting is not in the hours, so there is nothing else to shorten). */
 export function applyProposal(driver, proposal) {
-  if (proposal.kind === "day") {
-    if (!driver.excludedDays.includes(proposal.date)) driver.excludedDays.push(proposal.date);
-  } else {
-    setPause(driver, { prev: proposal.prev, next: proposal.next }, { hours: proposal.setHours });
-  }
+  if (!driver.excludedDays.includes(proposal.date)) driver.excludedDays.push(proposal.date);
 }
 
 export function toggleDay(driver, date) {
@@ -352,7 +351,7 @@ function pauseRows(driver, pause, edit, resolveOverlap) {
 }
 
 /** One figure of the day header with its caption under it. */
-const dayStat = (label, value, tone = "") => h("div", { class: `day-stat ${tone}` }, h("b", {}, value), h("small", {}, label));
+const dayStat = (label, value, tone = "", title) => h("div", { class: `day-stat ${tone}`, title }, h("b", {}, value), h("small", {}, label));
 
 /**
  * The time added to a day, an hour for each regular trip: before the first departure and after the last arrival. Both boxes show what
@@ -466,8 +465,8 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
           ? h("div", { class: "day-stats" },
               dayStat("Curse regulate", row.legs),
               dayStat("Ore curse", duration(row.tripMin)),
-              dayStat("Staționare", duration(row.stationMin)),
-              !excluded && row.tripMin + row.stationMin > 0 ? fillStat(driver, row, date, edit) : null,
+              dayStat("Staționare (nu intră în total)", duration(row.stationMin), "muted", STATION_NOT_COUNTED),
+              !excluded && row.tripMin > 0 ? fillStat(driver, row, date, edit) : null,
               dayStat("Total ziua", duration(row.totalMin), "total"),
               dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted"))
           : null,
@@ -585,13 +584,13 @@ export function renderCatbDriver(container, ctx) {
       chip("Zile", t.days),
       chip("Curse regulate", t.legs),
       chip("Ore curse", duration(t.tripMin)),
-      chip("Ore staționare", duration(t.stationMin), { title: "Dedusă: plecarea cursei următoare minus sosirea celei dinainte" }),
+      chip("Staționare (nu intră în total)", duration(t.stationMin), { title: `Dedusă: plecarea cursei următoare minus sosirea celei dinainte. ${STATION_NOT_COUNTED}` }),
       t.fillMin > 0 ? chip("Ore completare", duration(t.fillMin), { title: "O oră pentru fiecare cursă regulată a zilei (jumătate înainte de prima plecare, jumătate după ultima sosire): o cursă face o zi de 4 ore, două curse 8 ore. O zi nu trece de 8 ore din cauza asta (Reguli → Categoria B). Îl poți schimba pe fiecare zi." }) : null,
       excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
       Object.keys(t.leaveDays ?? {}).length
         ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
         : null,
-      chip("Total ore", duration(t.totalMin), { tone: t.overMin > 0 ? "bad" : "" }),
+      chip("Total ore", duration(t.totalMin), { tone: t.overMin > 0 ? "bad" : "", title: "Cât a fost în cursă, plus completarea. Staționarea nu intră aici." }),
       chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
       t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,
       chip("Estimare plată", `~${lei(t.payTotal)} lei`, { title: `Curse ${lei(t.payLegs)} · exterioare ${lei(t.payExterior)} · staționare ${lei(t.payStation)}. Orientativ.` })),

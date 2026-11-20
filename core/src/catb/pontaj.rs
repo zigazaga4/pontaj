@@ -1,11 +1,11 @@
 //! The Categoria B month as the payroll team's *foaie colectivă*: the same [`Timesheet`] the tachograph mode builds, so
 //! the Excel sheet is drawn by the same code and looks the same (see [`crate::excel::pontaj_sheet`]).
 //!
-//! What a day holds: the hours of the day (trips, waiting, time added) rounded to whole hours (the rule of the other
-//! mode); under them the start and end of every trip of the day, as the screen lists them (12:00–15:00 and 16:00–19:00,
-//! never one 12:00–19:00), with as many pairs of rows as the driver's busiest day needs; the night hours measured on
-//! those times. The minutes and the day they belong to are the ones of the sheet (a trip counts on the day it leaves, a
-//! waiting on the day it starts), so the Excel shows what the screen shows. See [`trip_intervals`].
+//! What a day holds: the hours of the day (time on the trips and time added, never the waiting between trips) rounded to
+//! whole hours (the rule of the other mode); under them the start and end of every trip of the day, as the screen lists them
+//! (12:00–15:00 and 16:00–19:00, never one 12:00–19:00), with as many pairs of rows as the driver's busiest day needs; the
+//! night hours measured on those times. The minutes and the day they belong to are the ones of the sheet (a trip counts on
+//! its work day), so the Excel shows what the screen shows. See [`trip_intervals`].
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
@@ -44,31 +44,24 @@ fn counted_trips(driver: &Driver) -> impl Iterator<Item = Placed> + '_ {
 }
 
 /// The trips of a day as the payroll sheet writes them: each one from its departure to its arrival, in the order they
-/// leave (an arrival after midnight is past 24:00), exactly as the screen lists them. The waiting between two trips and
-/// the time added to fill the day count in the hours of the day, not in its times. A day with more trips than the usual
-/// two gets more rows in the sheet (see `crate::excel::pontaj_sheet`).
+/// leave (an arrival after midnight is past 24:00), exactly as the screen lists them. The time added to fill the day counts
+/// in the hours of the day, not in its times; the waiting between two trips counts in neither. A day with more trips than the
+/// usual two gets more rows in the sheet (see `crate::excel::pontaj_sheet`).
 pub(super) fn trip_intervals(driver: &Driver, date: NaiveDate) -> Vec<Interval> {
     let mut out: Vec<Interval> = counted_trips(driver).filter(|p| p.day == date).map(|p| p.interval()).collect();
     out.sort_by_key(|i| (i.start, i.end));
     out
 }
 
-/// The periods of a day that count as work: the trips of its work day and the waiting that counts on it.
-pub(super) fn work_blocks(driver: &Driver, date: NaiveDate) -> Vec<Interval> {
-    let waits = driver.pauses.iter().filter(|p| p.counted_min > 0).filter_map(|p| p.start.map(|at| placed(p.day.unwrap_or(at.date()), at, p.counted_min)));
-    let mut blocks: Vec<Interval> = counted_trips(driver).chain(waits).filter(|p| p.day == date).map(|p| p.interval()).collect();
-    blocks.sort_by_key(|b| (b.start, b.end));
-    blocks
-}
-
-/// First start and last end (minutes from midnight) of the periods that count on a day, without the time added to fill it.
+/// First start and last end (minutes from midnight) of the trips of a day, without the time added to fill it. The waiting
+/// between trips is not work time, so it never widens the span.
 pub(super) fn day_span(driver: &Driver, date: NaiveDate) -> Option<(i32, i32)> {
-    let blocks = work_blocks(driver, date);
-    Some((blocks.iter().map(|b| b.start).min()?, blocks.iter().map(|b| b.end).max()?))
+    let trips = trip_intervals(driver, date);
+    Some((trips.iter().map(|b| b.start).min()?, trips.iter().map(|b| b.end).max()?))
 }
 
 /// One day of one driver. A day taken out of the pontaj stays empty; a leave is its code. The hours are the day's total
-/// (trips, waiting, time added) rounded; the start/end times are those of its trips ([`trip_intervals`]).
+/// (trips and time added, no waiting) rounded; the start/end times are those of its trips ([`trip_intervals`]).
 fn day_entry(driver: &Driver, day: u32, date: NaiveDate, settings: &Settings) -> DayEntry {
     let mut entry = DayEntry { day, ..Default::default() };
     let row: Option<&DayRow> = driver.days.iter().find(|r| r.date == Some(date));
@@ -178,10 +171,10 @@ mod tests {
 
         // One trip of 3 h: an hour is added for it (30 min before the departure, 30 min after the arrival), 4 h.
         assert_eq!(entry(&timesheet, "POPESCU ION", 5).hours, Some(4.0));
-        // 05:00–08:00 and 11:00–14:00 plus the 3 h of waiting in between: 9 h, more than a full day, so nothing is added.
-        // The times written are those of the two trips, the waiting is only in the hours.
+        // 05:00–08:00 and 11:00–14:00: 6 h on the trips and 2 h added for the two trips make 8 h. The 3 h of waiting in
+        // between are not work time, so they are in neither the hours nor the times.
         let twelfth = entry(&timesheet, "POPESCU ION", 12);
-        assert_eq!(twelfth.hours, Some(9.0));
+        assert_eq!(twelfth.hours, Some(8.0));
         assert_eq!(twelfth.intervals, [iv(5 * 60, 8 * 60), iv(11 * 60, 14 * 60)]);
         // 3 h 20 min + the hour added for the trip = 4 h 20 min, which is written as 5 (20 minutes count as a full hour).
         assert_eq!(entry(&timesheet, "ANGHEL DAN", 6).hours, Some(5.0));
@@ -233,27 +226,28 @@ mod tests {
         let timesheet = to_timesheet(&sheet, &Settings::default());
         let day = entry(&timesheet, "TEST SOFER", 4);
         assert_eq!(day.intervals, [iv(12 * 60, 15 * 60), iv(16 * 60, 19 * 60)]);
-        assert_eq!(day.hours, Some(8.0), "6 h of trips, the hour of waiting and an hour added to reach the 8 h");
+        assert_eq!(day.hours, Some(8.0), "6 h of trips and 2 h added (the hour of waiting between them is not counted)");
     }
 
     #[test]
-    fn a_day_with_the_waiting_between_two_trips_writes_the_two_trips() {
-        // 08:30–11:30, waiting at Otopeni, 15:15–18:15: the waiting is in the hours, the times are the two trips.
+    fn a_day_with_the_waiting_between_two_trips_writes_the_two_trips_and_not_the_waiting() {
+        // 08:30–11:30, waiting at Otopeni for 3 h 45 min, 15:15–18:15: the waiting is neither in the hours nor in the times.
         let sheet = driver_sheet(&[("Constanta", OTP, "2026-10-05 08:30", 180), (OTP, "Constanta", "2026-10-05 15:15", 180)]);
         let timesheet = to_timesheet(&sheet, &Settings::default());
         let day = entry(&timesheet, "TEST SOFER", 5);
-        assert_eq!(day.hours, Some(10.0), "9:45 of work, 20 minutes or more count as an hour");
+        assert_eq!(day.hours, Some(8.0), "6 h on the trips and 2 h added; with the 3:45 of waiting it would be 9:45 → 10");
         assert_eq!(day.intervals, [iv(8 * 60 + 30, 11 * 60 + 30), iv(15 * 60 + 15, 18 * 60 + 15)]);
-        assert_eq!((day.first_start, day.last_end), (Some(8 * 60 + 30), Some(18 * 60 + 15)));
+        // The span is that of the trips with the time added on each side (an hour before and an hour after).
+        assert_eq!((day.first_start, day.last_end), (Some(7 * 60 + 30), Some(19 * 60 + 15)));
     }
 
     #[test]
     fn a_day_with_three_trips_writes_three_pairs_of_times() {
-        // 05:00–08:00 to Otopeni, 09:00–12:00 back (an hour of waiting counts), then home, 18:00–21:00 to Otopeni again.
+        // 05:00–08:00 to Otopeni, 09:00–12:00 back (the hour of waiting does not count), then home, 18:00–21:00 to Otopeni again.
         let sheet = driver_sheet(&[("Constanta", OTP, "2026-10-06 05:00", 180), (OTP, "Constanta", "2026-10-06 09:00", 180), ("Constanta", OTP, "2026-10-06 18:00", 180)]);
         let timesheet = to_timesheet(&sheet, &Settings::default());
         let day = entry(&timesheet, "TEST SOFER", 6);
-        assert_eq!(day.hours, Some(10.0));
+        assert_eq!(day.hours, Some(9.0), "9 h on the trips, already more than a full day: nothing is added");
         assert_eq!(day.intervals, [iv(5 * 60, 8 * 60), iv(9 * 60, 12 * 60), iv(18 * 60, 21 * 60)]);
     }
 
@@ -289,7 +283,7 @@ mod tests {
         assert!(fifth.hours.is_none() && fifth.intervals.is_empty(), "the day taken out of the pontaj is empty");
 
         let totals = &timesheet.employees.iter().find(|e| e.name == "POPESCU ION").unwrap().totals;
-        assert_eq!(totals.worked, 9.0, "only the 12th is left");
+        assert_eq!(totals.worked, 8.0, "only the 12th is left");
         let columns: Vec<&str> = crate::timesheet::CODES.iter().map(|(code, _)| *code).collect();
         let hours_of = |code: &str| totals.code_hours[columns.iter().position(|c| *c == code).unwrap()];
         assert_eq!((hours_of("CC"), hours_of("CIM")), (8.0, 8.0), "a day of leave is a norm day (8 h) in its column");
