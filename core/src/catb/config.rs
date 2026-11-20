@@ -39,8 +39,9 @@ pub struct CatbSettings {
     /// How long such a generated drive lasts (the office can still change each one).
     pub transfer_min: i32,
     /// Every regular trip of a day gets `fill_per_trip_min` more (getting ready, handing the car over): half before the
-    /// first departure and half after the last arrival. A day never goes past `hours_per_day` (8) because of it. Off: a day
-    /// has only the hours the trips and the waiting give.
+    /// first departure and half after the last arrival (the first departure is earlier, the last arrival later: the time is in
+    /// the times of the trips, with a note that says what they were). A day never goes past `hours_per_day` (8) because of it.
+    /// Off: a day has only the hours the trips give.
     pub fill_day: bool,
     /// What each regular trip adds to its day, in minutes: a day with one trip of 3 h comes to 4 h, one with two trips to 8 h.
     pub fill_per_trip_min: i32,

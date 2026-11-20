@@ -181,14 +181,13 @@ export function createCatb({ getSettings, saveSettings }) {
     const drivers = sheet.drivers;
     const sum = (pick) => drivers.reduce((acc, d) => acc + pick(d), 0);
     const over = drivers.filter((d) => d.totals.overMin > 0).length;
-    const added = sum((d) => d.totals.fillMin ?? 0);
     const noTariff = sum(untariffed);
     box.replaceChildren(
       h("div", { class: "title" }, h("h2", {}, `${MONTHS[sheet.month - 1]} ${sheet.year}`), h("span", {}, "Categoria B · curse din API")),
       chip("Șoferi", drivers.length),
       chip("Plafon lunar", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore, sărbătorile incluse` }),
-      chip(added > 0 ? `Total ore (include ${duration(added)} adăugat)` : "Total ore", duration(sum((d) => d.totals.totalMin)), {
-        title: "Cât au fost în cursă plus timpul adăugat (o oră pe cursă regulată, fără ca o zi să treacă de 8 ore). Staționarea nu intră aici.",
+      chip("Total ore", duration(sum((d) => d.totals.totalMin)), {
+        title: "Orele din curse, cu timpul adăugat în orele de plecare și de sosire ale zilelor (o oră pe cursă regulată, fără ca o zi să treacă de 8 ore). Staționarea nu intră aici.",
       }),
       chip("Staționare (nu intră în total)", duration(sum((d) => d.totals.stationMin)), { title: "Așteptarea dintre curse: se arată doar ca informație și se plătește după regula ei, dar nu intră în orele de lucru." }),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),

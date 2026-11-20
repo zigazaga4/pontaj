@@ -290,10 +290,6 @@ fn write_employee(
             (None, Some(h), None) => ws.write_number_with_format(row, col, h, &day)?,
             (None, None, None) => ws.write_blank(row, col, &day)?,
         };
-        // The remark about the hours (e.g. time added to the trips) sits on the cell of the hours.
-        if let (None, Some(text)) = (&entry.code, &entry.note) {
-            ws.insert_note(row, col, &Note::new(text).add_author_prefix(false).set_width(300).set_height(90))?;
-        }
         match entry.night_hours {
             Some(n) => ws.write_number_with_format(row + 1, col, n, &day)?,
             None => ws.write_blank(row + 1, col, &day)?,
@@ -306,6 +302,10 @@ fn write_employee(
                 Some(min) => ws.write_number_with_format(r, col, min.rem_euclid(DAY) as f64 / DAY as f64, &time_fmt)?,
                 None => ws.write_blank(r, col, &time_fmt)?,
             };
+            // A remark about this very time (e.g. "an hour was added here: it was 12:00, now 11:00") sits on its cell.
+            if let Some(note) = entry.time_notes.iter().find(|n| n.interval == k / 2 && n.end == (k % 2 == 1)).filter(|_| value.is_some()) {
+                ws.insert_note(r, col, &Note::new(&note.text).add_author_prefix(false).set_width(300).set_height(80))?;
+            }
         }
     }
 

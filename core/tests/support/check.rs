@@ -82,6 +82,19 @@ pub fn day_trips(driver: &Driver, date: NaiveDate) -> Vec<(i32, i32)> {
     out
 }
 
+/// The times the first sheet writes for a day: the trips as they are, with the time added to the day already in them (the
+/// first departure earlier by what was added before it, the trip that ends last later by what was added after it).
+pub fn written_trips(driver: &Driver, date: NaiveDate, row: &pontaj_core::catb::DayRow) -> Vec<(i32, i32)> {
+    let mut trips = day_trips(driver, date);
+    if let Some(first) = trips.first_mut() {
+        first.0 -= row.fill_before_min;
+    }
+    if let Some(last) = trips.iter_mut().max_by_key(|t| t.1) {
+        last.1 += row.fill_after_min;
+    }
+    trips
+}
+
 /// Is the place at the Bucharest end of the route (written like the test months write it)?
 fn bucharest_side(place: &str) -> bool {
     let place = place.to_lowercase();
@@ -264,10 +277,11 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
                 sum_hours += h as i32;
             }
 
-            // The times written under the hours: every trip of the day, from its departure to its arrival, the rest blank.
+            // The times written under the hours: every trip of the day, from its departure to its arrival (the time added to
+            // the day is in the first departure and the last arrival), the rest blank.
             let written: Vec<(Option<i32>, Option<i32>)> = (0..pairs).map(|p| (main.value(r + 2 + 2 * p, col).minutes(), main.value(r + 3 + 2 * p, col).minutes())).collect();
             let night_cell = engine.value(0, r + 1, col);
-            let trips = if worked && hours(row.total_min).is_some() { day_trips(driver, date) } else { Vec::new() };
+            let trips = if worked && hours(row.total_min).is_some() { written_trips(driver, date, row) } else { Vec::new() };
             debug_assert_eq!(worked && hours(row.total_min).is_some(), written_day(row, from));
             let shown = |pairs: &[(Option<i32>, Option<i32>)]| {
                 pairs

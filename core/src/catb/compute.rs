@@ -63,6 +63,7 @@ pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &S
     driver.pauses = pauses(&driver.trips, &driver.pause_edits, settings);
     assign_work_days(driver);
     driver.days = days(driver, year, month, settings);
+    super::pontaj::mark_day_edges(driver);
     let cap_min = monthly_cap_min(year, month, settings);
     driver.totals = totals(&driver.days, cap_min);
     driver.alerts = driver_alerts(driver, cap_min);
@@ -90,7 +91,7 @@ pub(super) fn effective(trip: &Trip, cfg: &CatbSettings) -> Effective {
         price = 0.0;
         price_note = EXCURSION_NOTE.into();
     }
-    Effective { departure: Some(departure), arrival, from, to, minutes, regular, counts_hours, excursion, price, price_note, work_day: Some(departure.date()) }
+    Effective { departure: Some(departure), arrival, from, to, minutes, regular, counts_hours, excursion, price, price_note, work_day: Some(departure.date()), ..Default::default() }
 }
 
 /// Is the pause part of one shift with the trips on both sides of it? A staționare (waiting that counts) that goes over at

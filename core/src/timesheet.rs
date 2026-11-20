@@ -81,6 +81,15 @@ pub struct Interval {
     pub end: i32,
 }
 
+/// A remark on one time of a day: the start (`end == false`) or the end of its `interval`-th period.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TimeNote {
+    pub interval: usize,
+    pub end: bool,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DayEntry {
@@ -104,9 +113,9 @@ pub struct DayEntry {
     pub override_night: Option<f64>,
     pub override_intervals: Option<Vec<Interval>>,
     pub code: Option<String>,
-    /// A remark about the hours of the day, written beside them (a note on the cell in the Excel): for instance that time
-    /// was added to the time of the trips. Only the mode that has something to say sets it.
-    pub note: Option<String>,
+    /// Remarks written beside some of the day's start/end times (a note on that cell in the Excel): for instance that time
+    /// was added to the first departure. Only the mode that has something to say sets them.
+    pub time_notes: Vec<TimeNote>,
     // --- Computed by `rules::recompute` ---
     pub hours: Option<f64>,
     pub night_hours: Option<f64>,

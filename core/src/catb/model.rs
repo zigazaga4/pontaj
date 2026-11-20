@@ -110,6 +110,14 @@ pub struct Effective {
     /// accountants write it on the day of the way there) and a trip that follows a staționare going over midnight. Both
     /// count on the day of the trip before them. Derived by [`super::recompute`].
     pub work_day: Option<NaiveDate>,
+    /// The trip leaves first / arrives last among the trips that count on its work day: the only two trips the time added to
+    /// the day can be put on (before its departure, after its arrival). Derived by [`super::pontaj::mark_day_edges`].
+    pub opens_day: bool,
+    pub closes_day: bool,
+    /// Minutes added before this trip's departure / after its arrival (only on the first / last trip of the day): the time
+    /// that counts and goes in the Excel is `departure − added_before_min` and `arrival + added_after_min`.
+    pub added_before_min: i32,
+    pub added_after_min: i32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

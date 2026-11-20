@@ -331,11 +331,16 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .day-stat small { color: var(--muted); font-size: 10.5px; }
 .day-stat.total b { font-size: 16px; color: var(--accent-dark); }
 .day-stat.muted b { font-weight: 500; color: var(--muted); }
-.day-stat .added-note { color: var(--accent-dark); font-style: italic; }
-.day-stat .fill { margin-top: 3px; }
-.day-stat .fill .fill-inputs { display: flex; gap: 6px; }
-.day-stat .fill .ctl { display: flex; flex-direction: column; gap: 1px; color: var(--muted); font-size: 10px; font-weight: 600; }
-.day-stat .fill .cellin.fill-input { width: 54px; padding: 2px 4px; text-align: center; border-color: var(--border); background: #fff; }
+/* A departure / arrival that carries time added to the day: the time that counts, and under it what it was and how much was added. */
+.timed { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
+.timed .counted { font-size: 14px; color: var(--accent-dark); }
+.timed .was { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.timed .was .cellin { font-size: 11px; }
+.catb-table .timed .was .cellin.clock { width: 44px; padding: 1px 3px; }
+.catb-table .timed .cellin.fill-input { width: 40px; padding: 1px 3px; text-align: center; }
+.timed .add-time { position: static; opacity: .3; font-size: 12px; line-height: 1; padding: 0 3px; }
+.trip-row:hover .timed .add-time, .timed .add-time:focus { opacity: 1; }
+.timed:not(.has-added) { flex-direction: row; }
 .day-excluded td { opacity: .5; }
 .day-excluded td .btn { opacity: 1; }
 .trip-row.removed td:not(.actions) { text-decoration: line-through; opacity: .55; }
