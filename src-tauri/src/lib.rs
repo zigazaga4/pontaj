@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use pontaj_core::{add_pdfs, catb, recompute, suggested_file_name, write_xlsx, Settings, Timesheet};
+use pontaj_core::{catb, history, recompute, suggested_file_name, write_xlsx, Settings, Timesheet};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -59,10 +59,39 @@ fn startup_files() -> Vec<String> {
     std::env::args().skip(1).filter(|a| a.to_lowercase().ends_with(".pdf")).collect()
 }
 
-/// Reads PDFs; with `previous` they are added to the existing timesheet.
+fn history_dir(app: &AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("pdf"))
+}
+
+/// Reads PDFs; with `previous` they are added to the existing timesheet. PDFs of a month that was read before are added to
+/// that month, and the result is kept (see `history`), so the month is there the next time the app opens.
 #[tauri::command]
-async fn parse_pdfs(paths: Vec<String>, settings: Settings, previous: Option<Timesheet>) -> CmdResult<Timesheet> {
-    blocking(move || add_pdfs(previous, &paths, &settings).map_err(|e| e.to_string())).await
+async fn parse_pdfs(app: AppHandle, paths: Vec<String>, settings: Settings, previous: Option<Timesheet>) -> CmdResult<Timesheet> {
+    blocking(move || history::add_pdfs(&history_dir(&app)?, previous, &paths, &settings).map_err(|e| e.to_string())).await
+}
+
+/// The months read from PDFs and kept on this computer, newest first.
+#[tauri::command]
+async fn pdf_months(app: AppHandle) -> CmdResult<Vec<history::SavedMonth>> {
+    blocking(move || Ok(history::list(&history_dir(&app)?))).await
+}
+
+/// A kept month (calculated again with the current settings), or nothing when it was never read.
+#[tauri::command]
+async fn pdf_open(app: AppHandle, year: i32, month: u32, settings: Settings) -> CmdResult<Option<Timesheet>> {
+    blocking(move || history::open(&history_dir(&app)?, year, month, &settings).map_err(|e| e.to_string())).await
+}
+
+/// Keeps the timesheet on screen, with the edits made so far.
+#[tauri::command]
+async fn pdf_save(app: AppHandle, timesheet: Timesheet) -> CmdResult<()> {
+    blocking(move || history::save(&history_dir(&app)?, &timesheet).map_err(|e| e.to_string())).await
+}
+
+/// Forgets a kept month.
+#[tauri::command]
+async fn pdf_delete(app: AppHandle, year: i32, month: u32) -> CmdResult<()> {
+    blocking(move || history::remove(&history_dir(&app)?, year, month).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -247,6 +276,10 @@ pub fn run() {
             pick_pdfs,
             startup_files,
             parse_pdfs,
+            pdf_months,
+            pdf_open,
+            pdf_save,
+            pdf_delete,
             recalculate,
             export_excel,
             catb_months,

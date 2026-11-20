@@ -1,13 +1,12 @@
 // Categoria B — the drivers' trips from the ALT API, turned into a pontaj. This module is the controller: it loads and
 // saves the month, keeps the edits in order, and draws the summary, the driver list and the chosen driver.
 import { api } from "./api.js";
+import { createAutosave } from "./autosave.js";
 import { $, h, toast, busy } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { askNewTrip, chip, renderCatbDriver } from "./catb_driver.js";
-import { duration, lei } from "./time.js";
+import { duration, lei, MONTHS } from "./time.js";
 
-const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
-const SAVE_DELAY_MS = 1200;
 /** The month on screen is asked from the API again this often (a correction made there shows up without a click). */
 const REFRESH_EVERY_MS = 10 * 60 * 1000;
 const REFRESH_RETRY_MS = 2 * 60 * 1000;
@@ -37,9 +36,8 @@ const untariffed = (driver) => driver.trips.filter((t) => !t.edit.removed && t.e
 export function createCatb({ getSettings, saveSettings }) {
   const today = new Date();
   const previous = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const state = { sheet: null, year: previous.getFullYear(), month: previous.getMonth() + 1, saved: [], driverId: null, filter: "", onlyIssues: false, dirty: false, loaded: false, refreshError: null };
+  const state = { sheet: null, year: previous.getFullYear(), month: previous.getMonth() + 1, saved: [], driverId: null, filter: "", onlyIssues: false, loaded: false, refreshError: null };
   let queue = Promise.resolve();
-  let saveTimer = null;
   let refreshing = false;
   let nextRefreshAt = 0;
 
@@ -48,23 +46,9 @@ export function createCatb({ getSettings, saveSettings }) {
 
   // ---- saving ----
 
-  function markDirty() {
-    state.dirty = true;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(flush, SAVE_DELAY_MS);
-  }
-
-  async function flush() {
-    clearTimeout(saveTimer);
-    if (!state.dirty || !state.sheet) return;
-    state.dirty = false;
-    try {
-      await api.catbSave(state.sheet);
-    } catch (err) {
-      state.dirty = true;
-      toast(`Modificările nu au putut fi salvate: ${err}`, { kind: "warn" });
-    }
-  }
+  const { markDirty, flush } = createAutosave(async () => state.sheet && (await api.catbSave(state.sheet)), {
+    onError: (err) => toast(`Modificările nu au putut fi salvate: ${err}`, { kind: "warn" }),
+  });
 
   // ---- editing ----
 

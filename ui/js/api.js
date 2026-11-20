@@ -6,8 +6,13 @@ export const api = {
   saveSettings: (settings) => invoke("save_settings", { settings }),
   pickPdfs: () => invoke("pick_pdfs"),
   startupFiles: () => invoke("startup_files"),
-  // `previous` (the sheet on screen) lets new PDFs be added without losing edits.
+  // `previous` (the sheet on screen) lets new PDFs be added without losing edits. The result is kept by month.
   parsePdfs: (paths, settings, previous) => invoke("parse_pdfs", { paths, settings, previous }),
+  // The months read from PDFs stay on this computer: { year, month, drivers, files, worked, broken }, newest first.
+  pdfMonths: () => invoke("pdf_months"),
+  pdfOpen: (year, month, settings) => invoke("pdf_open", { year, month, settings }),
+  pdfSave: (timesheet) => invoke("pdf_save", { timesheet }),
+  pdfDelete: (year, month) => invoke("pdf_delete", { year, month }),
   recalculate: (timesheet, settings) => invoke("recalculate", { timesheet, settings }),
   exportExcel: (timesheet, settings) => invoke("export_excel", { timesheet, settings }),
   openFile: (path) => invoke("open_file", { path }),

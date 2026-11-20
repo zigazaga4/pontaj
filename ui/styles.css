@@ -74,7 +74,7 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .chip small { display: block; color: var(--muted); font-size: 11px; }
 .chip b { font-size: 17px; }
 
-.files { display: flex; gap: 6px; flex-wrap: wrap; }
+.files { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .file { background: #e8eefc; color: #1e3a8a; padding: 3px 10px; border-radius: 99px; font-size: 12px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .warnings { background: #fff7e6; border: 1px solid #f5d38a; border-radius: var(--radius); padding: 8px 14px; max-height: 90px; overflow: auto; }
@@ -278,10 +278,19 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .driver-filter { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; font: inherit; width: 100%; }
 .check-line { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; padding: 0 2px; }
 .driver-list { display: flex; flex-direction: column; gap: 6px; }
-.driver-row { position: relative; }
-.driver-row .driver { width: 100%; padding-right: 34px; }
-.driver-remove { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 17px; line-height: 20px; text-align: center; cursor: pointer; }
-.driver-remove:hover, .driver-remove:focus-visible { background: #fdeeee; color: var(--danger); }
+.driver-row, .saved-month { position: relative; }
+.driver-row .driver, .saved-month .driver { width: 100%; padding-right: 34px; }
+.driver-remove, .saved-remove { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 17px; line-height: 20px; text-align: center; cursor: pointer; }
+.driver-remove:hover, .driver-remove:focus-visible, .saved-remove:hover, .saved-remove:focus-visible { background: #fdeeee; color: var(--danger); }
+
+/* ---------- Months kept on this computer ---------- */
+.saved-months { display: flex; flex-direction: column; gap: 6px; text-align: left; max-height: 42vh; overflow: auto; }
+.saved-month .saved-open { display: block; }
+.saved-month.current .saved-open { border-color: var(--accent); background: #eff4ff; }
+.saved-month.broken .saved-open { cursor: default; opacity: .7; }
+.saved { margin-top: 28px; }
+.saved h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 4px 8px; text-align: left; }
+.files .saved-button { margin-left: auto; }
 .hidden-drivers { margin-top: 8px; border: 1px dashed var(--border); border-radius: 9px; padding: 6px 10px; font-size: 12px; }
 .hidden-drivers summary { cursor: pointer; color: var(--muted); font-weight: 600; }
 .hidden-drivers p { margin: 6px 0; }

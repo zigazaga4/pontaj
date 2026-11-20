@@ -8,9 +8,10 @@ import { acceptedName } from "./driver_fields.js";
 import { renderSettings } from "./settings.js";
 import { checkForUpdates, watchForUpdates } from "./updater.js";
 import { createCatb } from "./catb.js";
-import { hoursText, signed } from "./time.js";
-
-const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
+import { createAutosave } from "./autosave.js";
+import { showDialog } from "./dialog.js";
+import { monthTitle, savedMonthList } from "./saved_months.js";
+import { hoursText, signed, MONTHS } from "./time.js";
 
 /** The three steps, in the order the user goes through them. */
 const TABS = [
@@ -24,11 +25,36 @@ const TAGLINES = {
   catb: "Din cursele aplicației ALT direct în foaia de pontaj",
 };
 
-const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null, mode: "pdf", focusDate: null };
+// `months`: the months read from PDFs and kept on this computer (the sheet on screen is saved there by itself).
+const state = { settings: null, sheet: null, months: [], selected: null, tab: "scanned", emp: 0, view: null, mode: "pdf", focusDate: null };
 
 const catb = createCatb({ getSettings: () => state.settings, saveSettings: persistSettings });
 
 const basename = (path) => path.split(/[\\/]/).pop();
+
+const autosave = createAutosave(async () => state.sheet && (await api.pdfSave(state.sheet)), {
+  onError: (err) => toast(`Modificările nu au putut fi salvate: ${err}`, { kind: "warn" }),
+});
+
+// Edits are applied and recalculated one after another, so a quick second edit
+// is never lost to the answer of the first.
+let queue = Promise.resolve();
+
+/** Lets the edits in progress finish and writes the sheet to disk now (before another month opens, before an update restarts the app). */
+async function flushPending() {
+  await queue;
+  await autosave.flush();
+}
+
+// The newest kept month opens by itself, once per run (not when PDFs are being opened, nor after the month was closed on purpose).
+let restored = false;
+
+async function restoreLastMonth() {
+  if (restored || state.sheet) return;
+  restored = true;
+  const last = state.months.find((m) => !m.broken);
+  if (last) await openSaved(last);
+}
 
 /** Switches between the tachograph PDFs and the Categoria B (API) pontaj. */
 function setMode(mode) {
@@ -40,6 +66,7 @@ function setMode(mode) {
   if (mode === "pdf") {
     catb.hide();
     render();
+    restoreLastMonth();
   } else {
     $("#empty").hidden = true;
     $("#workspace").hidden = true;
@@ -55,21 +82,25 @@ async function loadFiles(paths) {
     if (paths.length) toast("Se acceptă doar fișiere PDF.", { kind: "warn" });
     return;
   }
+  restored = true; // the PDFs are what he came for, not the month kept from before
   if (state.mode !== "pdf") setMode("pdf");
-  const fresh = pdfs.filter((p) => !state.files.some((f) => basename(f) === basename(p)));
+  const loaded = state.sheet?.sources ?? [];
+  const fresh = pdfs.filter((p) => !loaded.includes(basename(p)));
   if (!fresh.length) {
     toast("Fișierele acestea sunt deja încărcate.", { kind: "info", timeout: 2500 });
     return;
   }
   busy(`Se citesc ${fresh.length} PDF-uri…`);
   try {
-    const first = !state.sheet;
-    const sheet = await api.parsePdfs(fresh, state.settings, state.sheet);
-    // A PDF of another month starts a new timesheet: forget the files that are no longer part of it.
-    state.files = [...state.files, ...fresh].filter((f) => sheet.sources.includes(basename(f)));
+    await flushPending(); // the month on screen is written first: the PDFs may belong to another month
+    const before = state.sheet;
+    const sheet = await api.parsePdfs(fresh, state.settings, before);
+    // PDFs of another month open that month: the one on screen stays kept as it was.
+    const sameMonth = before && before.year === sheet.year && before.month === sheet.month;
     state.sheet = sheet;
-    if (first || state.emp >= sheet.employees.length) Object.assign(state, { tab: "scanned", emp: 0, selected: null });
+    if (!sameMonth || state.emp >= sheet.employees.length) Object.assign(state, { tab: "scanned", emp: 0, selected: null });
     render();
+    await refreshMonths();
     toast(`${sheet.employees.length} șoferi încărcați. Verifică datele citite, apoi treci la pontaj.`, { kind: "ok", timeout: 4000 });
   } catch (err) {
     toast(String(err), { kind: "error", timeout: 0 });
@@ -78,16 +109,14 @@ async function loadFiles(paths) {
   }
 }
 
-// Edits are applied and recalculated one after another, so a quick second edit
-// is never lost to the answer of the first.
-let queue = Promise.resolve();
-
 /** Applies `mutate(sheet)`, recalculates in Rust and updates the screen. */
 function edit(mutate, { structural = false } = {}) {
   queue = queue
     .then(async () => {
+      if (!state.sheet) return; // the month was closed meanwhile
       mutate?.(state.sheet);
       state.sheet = await api.recalculate(state.sheet, state.settings);
+      autosave.markDirty();
       structural ? renderView() : state.view?.refresh();
       renderSummary();
       renderDrivers();
@@ -132,7 +161,7 @@ function render() {
   $("#workspace").hidden = !has;
   $("#btn-export").disabled = !has;
   $("#btn-clear").hidden = !has;
-  if (!has) return;
+  if (!has) return renderSaved();
   renderSummary();
   renderFiles();
   renderWarnings();
@@ -201,6 +230,7 @@ function renderView() {
       },
       onFunction: (ei, text) => {
         state.sheet.employees[ei].function = text;
+        autosave.markDirty();
       },
       onName: (ei, raw) => {
         const current = state.sheet.employees[ei].name;
@@ -232,8 +262,83 @@ function renderSummary() {
 
 function renderFiles() {
   $("#files").replaceChildren(
-    ...state.files.map((path) => h("span", { class: "file", title: path }, "📄 ", basename(path))),
+    ...state.sheet.sources.map((name) => h("span", { class: "file", title: name }, "📄 ", name)),
+    h("button", { class: "btn small saved-button", type: "button", title: "Lunile citite din PDF-uri rămân salvate pe acest calculator", onclick: showSavedMonths }, `Luni salvate (${state.months.length})`),
   );
+}
+
+// ---- the months kept on this computer ----
+
+/** The list of kept months, as the empty screen shows it. */
+function renderSaved() {
+  $("#saved").hidden = !state.months.length;
+  $("#saved-list").replaceChildren(savedMonthList({ months: state.months, onOpen: openSaved, onDelete: deleteSaved }));
+}
+
+async function refreshMonths() {
+  try {
+    state.months = await api.pdfMonths();
+  } catch (err) {
+    toast(`Lista lunilor salvate nu a putut fi citită: ${err}`, { kind: "warn" });
+  }
+  if (state.mode !== "pdf") return;
+  if (state.sheet) renderFiles();
+  else renderSaved();
+}
+
+async function openSaved(month) {
+  if (state.mode !== "pdf") setMode("pdf");
+  restored = true;
+  busy("Se deschide luna…");
+  try {
+    await flushPending();
+    const sheet = await api.pdfOpen(month.year, month.month, state.settings);
+    if (!sheet) {
+      toast("Luna aceasta nu mai este în memorie.", { kind: "warn" });
+      return await refreshMonths();
+    }
+    Object.assign(state, { sheet, tab: "scanned", emp: 0, selected: null });
+    render();
+  } catch (err) {
+    toast(String(err), { kind: "error", timeout: 0 });
+  } finally {
+    busy(null);
+  }
+}
+
+/** Forgets a kept month after asking (the PDFs and the Excel files of the person are not touched). Resolves true when it is gone. */
+async function deleteSaved(month) {
+  if (!confirm(`Ștergi ${monthTitle(month)} din memoria aplicației? Modificările făcute în această lună se pierd. Fișierele tale PDF și Excel nu se ating.`)) return false;
+  try {
+    await flushPending(); // what is waiting to be written must not bring the month back after it is deleted
+    await api.pdfDelete(month.year, month.month);
+  } catch (err) {
+    toast(String(err), { kind: "error", timeout: 0 });
+    return false;
+  }
+  if (state.sheet?.year === month.year && state.sheet?.month === month.month) {
+    Object.assign(state, { sheet: null, selected: null, tab: "scanned", emp: 0, view: null });
+    render();
+  }
+  await refreshMonths();
+  return true;
+}
+
+/** The "Luni salvate" button of an open month: a list to open another one from. */
+async function showSavedMonths() {
+  const chosen = await showDialog({
+    title: "Luni salvate pe acest calculator",
+    body: (close) => savedMonthList({ months: state.months, current: state.sheet, onOpen: close, onDelete: deleteSaved }),
+  });
+  if (chosen && typeof chosen === "object") await openSaved(chosen);
+}
+
+/** Closes the month on screen; it stays kept and can be opened again from the list. */
+async function closeMonth() {
+  await flushPending();
+  Object.assign(state, { sheet: null, selected: null, tab: "scanned", emp: 0, view: null });
+  render();
+  await refreshMonths();
 }
 
 function renderWarnings() {
@@ -287,20 +392,16 @@ async function init() {
   $("#btn-close-settings").addEventListener("click", () => openSettings(false));
   document.querySelectorAll("#modes .mode").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
   const idle = () => state.mode === "pdf" && !state.sheet && $("#overlay").hidden; // nothing open, nothing loading: safe to restart
-  // Categoria B saves by itself (the last edit is written first); a sheet read from PDFs is lost on restart, so he is asked.
+  // Both modes save by themselves; before the app restarts the last edit of each is written first.
   const updates = {
     canInstallNow: idle,
-    beforeInstall: async () => {
-      if (state.mode === "pdf" && state.sheet && !confirm("Pontajul deschis din PDF-uri nu se păstrează la repornire. Instalezi totuși actualizarea?")) return false;
-      await catb.flush();
-    },
+    beforeInstall: () => Promise.all([flushPending(), catb.flush()]),
   };
   $("#btn-update").addEventListener("click", () => checkForUpdates({ ...updates, manual: true }));
   api.appVersion().then((v) => ($("#app-version").textContent = `Versiunea ${v}`)).catch(() => {});
-  $("#btn-clear").addEventListener("click", () => {
-    Object.assign(state, { sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null });
-    render();
-  });
+  $("#btn-clear").addEventListener("click", closeMonth);
+  window.addEventListener("pagehide", () => autosave.flush());
+  document.addEventListener("visibilitychange", () => document.hidden && autosave.flush());
   onFileDrop({
     enter: () => ($("#drop-hint").hidden = false),
     leave: () => ($("#drop-hint").hidden = true),
@@ -310,11 +411,17 @@ async function init() {
     },
   });
   const startup = await api.startupFiles();
+  try {
+    state.months = await api.pdfMonths();
+  } catch (err) {
+    toast(`Lista lunilor salvate nu a putut fi citită: ${err}`, { kind: "warn" });
+  }
+  restored = startup.length > 0;
   setMode(startup.length ? "pdf" : localStorage.getItem("pontaj.mode") === "catb" ? "catb" : "pdf");
   if (startup.length) await loadFiles(startup);
-  // At start nothing was edited yet and Categoria B months are saved on disk, so that mode can restart too; later checks
+  // At start nothing was edited yet and every month is saved on disk, so the app can restart whatever is open; later checks
   // only offer the update while something is open.
-  checkForUpdates({ ...updates, canInstallNow: () => idle() || state.mode === "catb" });
+  checkForUpdates({ ...updates, canInstallNow: () => $("#overlay").hidden });
   watchForUpdates(updates);
 }
 

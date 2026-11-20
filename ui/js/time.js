@@ -3,6 +3,8 @@
 
 export const DAY = 1440;
 
+export const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
+
 const two = (n) => String(n).padStart(2, "0");
 
 /** "HH:MM", wrapping around midnight. */

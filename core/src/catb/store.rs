@@ -1,41 +1,22 @@
-//! Saving the months: one JSON file per month (`2026-10.json`) in a folder of the app.
-//! The office's edits live only here and in the Excel files, so a write never destroys the previous version:
-//! the file is written beside the old one and moved into place, and the old one is kept as `2026-10.json.bak`.
+//! Saving the Categoria B months: one JSON file per month in the `catb` folder of the app (how the files are written and
+//! kept is in [`crate::store`]).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::model::Sheet;
-use crate::{Error, Result};
+use crate::store;
+use crate::Result;
 
-fn file(dir: &Path, year: i32, month: u32) -> PathBuf {
-    dir.join(format!("{year}-{month:02}.json"))
-}
+pub use crate::store::list;
 
 /// Saves a month.
 pub fn save(dir: &Path, sheet: &Sheet) -> Result<()> {
-    std::fs::create_dir_all(dir).map_err(|e| Error::new(format!("Nu pot crea dosarul pentru salvare: {e}")))?;
-    let json = serde_json::to_vec(sheet).map_err(|e| Error::new(format!("Nu pot pregăti luna pentru salvare: {e}")))?;
-    let target = file(dir, sheet.year, sheet.month);
-    let temp = target.with_extension("json.tmp");
-    std::fs::write(&temp, json).map_err(|e| Error::new(format!("Nu pot salva luna: {e}")))?;
-    if target.exists() {
-        // Best effort: the backup is a convenience, the new file is what matters.
-        let _ = std::fs::rename(&target, target.with_extension("json.bak"));
-    }
-    std::fs::rename(&temp, &target).map_err(|e| Error::new(format!("Nu pot salva luna: {e}")))
+    store::save(dir, sheet.year, sheet.month, sheet)
 }
 
 /// A saved month, if there is one. A file that cannot be read is an error (and stays where it is).
 pub fn load(dir: &Path, year: i32, month: u32) -> Result<Option<Sheet>> {
-    let path = file(dir, year, month);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(Error::new(format!("Nu pot citi luna salvată: {e}"))),
-    };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|e| Error::new(format!("Luna salvată {year}-{month:02} nu poate fi citită ({e}). Copia de siguranță este lângă ea, cu extensia .bak.")))
+    store::load(dir, year, month)
 }
 
 /// The months saved on each side of one (before, after), if there are any: the trips just outside a month are theirs (see
@@ -46,25 +27,10 @@ pub fn load_around(dir: &Path, year: i32, month: u32) -> (Option<Sheet>, Option<
     (load(dir, before_year, before_month).ok().flatten(), load(dir, after_year, after_month).ok().flatten())
 }
 
-/// The saved months, newest first.
-pub fn list(dir: &Path) -> Vec<(i32, u32)> {
-    let mut months: Vec<(i32, u32)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let (year, month) = name.strip_suffix(".json")?.split_once('-')?;
-            let (year, month): (i32, u32) = (year.parse().ok()?, month.parse().ok()?);
-            (1..=12).contains(&month).then_some((year, month))
-        })
-        .collect();
-    months.sort_unstable_by(|a, b| b.cmp(a));
-    months
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::super::merge::new_sheet;
     use super::*;
 

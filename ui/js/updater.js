@@ -39,8 +39,8 @@ export async function installUpdate(update, beforeInstall) {
 
 /**
  * Looks for an update and acts on it.
- * - `canInstallNow()`: true when nothing would be lost by restarting (no sheet open). The update is then
- *   installed without asking; otherwise a message offers it.
+ * - `canInstallNow()`: true when a restart would not get in the way (no sheet open, nothing loading). The update is then
+ *   installed without asking; otherwise a message offers it. What is open is saved by `beforeInstall` either way.
  * - `manual`: the user asked, so "no update" and failures are reported too, and nothing is installed unasked.
  */
 export async function checkForUpdates({ manual = false, canInstallNow = () => false, beforeInstall } = {}) {
@@ -64,8 +64,7 @@ export async function checkForUpdates({ manual = false, canInstallNow = () => fa
   ready.hidden = false;
   if (!manual && announced === update.version) return;
   announced = update.version;
-  const warning = canInstallNow() ? "" : " Pontajul deschis nu se păstrează la repornire: exportă mai întâi Excel-ul.";
-  toast(`Versiune nouă disponibilă: ${update.version}.${warning}`, {
+  toast(`Versiune nouă disponibilă: ${update.version}. Ce ai lucrat se salvează singur și rămâne după repornire.`, {
     kind: "info",
     timeout: 0,
     action: { label: "Actualizează acum", run: () => installUpdate(update, beforeInstall) },
