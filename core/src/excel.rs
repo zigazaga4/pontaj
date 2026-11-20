@@ -648,7 +648,8 @@ mod tests {
 
     #[test]
     fn audit_states_the_rules_in_use() {
-        let mut settings = Settings::default();
+        // A minimum of 3 hours for the night chosen by the office (the default writes every night hour).
+        let mut settings = Settings { night_threshold_min: 180, ..Settings::default() };
         let blank = Timesheet {
             company: String::new(),
             location: String::new(),
@@ -670,7 +671,7 @@ mod tests {
 
         settings.interval_mode = IntervalMode::Card;
         settings.night_source = NightSource::Card;
-        settings.night_threshold_min = 0;
+        settings.night_threshold_min = Settings::default().night_threshold_min;
         let lines = audit_rules(&blank, &settings).join("\n");
         assert!(lines.contains("orele reale de pe card"));
         assert!(lines.contains("coloana „Noapte” din raportul de tahograf") && lines.contains("se trec toate orele de noapte"));

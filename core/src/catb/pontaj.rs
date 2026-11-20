@@ -366,18 +366,16 @@ mod tests {
     #[test]
     fn a_trip_after_midnight_is_written_past_24_hours_and_the_night_follows_the_written_times() {
         // 22:30 → 01:30 with half an hour added on each side: 22:00 → 02:00, one interval. The night (00:00–07:00 by default)
-        // is the two hours after midnight, the time added after the arrival included; under the threshold of 3 hours nothing
-        // is written for it.
+        // is the two hours after midnight, the time added after the arrival included: written as 2 (no minimum by default).
         let sheet = driver_sheet(&[(OTP, "Constanta", "2026-10-07 22:30", 180)]);
         let timesheet = to_timesheet(&sheet, &Settings::default());
         let day = entry(&timesheet, "TEST SOFER", 7);
         assert_eq!(day.intervals, [iv(22 * 60, 26 * 60)]);
-        assert_eq!((day.hours, day.night_min, day.night_hours), (Some(4.0), 120, None));
-        // With no threshold the two hours are written as 2.
-        let mut settings = Settings::default();
-        settings.night_threshold_min = 0;
+        assert_eq!((day.hours, day.night_min, day.night_hours), (Some(4.0), 120, Some(2.0)));
+        // A minimum of 3 hours chosen by the office leaves them out.
+        let settings = Settings { night_threshold_min: 180, ..Settings::default() };
         let day = entry(&to_timesheet(&sheet, &settings), "TEST SOFER", 7).clone();
-        assert_eq!(day.night_hours, Some(2.0));
+        assert_eq!((day.night_min, day.night_hours), (120, None));
     }
 
     #[test]

@@ -19,7 +19,12 @@ pub enum NightSource {
 
 /// Bumped whenever a default changes in a way that must also reach settings saved by older versions.
 /// 2: night hours are 00:00–07:00, measured on the written intervals.
-pub const SETTINGS_VERSION: u32 = 2;
+/// 3: every hour of the night is written, with no minimum (the old default asked for 3 hours at least: [`OLD_NIGHT_THRESHOLD_MIN`]).
+pub const SETTINGS_VERSION: u32 = 3;
+
+/// The minimum night work (3 hours) that was the default before version 3. Settings still holding exactly this are moved to
+/// "no minimum"; any other value was the office's own choice and stays.
+const OLD_NIGHT_THRESHOLD_MIN: i32 = 180;
 
 /// Settings files written before the version existed count as version 0.
 fn legacy_version() -> u32 {
@@ -90,7 +95,7 @@ impl Default for Settings {
             night_source: NightSource::default(),
             night_start: "00:00".into(),
             night_end: "07:00".into(),
-            night_threshold_min: 180,
+            night_threshold_min: 0,
             hours_per_day: 8,
             default_start: "08:00".into(),
             prepared_by: String::new(),
@@ -102,13 +107,17 @@ impl Default for Settings {
 
 impl Settings {
     /// Brings settings saved by an older version up to the current defaults.
-    /// Version 2 moved the night to 00:00–07:00 (from the written intervals); everything else the user set is kept.
+    /// Version 2 moved the night to 00:00–07:00 (from the written intervals); version 3 dropped the 3-hour minimum for the
+    /// night hours (a minimum the office chose itself stays); everything else the user set is kept.
     pub fn migrated(mut self) -> Self {
+        let current = Settings::default();
         if self.settings_version < 2 {
-            let current = Settings::default();
             self.night_source = current.night_source;
             self.night_start = current.night_start;
             self.night_end = current.night_end;
+        }
+        if self.settings_version < 3 && self.night_threshold_min == OLD_NIGHT_THRESHOLD_MIN {
+            self.night_threshold_min = current.night_threshold_min;
         }
         self.settings_version = SETTINGS_VERSION;
         self
@@ -145,6 +154,21 @@ mod tests {
         assert_eq!((s.night_source, s.night_window()), (NightSource::Intervals, (0, 7 * 60)));
         assert_eq!((s.night_threshold_min, s.company_name.as_str()), (240, "EXEMPLU SRL"));
         assert_eq!(s.settings_version, SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn every_hour_of_the_night_is_written_by_default_and_the_old_default_minimum_is_dropped() {
+        assert_eq!(Settings::default().night_threshold_min, 0);
+        // Saved by 0.5.x with the old default minimum (3 hours): dropped. A minimum the office typed itself stays.
+        let old_default: Settings = serde_json::from_str(r#"{ "settingsVersion": 2, "nightThresholdMin": 180, "companyName": "EXEMPLU SRL" }"#).unwrap();
+        let s = old_default.migrated();
+        assert_eq!((s.night_threshold_min, s.company_name.as_str(), s.settings_version), (0, "EXEMPLU SRL", SETTINGS_VERSION));
+        let own_choice: Settings = serde_json::from_str(r#"{ "settingsVersion": 2, "nightThresholdMin": 120 }"#).unwrap();
+        assert_eq!(own_choice.migrated().night_threshold_min, 120);
+        // Once on the new version a 3-hour minimum chosen again is kept.
+        let chosen = Settings { night_threshold_min: 180, ..Settings::default() };
+        let json = serde_json::to_string(&chosen).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap().migrated().night_threshold_min, 180);
     }
 
     #[test]
