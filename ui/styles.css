@@ -331,9 +331,11 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .day-stat small { color: var(--muted); font-size: 10.5px; }
 .day-stat.total b { font-size: 16px; color: var(--accent-dark); }
 .day-stat.muted b { font-weight: 500; color: var(--muted); }
-.day-stat.fill .fill-inputs { display: flex; gap: 6px; }
-.day-stat.fill .ctl { display: flex; flex-direction: column; gap: 1px; color: var(--muted); font-size: 10px; font-weight: 600; }
-.day-stat.fill .cellin.fill-input { width: 54px; padding: 2px 4px; text-align: center; border-color: var(--border); background: #fff; }
+.day-stat .added-note { color: var(--accent-dark); font-style: italic; }
+.day-stat .fill { margin-top: 3px; }
+.day-stat .fill .fill-inputs { display: flex; gap: 6px; }
+.day-stat .fill .ctl { display: flex; flex-direction: column; gap: 1px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.day-stat .fill .cellin.fill-input { width: 54px; padding: 2px 4px; text-align: center; border-color: var(--border); background: #fff; }
 .day-excluded td { opacity: .5; }
 .day-excluded td .btn { opacity: 1; }
 .trip-row.removed td:not(.actions) { text-decoration: line-through; opacity: .55; }

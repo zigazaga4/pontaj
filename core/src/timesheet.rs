@@ -104,6 +104,9 @@ pub struct DayEntry {
     pub override_night: Option<f64>,
     pub override_intervals: Option<Vec<Interval>>,
     pub code: Option<String>,
+    /// A remark about the hours of the day, written beside them (a note on the cell in the Excel): for instance that time
+    /// was added to the time of the trips. Only the mode that has something to say sets it.
+    pub note: Option<String>,
     // --- Computed by `rules::recompute` ---
     pub hours: Option<f64>,
     pub night_hours: Option<f64>,

@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use chrono::NaiveDate;
-use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, FormatBorder, Formula, RowNum, Workbook, Worksheet, XlsxError};
+use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, FormatBorder, Formula, Note, RowNum, Workbook, Worksheet, XlsxError};
 
 use crate::calendar::month_name;
 use crate::settings::{IntervalMode, NightSource, Settings};
@@ -290,6 +290,10 @@ fn write_employee(
             (None, Some(h), None) => ws.write_number_with_format(row, col, h, &day)?,
             (None, None, None) => ws.write_blank(row, col, &day)?,
         };
+        // The remark about the hours (e.g. time added to the trips) sits on the cell of the hours.
+        if let (None, Some(text)) = (&entry.code, &entry.note) {
+            ws.insert_note(row, col, &Note::new(text).add_author_prefix(false).set_width(300).set_height(90))?;
+        }
         match entry.night_hours {
             Some(n) => ws.write_number_with_format(row + 1, col, n, &day)?,
             None => ws.write_blank(row + 1, col, &day)?,

@@ -12,7 +12,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use super::model::{DayRow, Driver, Sheet};
 use crate::rules::{compute_totals, recompute_day};
 use crate::settings::{IntervalMode, NightSource, Settings};
-use crate::time::round_hours;
+use crate::time::{fmt_duration, round_hours};
 use crate::timesheet::{display_name, DayEntry, Employee, Interval, Timesheet, Totals};
 
 /// A period that counts, on the day it belongs to: `start` and `minutes` from the midnight that opens `day`, so what happens
@@ -60,6 +60,27 @@ pub(super) fn day_span(driver: &Driver, date: NaiveDate) -> Option<(i32, i32)> {
     Some((trips.iter().map(|b| b.start).min()?, trips.iter().map(|b| b.end).max()?))
 }
 
+/// The remark written beside the hours of a day that got time added to the time of its trips: what the trips took, what was
+/// added and where, and the total. `None` when nothing was added.
+pub(super) fn added_note(row: &DayRow) -> Option<String> {
+    if row.fill_min <= 0 {
+        return None;
+    }
+    let (before, after) = (row.fill_before_min, row.fill_after_min);
+    let places = match (before > 0, after > 0) {
+        (true, true) => format!("{} înainte de prima plecare, {} după ultima sosire", fmt_duration(before), fmt_duration(after)),
+        (true, false) => format!("{} înainte de prima plecare", fmt_duration(before)),
+        _ => format!("{} după ultima sosire", fmt_duration(after)),
+    };
+    let typed = if row.fill_manual { "; scris de birou" } else { "" };
+    Some(format!(
+        "Timp adăugat la timpul inițial: din cursă {}, adăugat {} ({places}{typed}), în total {}.",
+        fmt_duration(row.trip_min),
+        fmt_duration(row.fill_min),
+        fmt_duration(row.total_min)
+    ))
+}
+
 /// One day of one driver. A day taken out of the pontaj stays empty; a leave is its code. The hours are the day's total
 /// (trips and time added, no waiting) rounded; the start/end times are those of its trips ([`trip_intervals`]).
 fn day_entry(driver: &Driver, day: u32, date: NaiveDate, settings: &Settings) -> DayEntry {
@@ -70,6 +91,7 @@ fn day_entry(driver: &Driver, day: u32, date: NaiveDate, settings: &Settings) ->
             entry.code = Some(code.clone());
         } else if row.total_min > 0 {
             entry.worked_min = row.total_min;
+            entry.note = added_note(row);
             // The span of the day with the time added to it (the times written are only those of the trips).
             if let Some((first, last)) = day_span(driver, date) {
                 entry.first_start = Some(first - row.fill_before_min);
@@ -190,6 +212,9 @@ mod tests {
         assert_eq!(day.hours, Some(4.0));
         assert_eq!((day.first_start, day.last_end), (Some(10 * 60 + 30), Some(14 * 60 + 30)), "the span of the day with the time added");
         assert_eq!(day.intervals, [iv(11 * 60, 14 * 60)], "the trip, from its departure to its arrival");
+        // The hours carry a remark that says what was added to the time of the trip, so nobody wonders why 4 h and 3 h of trip.
+        let note = day.note.as_deref().expect("a remark beside the hours of a day with time added");
+        assert_eq!(note, "Timp adăugat la timpul inițial: din cursă 3:00, adăugat 1:00 (0:30 înainte de prima plecare, 0:30 după ultima sosire), în total 4:00.");
         // Without the setting the day keeps the hours of the trip, and the same times.
         let mut settings = Settings::default();
         settings.catb.fill_day = false;
@@ -197,6 +222,7 @@ mod tests {
         let day = entry(&plain, "POPESCU ION", 5);
         assert_eq!((day.hours, day.first_start, day.last_end), (Some(3.0), Some(11 * 60), Some(14 * 60)));
         assert_eq!(day.intervals, [iv(11 * 60, 14 * 60)]);
+        assert_eq!(day.note, None, "nothing was added, nothing to say");
     }
 
     fn iv(start: i32, end: i32) -> Interval {

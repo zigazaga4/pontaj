@@ -353,6 +353,25 @@ function pauseRows(driver, pause, edit, resolveOverlap) {
 /** One figure of the day header with its caption under it. */
 const dayStat = (label, value, tone = "", title) => h("div", { class: `day-stat ${tone}`, title }, h("b", {}, value), h("small", {}, label));
 
+/** What the added time of a day is, in words, next to the hours: "include 1:00 adăugat la cele 3:00 din cursă". */
+const addedText = (row) => `include ${duration(row.fillMin)} adăugat la cele ${duration(row.tripMin)} din cursă`;
+
+/**
+ * The hours of a day, as one figure: the time on the trips plus the time added to it, with a line beside it that says how much of
+ * it was added (the boxes where the added time can be changed sit in that line). Nothing is shown apart from the hours.
+ */
+function hoursStat(driver, row, date, excluded, edit) {
+  const adjustable = !excluded && row.tripMin > 0;
+  const title = row.fillMin > 0
+    ? `${addedText(row)}: o oră pe cursă regulată, jumătate înainte de prima plecare și jumătate după ultima sosire, fără ca ziua să treacă de 8 ore.`
+    : "Cât a fost în cursă. Nu s-a adăugat timp.";
+  return h("div", { class: "day-stat total hours-stat", title },
+    h("b", {}, duration(row.totalMin)),
+    h("small", {}, "Ore zi"),
+    row.fillMin > 0 ? h("small", { class: "added-note" }, `(${addedText(row)})`) : null,
+    adjustable ? fillStat(driver, row, date, edit) : null);
+}
+
 /**
  * The time added to a day, an hour for each regular trip: before the first departure and after the last arrival. Both boxes show what
  * counts now (the rules' value or the office's), and typing changes it; an empty box goes back to the rules, 0 adds nothing.
@@ -361,7 +380,7 @@ function fillStat(driver, row, date, edit) {
   const side = (key, field, label) => {
     const typed = () => driver.fills?.[date]?.[key];
     return h("label", { class: "ctl", title: `${label}. Scrie orele (ex. 1, 1:30), 0 = nimic, gol = după reguli.` },
-      h("span", {}, key === "before" ? "la plecare" : "la sosire"),
+      h("span", {}, key === "before" ? "adăugat la plecare" : "adăugat la sosire"),
       bound({
         className: "fill-input",
         dataset: { key: `fill-${key}:${date}` },
@@ -376,9 +395,8 @@ function fillStat(driver, row, date, edit) {
         commit: (value) => edit((d) => setFill(d, date, key, value)),
       }));
   };
-  return h("div", { class: "day-stat fill" },
-    h("div", { class: "fill-inputs" }, side("before", "fillBeforeMin", "Timp adăugat înainte de prima plecare"), side("after", "fillAfterMin", "Timp adăugat după ultima sosire")),
-    h("small", {}, "Completare (o oră pe cursă)"));
+  return h("div", { class: "fill" },
+    h("div", { class: "fill-inputs" }, side("before", "fillBeforeMin", "Timp adăugat înainte de prima plecare"), side("after", "fillAfterMin", "Timp adăugat după ultima sosire")));
 }
 
 /** Types the time added to a day on one side (`"before"` / `"after"`, in minutes; `null` = back to the rules). */
@@ -464,10 +482,8 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
         row && !elsewhere
           ? h("div", { class: "day-stats" },
               dayStat("Curse regulate", row.legs),
-              dayStat("Ore curse", duration(row.tripMin)),
               dayStat("Staționare (nu intră în total)", duration(row.stationMin), "muted", STATION_NOT_COUNTED),
-              !excluded && row.tripMin > 0 ? fillStat(driver, row, date, edit) : null,
-              dayStat("Total ziua", duration(row.totalMin), "total"),
+              hoursStat(driver, row, date, excluded, edit),
               dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted"))
           : null,
         row && !elsewhere ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null),
@@ -585,12 +601,14 @@ export function renderCatbDriver(container, ctx) {
       chip("Curse regulate", t.legs),
       chip("Ore curse", duration(t.tripMin)),
       chip("Staționare (nu intră în total)", duration(t.stationMin), { title: `Dedusă: plecarea cursei următoare minus sosirea celei dinainte. ${STATION_NOT_COUNTED}` }),
-      t.fillMin > 0 ? chip("Ore completare", duration(t.fillMin), { title: "O oră pentru fiecare cursă regulată a zilei (jumătate înainte de prima plecare, jumătate după ultima sosire): o cursă face o zi de 4 ore, două curse 8 ore. O zi nu trece de 8 ore din cauza asta (Reguli → Categoria B). Îl poți schimba pe fiecare zi." }) : null,
       excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
       Object.keys(t.leaveDays ?? {}).length
         ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
         : null,
-      chip("Total ore", duration(t.totalMin), { tone: t.overMin > 0 ? "bad" : "", title: "Cât a fost în cursă, plus completarea. Staționarea nu intră aici." }),
+      chip(t.fillMin > 0 ? `Total ore (include ${duration(t.fillMin)} adăugat)` : "Total ore", duration(t.totalMin), {
+        tone: t.overMin > 0 ? "bad" : "",
+        title: `Cât a fost în cursă (${duration(t.tripMin)}) plus timpul adăugat (${duration(t.fillMin)}): o oră pentru fiecare cursă regulată a zilei, jumătate înainte de prima plecare și jumătate după ultima sosire, fără ca o zi să treacă de 8 ore (Reguli → Categoria B). Îl poți schimba pe fiecare zi. Staționarea nu intră aici.`,
+      }),
       chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
       t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,
       chip("Estimare plată", `~${lei(t.payTotal)} lei`, { title: `Curse ${lei(t.payLegs)} · exterioare ${lei(t.payExterior)} · staționare ${lei(t.payStation)}. Orientativ.` })),

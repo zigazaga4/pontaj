@@ -40,7 +40,7 @@ const DETAIL_SHEET: &str = "Detaliu";
 /// The kind written in "Detaliu" for a waiting period that counts.
 const STATION_KIND: &str = "Staționare";
 /// The kind of the lines for the time added to fill a day; everything else with hours is a trip.
-const FILL_KIND: &str = "Completare";
+const FILL_KIND: &str = "Timp adăugat";
 
 /// The three kinds of hours a driver's day is made of, as "Detaliu" tells them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +240,7 @@ fn warning_summary(driver: &Driver) -> String {
 // Sinteză
 // ---------------------------------------------------------------------------------------------------------------------
 
-const SUMMARY_HEADERS: [&str; 12] = ["Nr.", "Șofer", "Zile lucrate", "Curse regulate", "Ore curse", "Staționare (nu intră în total)", "Ore completare", "Total ore", "Plafon lunar", "Depășire", "Concediu (zile)", "Avertizări"];
+const SUMMARY_HEADERS: [&str; 12] = ["Nr.", "Șofer", "Zile lucrate", "Curse regulate", "Ore curse", "Staționare (nu intră în total)", "Timp adăugat", "Total ore", "Plafon lunar", "Depășire", "Concediu (zile)", "Avertizări"];
 const MONEY_HEADERS: [&str; 4] = ["Curse (lei)", "Exterioare (lei)", "Staționare (lei)", "Total estimat (lei)"];
 
 // Columns of "Sinteză" (zero-based); the amounts, when shown, follow the warnings.
@@ -268,13 +268,13 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, blocks: &[Opt
         },
         format!("Plafon lunar: {} ore × {} zile (luni–vineri, sărbătorile legale incluse) = {}.", settings.hours_per_day, sheet.weekdays, fmt_duration(sheet.cap_min)),
         format!(
-            "Orele de lucru sunt timpul cât a fost în cursă (plus completarea de mai jos). Staționarea (așteptarea la Otopeni între două curse regulate) se arată separat, ca informație, și nu intră în total; pauza (șoferul e acasă, în Constanța) nu se numără deloc. De la {} de staționare se avertizează că probabil a plecat și s-a întors mai târziu.",
+            "Orele de lucru sunt timpul cât a fost în cursă (plus timpul adăugat, explicat mai jos). Staționarea (așteptarea la Otopeni între două curse regulate) se arată separat, ca informație, și nu intră în total; pauza (șoferul e acasă, în Constanța) nu se numără deloc. De la {} de staționare se avertizează că probabil a plecat și s-a întors mai târziu.",
             fmt_duration(cfg.station_warn_min)
         ),
     ];
     if cfg.fill_day {
         lines.push(format!(
-            "Fiecare cursă regulată adaugă {} zilei ei (jumătate înainte de prima plecare, jumătate după ultima sosire), dar o zi nu trece de {} ore din cauza asta. Apare ca „Completare” în „Detaliu” și în „Pontaj zilnic”.",
+            "Fiecare cursă regulată adaugă {} zilei ei (jumătate înainte de prima plecare, jumătate după ultima sosire), dar o zi nu trece de {} ore din cauza asta. În prima foaie timpul adăugat e inclus direct în orele zilei, iar pe celula orelor e o notă care spune cât a fost din cursă și cât s-a adăugat; aici, în „Detaliu” și în „Pontaj zilnic” apare ca „Timp adăugat”, ca să se vadă de unde vin orele.",
             fmt_duration(cfg.fill_per_trip_min),
             settings.hours_per_day
         ));
@@ -401,7 +401,7 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, blocks: &[Opt
 
 const GRID_FIRST_DAY: ColNum = 3;
 const GRID_HEADER_ROW: RowNum = 3;
-const GRID_LABELS: [&str; 4] = ["Cursă", "Staționare (nu intră în total)", "Completare", "Total"];
+const GRID_LABELS: [&str; 4] = ["Cursă", "Staționare (nu intră în total)", "Timp adăugat", "Total"];
 /// The row of the waiting among the rows of a driver: information only, the total leaves it out.
 const GRID_WAITING_ROW: RowNum = 1;
 /// Rows of one driver in "Pontaj zilnic": trips, waiting, time added, total (the last one).
@@ -431,7 +431,7 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet, blocks: &[Option<DetailBlock>]) -> Do
         1,
         0,
         format!(
-            "Orele sunt formule peste foaia „Detaliu”. Cursa = durata curselor cunoscute; completarea = timpul adăugat înainte de prima plecare și după ultima sosire ca ziua să aibă orele unei zile întregi. Staționarea (în gri) se trece în ziua în care începe și e doar informație: nu intră în Total, deci nici în orele de lucru. Zilele gri sunt weekend sau sărbătoare legală; „scos” = ziua a fost scoasă din pontaj; {} = zi de concediu (vezi „Detaliu”).",
+            "Orele sunt formule peste foaia „Detaliu”. Cursa = durata curselor cunoscute; timp adăugat = timpul adăugat înainte de prima plecare și după ultima sosire (o oră pe cursă, fără să treacă ziua de 8 ore). Staționarea (în gri) se trece în ziua în care începe și e doar informație: nu intră în Total, deci nici în orele de lucru. Zilele gri sunt weekend sau sărbătoare legală; „scos” = ziua a fost scoasă din pontaj; {} = zi de concediu (vezi „Detaliu”).",
             codes.join(", ")
         ),
         &Styles::plain(),
@@ -679,7 +679,7 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
         let at = |minute: i32| date.and_time(NaiveTime::MIN) + Duration::minutes(i64::from(minute));
         let sides = [(0, day.fill_before_min, first - day.fill_before_min, first, "la plecare"), (2, day.fill_after_min, last, last + day.fill_after_min, "la sosire")];
         for (order, minutes, from, to, side) in sides.into_iter().filter(|side| side.1 > 0) {
-            let mut note = format!("completare {side}: ziua se aduce la orele unei zile întregi");
+            let mut note = format!("timp adăugat {side}: se adaugă la timpul inițial al curselor (o oră pe cursă, fără să treacă ziua de 8 ore)");
             if day.fill_manual {
                 note.push_str("; ore trecute de birou");
             }
@@ -1028,7 +1028,7 @@ mod tests {
         assert_eq!(detail_span(DETAIL_HOURS_COL, a), format!("Detaliu!$H${}:$H${}", a.first + 1, a.last + 1));
         assert!(sum_by_day(a, NaiveDate::from_ymd_opt(2026, 10, 5).unwrap(), Part::Waiting).contains("DATE(2026,10,5)"));
         let trips = sum_by_kind(a, DETAIL_HOURS_COL, Part::Trips);
-        assert!(trips.contains("\"<>Staționare\"") && trips.contains("\"<>Completare\""), "trips are what is neither waiting nor time added: {trips}");
+        assert!(trips.contains("\"<>Staționare\"") && trips.contains("\"<>Timp adăugat\""), "trips are what is neither waiting nor time added: {trips}");
         assert_eq!(detail_blocks(&[Vec::new()]), [None], "no lines, no block");
     }
 
