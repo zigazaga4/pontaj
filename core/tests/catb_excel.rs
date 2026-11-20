@@ -21,7 +21,7 @@ use support::check::{check, hm, norm, Report};
 use support::edits::{self as ui, busy, regular_trips};
 use support::month::{self, CONSTANTA, OTOPENI};
 use support::rng::Rng;
-use support::workbook::Workbook;
+use support::workbook::{Value, Workbook};
 
 /// Drivers of a made-up month.
 const DRIVERS: usize = 8;
@@ -42,44 +42,71 @@ fn timed<T>(slot: usize, work: impl FnOnce() -> T) -> T {
     out
 }
 
-/// `PONTAJ_SHOW=popescu`: what the first sheet writes, day by day, for the drivers whose name contains it.
-fn show(label: &str, workbook: &Workbook) {
-    let Ok(wanted) = std::env::var("PONTAJ_SHOW") else { return };
-    let wanted = norm(&wanted);
+/// One day of one driver as the first sheet has it.
+struct WrittenDay {
+    day: u32,
+    hours: Value,
+    night: Value,
+    /// The written intervals (start, end) in minutes of the day, in the order of the rows.
+    times: Vec<(Option<i32>, Option<i32>)>,
+}
+
+/// The first sheet's days that have something written, for each driver whose name contains `wanted`.
+fn written(workbook: &Workbook, wanted: &str) -> Vec<(String, Vec<WrittenDay>)> {
+    let wanted = norm(wanted);
     let main = &workbook.sheets[0];
     let last = main.values.keys().map(|(r, _)| *r).max().unwrap_or(0);
     let days: Vec<(u32, u32)> = (4..36).filter_map(|c| main.value(9, c).num().map(|d| (c, d as u32))).collect();
     let is_total = |r: u32| main.text(r, 0).is_some_and(|t| t.trim() == "TOTAL");
+    let mut out = Vec::new();
     for r in 10..=last {
         let Some(name) = main.text(r, 1).filter(|n| norm(n).contains(&wanted)) else { continue };
         let mut end = r + 1;
         while end <= last && main.text(end, 1).is_none() && !is_total(end) {
             end += 1;
         }
-        let mut out = format!("[{label}] {name} ({} rânduri):\n", end - r);
+        let mut list = Vec::new();
         for &(c, day) in &days {
-            let times: Vec<String> = (r + 2..end)
+            let times: Vec<(Option<i32>, Option<i32>)> = (r + 2..end)
                 .step_by(2)
-                .filter_map(|x| {
-                    let (a, b) = (main.value(x, c).minutes(), main.value(x + 1, c).minutes());
-                    (a.is_some() || b.is_some()).then(|| format!("{}–{}", a.map_or("_".into(), hm), b.map_or("_".into(), hm)))
-                })
+                .map(|x| (main.value(x, c).minutes(), main.value(x + 1, c).minutes()))
+                .filter(|(a, b)| a.is_some() || b.is_some())
                 .collect();
             if !main.value(r, c).is_blank() || !times.is_empty() {
-                out += &format!("  {day:2}: ore {}, noapte {}, {}\n", main.value(r, c).show(), main.value(r + 1, c).show(), times.join("  "));
+                list.push(WrittenDay { day, hours: main.value(r, c), night: main.value(r + 1, c), times });
             }
+        }
+        out.push((name, list));
+    }
+    out
+}
+
+/// `PONTAJ_SHOW=popescu`: what the first sheet writes, day by day, for the drivers whose name contains it.
+fn show(label: &str, workbook: &Workbook) {
+    let Ok(wanted) = std::env::var("PONTAJ_SHOW") else { return };
+    for (name, days) in written(workbook, &wanted) {
+        let mut out = format!("[{label}] {name}:\n");
+        for d in days {
+            let times: Vec<String> = d.times.iter().map(|(a, b)| format!("{}–{}", a.map_or("_".into(), hm), b.map_or("_".into(), hm))).collect();
+            out += &format!("  {:2}: ore {}, noapte {}, {}\n", d.day, d.hours.show(), d.night.show(), times.join("  "));
         }
         eprint!("{out}");
     }
 }
 
-/// What the "Export Excel" button does with the sheet on the screen (it travels as JSON), read back and compared.
-fn export_and_check(label: &str, sheet: &Sheet, settings: &Settings) -> Report {
+/// The sheet as the "Export Excel" button sends it (it travels as JSON), written and read back.
+fn export(label: &str, sheet: &Sheet, settings: &Settings) -> (Sheet, Workbook) {
     let sheet: Sheet = ui::through_json(sheet);
     let path = std::env::temp_dir().join(format!("pontaj-catb-test-{}-{}.xlsx", std::process::id(), FILES.fetch_add(1, Ordering::Relaxed)));
     timed(0, || catb::excel::write_xlsx(&sheet, settings, &path)).unwrap_or_else(|e| panic!("[{label}] exportul: {e}"));
     let workbook = timed(1, || Workbook::read(&path));
     std::fs::remove_file(&path).ok();
+    (sheet, workbook)
+}
+
+/// What the "Export Excel" button does with the sheet on the screen (it travels as JSON), read back and compared.
+fn export_and_check(label: &str, sheet: &Sheet, settings: &Settings) -> Report {
+    let (sheet, workbook) = export(label, sheet, settings);
     show(label, &workbook);
     let mut report = timed(2, || check(&sheet, settings, &workbook));
     for problem in &mut report.problems {
@@ -407,6 +434,34 @@ fn finish(name: &str, report: Report, exports: usize, started: std::time::Instan
         }
         panic!("{name}: {} nepotriviri între aplicație și Excel", report.problems.len());
     }
+}
+
+/// Wednesday 4 November: Constanța → Otopeni 14:30–17:30. The way back (made by the app) is put on Thursday with "+1 zi",
+/// 03:30–07:30 typed, and the 10 hours between chosen as "Pauză". The Excel has the whole outing on Wednesday, nothing on
+/// Thursday, like for any other way back.
+#[test]
+fn a_way_back_the_office_moved_a_day_is_written_on_the_day_of_the_way_there() {
+    let body = r#"{"data":[
+        {"driver_id":11,"driver_name":"Epure Test","trip":{"type":"eco","id":"eco-1"},"route":{"from":"Constanta","to":"Aeroport Otopeni Bucuresti"},"departure":"2026-11-04 14:30","duration_minutes":180},
+        {"driver_id":11,"driver_name":"Epure Test","trip":{"type":"eco","id":"eco-2"},"route":{"from":"Constanta","to":"Aeroport Otopeni Bucuresti"},"departure":"2026-11-07 03:30","duration_minutes":180}]}"#;
+    let settings = Settings::default();
+    let mut sheet = catb::apply_download(None, 2026, 11, &catb::api::parse_rows(body).unwrap(), "x", &settings);
+    let (id, drive) = (11, "gen-ret-eco-1");
+    assert!(ui::move_drive(&mut sheet, id, drive, 1, &settings));
+    assert!(ui::type_time(&mut sheet, id, drive, false, 3 * 60 + 30, &settings));
+    assert!(ui::type_time(&mut sheet, id, drive, true, 7 * 60 + 30, &settings));
+    assert!(ui::decide_pause(&mut sheet, id, "eco-1", drive, PauseState::Off, None, "", &settings));
+
+    let (sheet, workbook) = export("epure", &sheet, &settings);
+    let problems = check(&sheet, &settings, &workbook).problems;
+    assert!(problems.is_empty(), "{problems:#?}");
+    let days = written(&workbook, "epure").remove(0).1;
+    let shown = |d: &WrittenDay| format!("{}: ore {}, {:?}", d.day, d.hours.show(), d.times);
+    let fourth = days.iter().find(|d| d.day == 4).unwrap_or_else(|| panic!("nothing on the 4th: {:?}", days.iter().map(shown).collect::<Vec<_>>()));
+    // Both trips on the 4th: 3 h + 4 h and the hour added to the day (half before the first departure, half after the last arrival).
+    assert_eq!(fourth.hours.num(), Some(8.0), "{}", shown(fourth));
+    assert_eq!(fourth.times, [(Some(14 * 60), Some(17 * 60 + 30)), (Some(3 * 60 + 30), Some(8 * 60))], "{}", shown(fourth));
+    assert!(days.iter().all(|d| d.day != 5), "nothing on the 5th: {:?}", days.iter().map(shown).collect::<Vec<_>>());
 }
 
 #[test]

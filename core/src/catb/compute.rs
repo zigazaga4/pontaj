@@ -188,8 +188,9 @@ fn pauses(trips: &[Trip], edits: &[PauseEdit], settings: &Settings) -> Vec<Pause
         // He waits (staționare) only at Otopeni; in Constanța he is at home (pauză). A far trip without a tariff is already an
         // excursion (see `effective`), so the pause around it is out too.
         let excursion_inside = between.iter().any(|t| t.eff.excursion);
-        // A drive made by the app that the office moved to another day stays where it was put (see `Trip::moved_days`).
-        pause.round_trip = goes_out(&a.eff) && comes_back(&b.eff) && !excursion_inside && a.moved_days == 0 && b.moved_days == 0;
+        // A drive made by the app that the office moved a day (`Trip::moved_days`) is a way there or back like any other: it is
+        // listed on the day it was put on, but in the Excel the way back is still on the day of the way there.
+        pause.round_trip = goes_out(&a.eff) && comes_back(&b.eff) && !excursion_inside;
         pause.kind = if gap_min < 0 {
             PauseKind::Overlap
         } else if excursion_inside || gap_min >= cfg.long_pause_min || !places::is_bucharest(&pause.place_from) {

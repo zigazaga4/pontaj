@@ -121,9 +121,8 @@ pub fn work_day_problems(driver: &Driver) -> Vec<String> {
             let prev = &driver.trips[i];
             let day = prev.eff.work_day?;
             let excursion_between = driver.trips.get(i + 1..index).is_some_and(|between| between.iter().any(|x| !x.edit.removed && x.eff.excursion));
-            // A drive made by the app that the office moved to another day stays where it was put.
-            let moved = prev.moved_days != 0 || t.moved_days != 0;
-            let way_back = bucharest_side(&prev.eff.to) && !bucharest_side(&prev.eff.from) && bucharest_side(&t.eff.from) && !bucharest_side(&t.eff.to) && !excursion_between && !moved && (at.date() - day).num_days() <= 1;
+            // (A drive made by the app that the office moved a day is a way there or back like any other.)
+            let way_back = bucharest_side(&prev.eff.to) && !bucharest_side(&prev.eff.from) && bucharest_side(&t.eff.from) && !bucharest_side(&t.eff.to) && !excursion_between && (at.date() - day).num_days() <= 1;
             let over_midnight = station(p) && p.start.zip(p.end).is_some_and(|(s, e)| (e.date() - s.date()).num_days() <= 1);
             (way_back || over_midnight).then_some(day)
         });
