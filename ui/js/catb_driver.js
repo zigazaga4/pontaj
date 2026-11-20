@@ -363,10 +363,35 @@ const dayStat = (label, value, tone = "", title) => h("div", { class: `day-stat 
 const isoMinutes = (iso) => Number(iso.slice(11, 13)) * 60 + Number(iso.slice(14, 16));
 
 /**
+ * What the time added to a day is called next to each time, in words only (the numbers and the rules are the same on both
+ * sides). At the departure it makes the time earlier (12:00 → 11:30), so it is taken *from* the time: "scăzut", with a "−".
+ * At the arrival it makes the time later (12:00 → 12:30), so it is "adăugat", with a "＋".
+ */
+const FILL_WORDS = {
+  departure: {
+    label: "scăzut",
+    glyph: "−",
+    start: "Scade timp din ora de plecare (jumătate de oră; apoi îl schimbi)",
+    done: (minutes, was, now) => `S-a scăzut ${duration(minutes)} din ora de plecare: inițial era ${was}, acum e ${now}.`,
+    none: "Nu s-a scăzut timp din ora de plecare (scris de birou).",
+    box: "Timp scăzut din ora de plecare (ora se face mai devreme). Scrie orele (ex. 1, 0:30), 0 = nimic, gol = după reguli.",
+  },
+  arrival: {
+    label: "adăugat",
+    glyph: "＋",
+    start: "Adaugă timp la ora de sosire (jumătate de oră; apoi îl schimbi)",
+    done: (minutes, was, now) => `S-a adăugat ${duration(minutes)} la ora de sosire: inițial era ${was}, acum e ${now}.`,
+    none: "Nu s-a adăugat timp la ora de sosire (scris de birou).",
+    box: "Timp adăugat la ora de sosire (ora se face mai târziu). Scrie orele (ex. 1, 0:30), 0 = nimic, gol = după reguli.",
+  },
+};
+
+/**
  * The departure or the arrival of a trip. The first departure and the last arrival of a day carry the time added to the day:
  * the cell then shows the time that counts (what the Excel writes: the departure earlier, the arrival later), and under it
- * what it was before ("era 12:00", the real time, still editable here) and how much was added (a box: type to change it, 0 =
- * nothing, empty = back to the rules). Any other time is the plain box. Where nothing was added a small ＋ adds some by hand.
+ * what it was before ("era 12:00", the real time, still editable here) and how much was taken from the departure / added to
+ * the arrival (a box: type to change it, 0 = nothing, empty = back to the rules; see [`FILL_WORDS`]). Any other time is the
+ * plain box. Where nothing was added a small − / ＋ adds some by hand.
  */
 function timeCell(driver, trip, side, edit) {
   const departure = side === "departure";
@@ -377,14 +402,14 @@ function timeCell(driver, trip, side, edit) {
   const date = trip.eff.workDay;
   const added = (departure ? trip.eff.addedBeforeMin : trip.eff.addedAfterMin) ?? 0;
   const typed = driver.fills?.[date]?.[key];
-  const where = departure ? "la plecare" : "la sosire";
+  const words = FILL_WORDS[side];
   if (added <= 0 && typed == null) {
     return h("div", { class: "timed" }, plain,
-      h("button", { class: "icon-btn add-time", type: "button", title: `Adaugă timp ${where} (jumătate de oră; apoi îl schimbi)`, onclick: () => edit((d) => setFill(d, date, key, 30)) }, "＋"));
+      h("button", { class: "icon-btn add-time", type: "button", title: words.start, onclick: () => edit((d) => setFill(d, date, key, 30)) }, words.glyph));
   }
   const real = isoMinutes(trip.eff[side]);
   const counted = hhmm(departure ? real - added : real + added);
-  const sentence = added > 0 ? `S-a adăugat ${duration(added)} ${where}: inițial era ${hhmm(real)}, acum e ${counted}.` : `Nu s-a adăugat timp ${where} (scris de birou).`;
+  const sentence = added > 0 ? words.done(added, hhmm(real), counted) : words.none;
   const box = bound({
     className: "fill-input",
     dataset: { key: `fill-${key}:${date}` },
@@ -396,12 +421,12 @@ function timeCell(driver, trip, side, edit) {
       return hours === undefined ? undefined : hours === null ? null : Math.round(hours * 60);
     },
     classes: () => (driver.fills?.[date]?.[key] != null ? "manual" : ""),
-    title: () => `Timp adăugat ${where}. Scrie orele (ex. 1, 0:30), 0 = nimic, gol = după reguli.`,
+    title: () => words.box,
     commit: (value) => edit((d) => setFill(d, date, key, value)),
   });
   return h("div", { class: "timed has-added", title: sentence },
     h("b", { class: "counted" }, counted),
-    h("div", { class: "was" }, h("small", {}, "era"), plain, h("small", {}, "adăugat"), box));
+    h("div", { class: "was" }, h("small", {}, "era"), plain, h("small", {}, words.label), box));
 }
 
 /** Types the time added to a day on one side (`"before"` / `"after"`, in minutes; `null` = back to the rules). */
