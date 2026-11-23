@@ -423,8 +423,8 @@ mod tests {
 
     #[test]
     fn night_can_come_from_the_report_column() {
-        let s = Settings { night_source: NightSource::Card, night_start: "22:00".into(), night_end: "06:00".into(), ..Settings::default() };
-        // 04:23–08:10, 3:14 worked, 1:22 of it at night (22–06): under the 3h threshold.
+        let s = Settings { night_source: NightSource::Card, night_start: "22:00".into(), night_end: "06:00".into(), night_threshold_min: 180, ..Settings::default() };
+        // 04:23–08:10, 3:14 worked, 1:22 of it at night (22–06): under a minimum of 3h chosen by the office.
         let sheet = sheet_with(vec![seg(7, "4:23", "8:10", "3:14", "1:22")], &s);
         assert_eq!((day(&sheet, 7).hours, day(&sheet, 7).night_min, day(&sheet, 7).night_hours), (Some(3.0), 82, None));
         // 5h shift with 3:30 at night → written, rounded like the hours (3:30 → 4).
@@ -444,11 +444,18 @@ mod tests {
         assert_eq!((day(&sheet, 9).night_min, day(&sheet, 9).night_hours), (180, Some(3.0)));
         // 21:30–01:30, 4h, booked on the 10th (most work before midnight). The tight shift gets the 1h break, so the
         // written intervals are 21:30–23:30 and 00:30–02:30: the evening before midnight is no longer night, only the
-        // 2h after 00:00 count, which stays under the 3h threshold and is not written.
+        // 2h after 00:00 count. Every night hour is written (no minimum by default): 2.
         let sheet = sheet_with(vec![seg(10, "21:30", "0:00", "2:30", "2:30"), seg(11, "0:00", "1:30", "1:30", "1:30")], &s);
         let d = day(&sheet, 10);
         assert_eq!(ivs(&d.intervals), vec![("21:30".into(), "23:30".into()), ("00:30".into(), "02:30".into())]);
-        assert_eq!((d.hours, d.night_min, d.night_hours), (Some(4.0), 120, None));
+        assert_eq!((d.hours, d.night_min, d.night_hours), (Some(4.0), 120, Some(2.0)));
+        // Two hours at the start of a day, 05:00–09:00: the 5–7 part is night, written too (it used to wait for 3 hours).
+        let sheet = sheet_with(vec![seg(12, "5:00", "9:00", "4:00", "2:00")], &s);
+        assert_eq!((day(&sheet, 12).night_min, day(&sheet, 12).night_hours), (120, Some(2.0)));
+        // A minimum chosen by the office (3h) leaves the 2h out again.
+        let minimum = Settings { night_threshold_min: 180, ..Settings::default() };
+        let sheet = sheet_with(vec![seg(10, "21:30", "0:00", "2:30", "2:30"), seg(11, "0:00", "1:30", "1:30", "1:30")], &minimum);
+        assert_eq!((day(&sheet, 10).night_min, day(&sheet, 10).night_hours), (120, None));
         // The same shift under the old 22:00–07:00 window counted 1h30 + 2h = 3h30 of night and wrote it (rounded to 4).
         let old = Settings { night_start: "22:00".into(), ..Settings::default() };
         let sheet = sheet_with(vec![seg(10, "21:30", "0:00", "2:30", "2:30"), seg(11, "0:00", "1:30", "1:30", "1:30")], &old);

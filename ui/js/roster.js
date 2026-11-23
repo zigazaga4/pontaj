@@ -7,8 +7,8 @@ import { $, h, toast, busy } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { renderGrid, refreshGrid, renderDetails } from "./grid.js";
 import { chip } from "./catb_driver.js";
-import { MONTHS, monthFields } from "./month_bar.js";
-import { hhmm, hoursText, parseHm } from "./time.js";
+import { monthFields } from "./month_bar.js";
+import { hhmm, hoursText, MONTHS, parseHm } from "./time.js";
 
 const SAVE_DELAY_MS = 1200;
 

@@ -114,6 +114,15 @@ pub struct Interval {
     pub end: i32,
 }
 
+/// A remark on one time of a day: the start (`end == false`) or the end of its `interval`-th period.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TimeNote {
+    pub interval: usize,
+    pub end: bool,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DayEntry {
@@ -137,6 +146,9 @@ pub struct DayEntry {
     pub override_night: Option<f64>,
     pub override_intervals: Option<Vec<Interval>>,
     pub code: Option<String>,
+    /// Remarks written beside some of the day's start/end times (a note on that cell in the Excel): for instance that time
+    /// was added to the first departure. Only the mode that has something to say sets them.
+    pub time_notes: Vec<TimeNote>,
     // --- Computed by `rules::recompute` ---
     pub hours: Option<f64>,
     pub night_hours: Option<f64>,
@@ -297,6 +309,28 @@ pub fn merge(mut previous: Timesheet, fresh: Timesheet, settings: &Settings) -> 
     previous
 }
 
+/// Puts newly read PDFs (`fresh`) where they belong. The sheet on screen takes them when it is the same month; otherwise
+/// the month they cover is looked up among the saved ones (`saved`), so that reading one more PDF of September while
+/// October is open adds to the September already kept, with its edits, instead of starting it again. A month nobody has
+/// kept starts as `fresh`. PDFs that the kept month already has change nothing. A kept month that cannot be read is an
+/// error, never "no month": starting over would write on top of the file that is still there.
+pub fn combine(
+    previous: Option<Timesheet>,
+    fresh: Timesheet,
+    settings: &Settings,
+    saved: impl FnOnce(i32, u32) -> crate::Result<Option<Timesheet>>,
+) -> crate::Result<Timesheet> {
+    let base = match previous {
+        Some(open) if (open.year, open.month) == (fresh.year, fresh.month) => Some(open),
+        _ => saved(fresh.year, fresh.month)?,
+    };
+    Ok(match base {
+        None => fresh,
+        Some(base) if fresh.sources.iter().all(|source| base.sources.contains(source)) => base,
+        Some(base) => merge(base, fresh, settings),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +381,42 @@ mod tests {
         let merged = merge(sep, oct, &s);
         assert_eq!((merged.year, merged.month), (2026, 10));
         assert_eq!(merged.sources, vec!["b.pdf".to_string()]);
+    }
+
+    #[test]
+    fn pdfs_of_a_kept_month_are_added_to_it_even_when_another_month_is_open() {
+        let s = Settings::default();
+        let mut sep = build(vec![report("a.pdf", "Popescu, Ion", &[(9, 1, 480, 960)])], &s).unwrap();
+        sep.employees[0].days[0].override_hours = Some(9.0);
+        let oct = build(vec![report("c.pdf", "Popescu, Ion", &[(10, 1, 480, 960)])], &s).unwrap();
+        let more_sep = build(vec![report("b.pdf", "Popescu, Ion", &[(9, 2, 480, 720)])], &s).unwrap();
+        let kept = sep.clone();
+        let merged = combine(Some(oct), more_sep, &s, move |year, month| Ok(((year, month) == (2026, 9)).then_some(kept))).unwrap();
+        assert_eq!((merged.year, merged.month), (2026, 9));
+        assert_eq!(merged.sources, ["a.pdf", "b.pdf"]);
+        assert_eq!(merged.employees[0].days[0].override_hours, Some(9.0), "what was typed in the kept month stays");
+        assert_eq!(merged.employees[0].days[1].hours, Some(4.0));
+    }
+
+    #[test]
+    fn pdfs_a_kept_month_already_has_change_nothing_and_a_new_month_starts_from_the_pdfs() {
+        let s = Settings::default();
+        let mut sep = build(vec![report("a.pdf", "Popescu, Ion", &[(9, 1, 480, 960)])], &s).unwrap();
+        sep.employees[0].days[0].override_hours = Some(9.0);
+        sep.warnings.push("o problemă".into());
+        let again = build(vec![report("a.pdf", "Popescu, Ion", &[(9, 1, 480, 960)])], &s).unwrap();
+        let kept = sep.clone();
+        let same = combine(None, again, &s, move |_, _| Ok(Some(kept))).unwrap();
+        assert_eq!(same.warnings, ["o problemă"], "nothing was merged, so nothing was repeated");
+        assert_eq!(same.employees[0].days[0].override_hours, Some(9.0));
+
+        let nov = build(vec![report("n.pdf", "Popescu, Ion", &[(11, 3, 480, 960)])], &s).unwrap();
+        let fresh = combine(Some(sep), nov, &s, |_, _| Ok(None)).unwrap();
+        assert_eq!((fresh.year, fresh.month, fresh.sources.len()), (2026, 11, 1));
+
+        let dec = build(vec![report("d.pdf", "Popescu, Ion", &[(12, 3, 480, 960)])], &s).unwrap();
+        let unreadable = combine(None, dec, &s, |_, _| Err(crate::Error::new("fișier stricat")));
+        assert!(unreadable.is_err(), "an unreadable kept month stops the reading instead of being overwritten");
     }
 
     #[test]

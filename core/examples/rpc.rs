@@ -5,8 +5,13 @@ use std::path::PathBuf;
 
 use pontaj_core::roster::{self, Plan, StaffMember};
 use pontaj_core::timesheet::Group;
-use pontaj_core::{add_pdfs, catb, combined, recompute, Settings, Timesheet};
+use pontaj_core::{add_pdfs, catb, combined, history, recompute, Settings, Timesheet};
 use serde_json::{json, Value};
+
+/// Where the kept PDF months live for the preview (`PONTAJ_PDF_DIR`, else a folder in the temp directory).
+fn history_dir() -> std::path::PathBuf {
+    std::env::var("PONTAJ_PDF_DIR").map_or_else(|_| std::env::temp_dir().join("pontaj-preview-pdf"), Into::into)
+}
 
 /// The folder of the saved months of the staff (the app's `roster` folder), `ROSTER_DIR` or a temp one.
 fn roster_dir() -> PathBuf {
@@ -43,8 +48,35 @@ fn main() {
         "parse_pdfs" => {
             let paths: Vec<String> = serde_json::from_value(get("paths")).expect("paths");
             let previous: Option<Timesheet> = serde_json::from_value(get("previous")).ok().flatten();
-            match add_pdfs(previous, &paths, &settings) {
+            // With `PONTAJ_PDF_DIR` the months are kept there, as the app keeps them in its data folder.
+            let done = match std::env::var("PONTAJ_PDF_DIR") {
+                Ok(dir) => history::add_pdfs(std::path::Path::new(&dir), previous, &paths, &settings),
+                Err(_) => add_pdfs(previous, &paths, &settings),
+            };
+            match done {
                 Ok(sheet) => json!(sheet),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "pdf_months" => json!(history::list(&history_dir())),
+        "pdf_open" => {
+            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(9) as u32);
+            match history::open(&history_dir(), year, month, &settings) {
+                Ok(sheet) => json!(sheet),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "pdf_save" => {
+            let sheet: Timesheet = serde_json::from_value(get("timesheet")).expect("timesheet");
+            match history::save(&history_dir(), &sheet) {
+                Ok(()) => json!(null),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "pdf_delete" => {
+            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(9) as u32);
+            match history::remove(&history_dir(), year, month) {
+                Ok(()) => json!(null),
                 Err(e) => json!({ "error": e.to_string() }),
             }
         }

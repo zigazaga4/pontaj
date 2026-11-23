@@ -132,7 +132,9 @@ pub(super) fn sync(driver: &mut Driver, year: i32, month: u32, settings: &Settin
 /// one), so the office can put it where it was. The move is remembered in [`Trip::moved_days`], which [`sync`] applies again
 /// whenever the rules give the drive new times, and what was typed on the drive moves with it. Moving it back by the same
 /// number of days (what the revert button does) puts everything as it was. A drive is not moved out of the sheet's month:
-/// the other month's sheet would not count it.
+/// the other month's sheet would not count it. The move changes the day the drive is listed on and the real time it was
+/// made: a way back is still counted on the day of the way there in the Excel, like any other way back (see
+/// `compute::same_outing`), so the way there and the way back never end up on two different days of the Excel.
 pub fn move_transfer(mut driver: Driver, id: &str, days: i32, year: i32, month: u32, settings: &Settings) -> Result<Driver> {
     recompute_driver(&mut driver, year, month, settings);
     let Some(trip) = driver.trips.iter_mut().find(|t| t.generated && t.id == id) else { return Err(Error::new("Nu găsesc deplasarea.")) };
@@ -252,7 +254,10 @@ mod tests {
         let moved = move_transfer(d, id, -1, 2026, 11, &Settings::default()).unwrap();
         let drive = moved.trips.iter().find(|t| t.id == id).unwrap();
         assert_eq!((times(drive), drive.moved_days), (("02.11 02:30".into(), "02.11 05:30".into()), -1));
-        assert!(moved.days.iter().any(|r| r.date == NaiveDate::from_ymd_opt(2026, 11, 2) && r.legs == 1), "the day moves with it");
+        // The day moves with it, and the trip from Otopeni that follows it is its way back: counted on the same day.
+        let second = NaiveDate::from_ymd_opt(2026, 11, 2);
+        assert!(moved.days.iter().any(|r| r.date == second && r.legs == 2), "{:?}", moved.days.iter().map(|r| (r.date, r.legs)).collect::<Vec<_>>());
+        assert!(moved.days.iter().all(|r| r.date != NaiveDate::from_ymd_opt(2026, 11, 3) || r.legs == 0));
         // Recomputing keeps it where the office put it.
         let mut again = moved.clone();
         run(&mut again, 11);
@@ -266,6 +271,40 @@ mod tests {
         // One day later is possible too (the way back from the airport).
         let later = move_transfer(back, id, 1, 2026, 11, &Settings::default()).unwrap();
         assert_eq!(times(later.trips.iter().find(|t| t.id == id).unwrap()), ("04.11 02:30".into(), "04.11 05:30".into()));
+    }
+
+    #[test]
+    fn a_way_back_moved_to_the_next_day_still_counts_on_the_day_of_the_way_there() {
+        // Wednesday 4 November: Constanța → Otopeni 14:30–17:30. The way back is made by the app; the office moved it to
+        // Thursday with "+1 zi", typed 03:30–07:30 (the driver slept at Otopeni) and chose "Pauză" for the 10 hours between.
+        // The next trip is on the 7th. In the list the way back stays on Thursday, in the Excel it is on the day of the way
+        // there, like any other way back.
+        let mut d = driver(vec![
+            trip("eco-1", "Constanta", OTOPENI, "2026-11-04 14:30", "2026-11-04 17:30"),
+            trip("eco-2", "Constanta", OTOPENI, "2026-11-07 03:30", "2026-11-07 06:30"),
+        ]);
+        run(&mut d, 11);
+        let id = "gen-ret-eco-1";
+        assert_eq!(times(generated(&d)[0]), ("04.11 17:30".into(), "04.11 20:30".into()));
+        let mut d = move_transfer(d, id, 1, 2026, 11, &Settings::default()).unwrap();
+        let drive = d.trips.iter_mut().find(|t| t.id == id).unwrap();
+        drive.edit.departure = parse_time("2026-11-05 03:30");
+        drive.edit.arrival = parse_time("2026-11-05 07:30");
+        d.pause_edits.push(PauseEdit { prev: "eco-1".into(), next: id.into(), state: PauseState::Off, ..Default::default() });
+        run(&mut d, 11);
+        let drive = d.trips.iter().find(|t| t.id == id).unwrap();
+        assert_eq!((times(drive), drive.moved_days), (("05.11 03:30".into(), "05.11 07:30".into()), 1), "listed on the day it was moved to");
+        assert_eq!((d.pauses[0].state, d.pauses[0].gap_min), (PauseState::Off, 600), "a pauză of 10 hours");
+        let day = |d: u32| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+        assert_eq!(drive.eff.work_day, Some(day(4)), "counted on the day of the way there");
+        let row = d.days.iter().find(|r| r.date == Some(day(4))).expect("the 4th has the whole outing");
+        assert_eq!((row.legs, row.trip_min), (2, 180 + 240));
+        // Nothing is left on the 5th (the pauză after the way back may give it an empty row).
+        assert!(d.days.iter().filter(|r| r.date == Some(day(5))).all(|r| (r.trips, r.total_min) == (0, 0)), "{:?}", d.days.iter().map(|r| (r.date, r.legs, r.total_min)).collect::<Vec<_>>());
+        // The pauză between the two (10 hours at Otopeni) belongs to the outing too.
+        assert_eq!(d.pauses[0].day, Some(day(4)));
+        // The way back is listed on Thursday: the Excel's line for the day must not be on a different one.
+        assert_eq!(drive.eff.departure.map(|at| at.date()), Some(day(5)));
     }
 
     #[test]

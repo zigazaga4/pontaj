@@ -105,10 +105,19 @@ pub struct Effective {
     pub price: f64,
     /// Why the amount is what it is: "cursă", "exterior: Tulcea", "fără tarif"…
     pub price_note: String,
-    /// The day the trip counts on in the pontaj: the day it leaves, except a trip that follows a staționare going over
-    /// midnight (the same shift: left at 14:30, arrived at 17:30, waited, left again at 03:30 the next day), which counts on
-    /// the day of the trip before it, as the accountants write it. Derived by [`super::recompute`].
+    /// The day the trip counts on in the pontaj: the day it leaves, except the way back of a trip to Bucharest/Otopeni
+    /// (left at 14:30, arrived at 17:30, left again at 03:30 the next day: by the clock it is the next day, but the
+    /// accountants write it on the day of the way there) and a trip that follows a staționare going over midnight. Both
+    /// count on the day of the trip before them. Derived by [`super::recompute`].
     pub work_day: Option<NaiveDate>,
+    /// The trip leaves first / arrives last among the trips that count on its work day: the only two trips the time added to
+    /// the day can be put on (before its departure, after its arrival). Derived by [`super::pontaj::mark_day_edges`].
+    pub opens_day: bool,
+    pub closes_day: bool,
+    /// Minutes added before this trip's departure / after its arrival (only on the first / last trip of the day): the time
+    /// that counts and goes in the Excel is `departure − added_before_min` and `arrival + added_after_min`.
+    pub added_before_min: i32,
+    pub added_after_min: i32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -223,6 +232,10 @@ pub struct Pause {
     /// The day its minutes count on: the day the trip before it counts on when it is a staționare of the same shift (see
     /// [`Effective::work_day`]), else the day it starts.
     pub day: Option<NaiveDate>,
+    /// The trip before the pause went to Bucharest/Otopeni and the one after it comes back from there (and no excursion lies
+    /// between them): the way back always counts on the day of the way there, whatever the wait between them was. Not when
+    /// the office moved one of them (a drive made by the app) to another day: it stays where it was put.
+    pub round_trip: bool,
     pub gap_min: i32,
     /// Minutes of the pause spent on other trips (private, charter): they count as trip hours, not as waiting.
     pub busy_min: i32,
@@ -230,7 +243,7 @@ pub struct Pause {
     pub state: PauseState,
     pub hours_override: Option<f64>,
     pub note: String,
-    /// Minutes that count as waiting (in the hours and in the amount).
+    /// Minutes that count as waiting (in the amount and in the staționare column, not in the work hours).
     pub counted_min: i32,
     /// Added to the estimate for the waiting beyond the included time.
     pub extra_pay: f64,
@@ -246,6 +259,8 @@ pub struct DayRow {
     /// Regular legs made that day (what the 240 lei per pair is made of).
     pub legs: i32,
     pub trip_min: i32,
+    /// Waiting between two trips (the staționare). Shown and paid by its own rule, but NOT part of `total_min`: waiting is
+    /// not work time.
     pub station_min: i32,
     /// Time added to bring the day up to the hours of a full day: before the first departure and after the last arrival
     /// (see [`FillEdit`]). Part of `total_min`.
@@ -254,9 +269,9 @@ pub struct DayRow {
     pub fill_min: i32,
     /// The office typed one of the two values.
     pub fill_manual: bool,
-    /// Trips + waiting + the time added + the adjustment.
+    /// The hours of the day: time on the trips + the time added (no waiting) + the adjustment.
     pub total_min: i32,
-    /// What the day was brought to by hand ([`Driver::set_hours`]) minus what the rules gave it: positive adds time, negative
+    /// What the day was brought to by hand ([`Driver::set_hours`]) minus what the rules gave it (trips + time added): positive adds time, negative
     /// takes it away. Part of `total_min`; 0 on a day nobody adjusted.
     pub adjust_min: i32,
     /// The day counts the hours typed for it ([`Driver::set_hours`]), not the ones the rules make of its trips.
@@ -278,11 +293,13 @@ pub struct Totals {
     pub days: i32,
     pub legs: i32,
     pub trip_min: i32,
+    /// Waiting between trips: shown, paid by its own rule, not part of `total_min`.
     pub station_min: i32,
     /// Time added to the days to bring them up to a full day (part of `total_min`).
     pub fill_min: i32,
     /// The adjustments of the days brought to the hours typed for them (part of `total_min`, can be negative).
     pub adjust_min: i32,
+    /// Time on the trips + the time added + the adjustments (no waiting).
     pub total_min: i32,
     pub pay_legs: f64,
     pub pay_exterior: f64,
@@ -294,29 +311,64 @@ pub struct Totals {
     pub leave_days: BTreeMap<String, i32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ProposalKind {
-    /// Shorten the counted waiting of one pause.
-    Pause,
-    /// Take a whole day out of the pontaj.
-    Day,
-}
-
-/// A way to bring a driver under the monthly ceiling. Only a suggestion: the office applies it or not.
+/// A way to bring a driver under the monthly ceiling: take the whole day `date` out of the pontaj. Only a suggestion: the
+/// office applies it or not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
-    pub kind: ProposalKind,
     pub date: NaiveDate,
-    /// For a pause: the trips around it, and the waiting hours it would keep.
-    pub prev: Option<String>,
-    pub next: Option<String>,
-    pub set_hours: Option<f64>,
     /// Minutes taken out and the amount that goes with them.
     pub minutes: i32,
     pub pay: f64,
     pub text: String,
+}
+
+/// What a day of a week is for the weekly checks, as the pontaj shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WeekDayState {
+    /// No work in the pontaj (a leave day is one of these).
+    #[default]
+    Free,
+    /// Has hours in the pontaj: the office can turn it into a free day (take it out of the pontaj).
+    Worked,
+    /// Only an excursion, which is on the tachograph: the driver worked, but the day has no hours here to take out.
+    Tachograph,
+    /// Had work, and the office took the day out of the pontaj: it is free now (and can be put back).
+    Out,
+}
+
+/// One day of a [`Week`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WeekDay {
+    pub date: Option<NaiveDate>,
+    pub state: WeekDayState,
+    /// Time on trips that day (0 unless [`WeekDayState::Worked`] or [`WeekDayState::Out`]).
+    pub trip_min: i32,
+    /// The leave the office chose for a free day (code), if any.
+    pub leave: Option<String>,
+}
+
+/// Seven days counted from the 1st of the month (the last one of the month may be shorter): the unit of the two weekly
+/// checks, see [`super::weeks`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Week {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub days: Vec<WeekDay>,
+    /// Time on trips in the week, days taken out of the pontaj left out.
+    pub active_min: i32,
+    /// Days without work (free, or taken out of the pontaj).
+    pub free_count: i32,
+    /// All seven days (the free-day check only applies to those).
+    pub full: bool,
+    /// The limits the week was checked against (0 = that check is off).
+    pub limit_active_min: i32,
+    pub need_free_days: i32,
+    pub too_long: bool,
+    pub few_free: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -348,6 +400,8 @@ pub struct Driver {
     pub free_days: Vec<NaiveDate>,
     pub pauses: Vec<Pause>,
     pub days: Vec<DayRow>,
+    /// The weekly checks (time on trips, days without work), one per block of 7 days.
+    pub weeks: Vec<Week>,
     pub totals: Totals,
     pub alerts: Vec<Alert>,
     pub proposals: Vec<Proposal>,

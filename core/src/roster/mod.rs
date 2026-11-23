@@ -16,7 +16,7 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::calendar;
-use crate::month_file;
+use crate::store;
 use crate::rules;
 use crate::settings::Settings;
 use crate::timesheet::{self, display_name, DayEntry, Employee, Group, Interval, Timesheet, Totals};
@@ -179,12 +179,12 @@ fn group_dir(dir: &Path, group: Group) -> PathBuf {
 
 /// Saves the month of a group.
 pub fn save(dir: &Path, group: Group, sheet: &Timesheet) -> Result<()> {
-    month_file::save(&group_dir(dir, group), sheet.year, sheet.month, sheet)
+    store::save(&group_dir(dir, group), sheet.year, sheet.month, sheet)
 }
 
 /// The month of a group as the screen shows it: what was saved, brought in line with the staff list.
 pub fn open(dir: &Path, group: Group, year: i32, month: u32, settings: &Settings) -> Result<Timesheet> {
-    let saved: Option<Timesheet> = month_file::load(&group_dir(dir, group), year, month)?;
+    let saved: Option<Timesheet> = store::load(&group_dir(dir, group), year, month)?;
     Ok(sync(saved, &settings.roster, group, year, month, settings))
 }
 

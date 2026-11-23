@@ -4,7 +4,8 @@ import { h } from "./dom.js";
 /**
  * @param {object} options
  * @param {string} options.title
- * @param {Node|string} options.body        the content (a form, a list…)
+ * @param {Node|string|((close: (value?: any) => void) => Node)} options.body
+ *        the content (a form, a list…); a function gets `close(value)` so that something inside can close the dialog
  * @param {{label:string, kind?:string, value?:any, action?:()=>any}[]} [options.buttons]
  *        `action()` runs when the button is pressed; returning `undefined` keeps the dialog open (invalid input),
  *        anything else is the result.
@@ -31,7 +32,7 @@ export function showDialog({ title, body, buttons = [{ label: "Închide", kind: 
     const back = h("div", { class: "modal-back", onmousedown: (e) => e.target === back && close(null) },
       h("div", { class: `modal ${wide ? "wide" : ""}`, role: "dialog", "aria-label": title },
         h("h3", {}, title),
-        h("div", { class: "modal-body" }, body),
+        h("div", { class: "modal-body" }, typeof body === "function" ? body(close) : body),
         h("div", { class: "modal-foot" }, buttons.map((button) => h("button", { class: `btn ${button.kind ?? ""}`, type: "button", onclick: () => press(button) }, button.label)))));
     document.addEventListener("keydown", onKey, true);
     document.body.append(back);

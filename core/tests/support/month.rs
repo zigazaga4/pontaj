@@ -96,10 +96,11 @@ impl Maker<'_> {
                 }
             }
             92..=95 => {
-                // To the airport in the afternoon, a night of waiting there, back before dawn: one shift over midnight.
+                // To the airport in the afternoon, a night of waiting there (8 to 16 hours, past the 12 of a long pause too), back
+                // before the next afternoon: the way back counts on the day of the way there.
                 let go = self.at(day, 13, 18);
                 self.trip(driver, TripKind::Eco, CONSTANTA, OTOPENI, go, Some(180), small);
-                let back = go + Duration::minutes(180 + i64::from(self.rng.range(96, 138) * 5));
+                let back = go + Duration::minutes(180 + i64::from(self.rng.range(96, 190) * 5));
                 self.trip(driver, TripKind::Eco, OTOPENI, CONSTANTA, back, Some(180), small);
             }
             73..=78 => {

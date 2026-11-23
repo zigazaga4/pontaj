@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use pontaj_core::timesheet::Group;
-use pontaj_core::{add_pdfs, catb, combined, pontaj_file, recompute, roster, Settings, Timesheet};
+use pontaj_core::{catb, combined, history, pontaj_file, recompute, roster, Settings, Timesheet};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -60,10 +60,39 @@ fn startup_files() -> Vec<String> {
     std::env::args().skip(1).filter(|a| a.to_lowercase().ends_with(".pdf")).collect()
 }
 
-/// Reads PDFs; with `previous` they are added to the existing timesheet.
+fn history_dir(app: &AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("pdf"))
+}
+
+/// Reads PDFs; with `previous` they are added to the existing timesheet. PDFs of a month that was read before are added to
+/// that month, and the result is kept (see `history`), so the month is there the next time the app opens.
 #[tauri::command]
-async fn parse_pdfs(paths: Vec<String>, settings: Settings, previous: Option<Timesheet>) -> CmdResult<Timesheet> {
-    blocking(move || add_pdfs(previous, &paths, &settings).map_err(|e| e.to_string())).await
+async fn parse_pdfs(app: AppHandle, paths: Vec<String>, settings: Settings, previous: Option<Timesheet>) -> CmdResult<Timesheet> {
+    blocking(move || history::add_pdfs(&history_dir(&app)?, previous, &paths, &settings).map_err(|e| e.to_string())).await
+}
+
+/// The months read from PDFs and kept on this computer, newest first.
+#[tauri::command]
+async fn pdf_months(app: AppHandle) -> CmdResult<Vec<history::SavedMonth>> {
+    blocking(move || Ok(history::list(&history_dir(&app)?))).await
+}
+
+/// A kept month (calculated again with the current settings), or nothing when it was never read.
+#[tauri::command]
+async fn pdf_open(app: AppHandle, year: i32, month: u32, settings: Settings) -> CmdResult<Option<Timesheet>> {
+    blocking(move || history::open(&history_dir(&app)?, year, month, &settings).map_err(|e| e.to_string())).await
+}
+
+/// Keeps the timesheet on screen, with the edits made so far.
+#[tauri::command]
+async fn pdf_save(app: AppHandle, timesheet: Timesheet) -> CmdResult<()> {
+    blocking(move || history::save(&history_dir(&app)?, &timesheet).map_err(|e| e.to_string())).await
+}
+
+/// Forgets a kept month.
+#[tauri::command]
+async fn pdf_delete(app: AppHandle, year: i32, month: u32) -> CmdResult<()> {
+    blocking(move || history::remove(&history_dir(&app)?, year, month).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -82,14 +111,19 @@ fn ask_xlsx_path(app: &AppHandle, file_name: String) -> Option<PathBuf> {
     Some(if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xlsx")) { path } else { path.with_extension("xlsx") })
 }
 
-/// The one Excel file of a month: the tachograph month on the screen (when it is this month), Categoria B and the office, garage
-/// and city staff as they are saved on this computer. Asks where to save and returns the chosen path.
+/// The one Excel file of a month: the tachograph month (the one on the screen when it is this month, else the one kept on this
+/// computer from earlier PDFs), Categoria B and the office, garage and city staff as they are saved on this computer. Asks where
+/// to save and returns the chosen path.
 #[tauri::command]
 async fn export_all(app: AppHandle, timesheet: Option<Timesheet>, year: i32, month: u32, settings: Settings) -> CmdResult<Option<String>> {
     blocking(move || {
+        let tachograph = match timesheet.filter(|t| (t.year, t.month) == (year, month)) {
+            Some(on_screen) => Some(on_screen),
+            None => history::open(&history_dir(&app)?, year, month, &settings).map_err(|e| e.to_string())?,
+        };
         let catb_sheet = open_catb(&app, year, month, &settings)?;
         let staff = roster::open_employees(&roster_dir(&app)?, year, month, &settings).map_err(|e| e.to_string())?;
-        let parts = combined::Parts { year, month, tachograph: timesheet.as_ref(), catb: catb_sheet.as_ref(), staff };
+        let parts = combined::Parts { year, month, tachograph: tachograph.as_ref(), catb: catb_sheet.as_ref(), staff };
         let Some(path) = ask_xlsx_path(&app, combined::suggested_file_name(&parts, &settings)) else { return Ok(None) };
         combined::write_xlsx(&parts, &settings, &path).map_err(|e| e.to_string())?;
         Ok(Some(path.to_string_lossy().into_owned()))
@@ -283,6 +317,10 @@ pub fn run() {
             pick_pdfs,
             startup_files,
             parse_pdfs,
+            pdf_months,
+            pdf_open,
+            pdf_save,
+            pdf_delete,
             recalculate,
             export_all,
             roster_open,

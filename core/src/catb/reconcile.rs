@@ -227,7 +227,7 @@ mod tests {
     use crate::catb::{api::parse_rows, apply_download};
     use crate::timesheet::Timesheet;
 
-    /// Mon 5 Oct: Popescu 11:00–14:00 (a day of 4 h); Mon 12 Oct 05:00–08:00, 11:00–14:00 (9 h); Anghel Tue 6 Oct 05:00–08:20 (5 h).
+    /// Mon 5 Oct: Popescu 11:00–14:00 (a day of 4 h); Mon 12 Oct 05:00–08:00, 11:00–14:00 (6 h on the trips, 8 h with the time added); Anghel Tue 6 Oct 05:00–08:20 (5 h).
     const BODY: &str = r#"{"data":[
           {"driver_id":1,"driver_name":"Popescu Ion","trip":{"type":"eco","id":"eco-1"},"route":{"from":"Aeroport Otopeni Bucuresti","to":"Constanta"},"departure":"2026-10-05 11:00","duration_minutes":180},
           {"driver_id":1,"driver_name":"Popescu Ion","trip":{"type":"eco","id":"eco-2"},"route":{"from":"Constanta","to":"Aeroport Otopeni Bucuresti"},"departure":"2026-10-12 05:00","duration_minutes":180},
@@ -270,7 +270,7 @@ mod tests {
         let sheet = october();
         let file = file_after(&sheet, "typed", |ts| {
             edit(ts, "POPESCU ION", 5, Some(8.0), None); // the app had 4
-            edit(ts, "POPESCU ION", 12, Some(7.5), None); // the app had 9: lower, to the half hour
+            edit(ts, "POPESCU ION", 12, Some(7.5), None); // the app had 8: lower, to the half hour
             edit(ts, "POPESCU ION", 7, Some(6.0), None); // a day without trips
             edit(ts, "ANGHEL DAN", 6, None, None); // cleared
             edit(ts, "ANGHEL DAN", 8, None, Some("CO")); // a leave on a free day
@@ -296,7 +296,7 @@ mod tests {
                 ("Anghel Dan".to_string(), 8, String::new(), "CO".to_string()),
                 ("Popescu Ion".to_string(), 5, "4".to_string(), "8".to_string()),
                 ("Popescu Ion".to_string(), 7, String::new(), "6".to_string()),
-                ("Popescu Ion".to_string(), 12, "9".to_string(), "7,5".to_string()),
+                ("Popescu Ion".to_string(), 12, "8".to_string(), "7,5".to_string()),
             ]
         );
         // The days the file did not change are not in the list, and the totals follow the days.

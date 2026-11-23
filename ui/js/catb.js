@@ -1,14 +1,16 @@
 // Categoria B — the drivers' trips from the ALT API, turned into a pontaj. This module is the controller: it loads and
 // saves the month, keeps the edits in order, and draws the summary, the driver list and the chosen driver.
 import { api } from "./api.js";
+import { holdRow, rowIdOf } from "./anchor.js";
+import { createAutosave } from "./autosave.js";
 import { $, h, toast, busy } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { askNewTrip, chip, renderCatbDriver } from "./catb_driver.js";
+import { flaggedWeeks } from "./catb_weeks.js";
 import { askReconcile } from "./catb_reconcile.js";
-import { MONTHS, monthFields } from "./month_bar.js";
-import { duration, lei, signed } from "./time.js";
+import { monthFields } from "./month_bar.js";
+import { duration, lei, MONTHS, signed } from "./time.js";
 
-const SAVE_DELAY_MS = 1200;
 /** The month on screen is asked from the API again this often (a correction made there shows up without a click). */
 const REFRESH_EVERY_MS = 10 * 60 * 1000;
 const REFRESH_RETRY_MS = 2 * 60 * 1000;
@@ -38,9 +40,8 @@ const untariffed = (driver) => driver.trips.filter((t) => !t.edit.removed && t.e
 export function createCatb({ getSettings, saveSettings }) {
   const today = new Date();
   const previous = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const state = { sheet: null, year: previous.getFullYear(), month: previous.getMonth() + 1, saved: [], driverId: null, filter: "", onlyIssues: false, dirty: false, loaded: false, refreshError: null };
+  const state = { sheet: null, year: previous.getFullYear(), month: previous.getMonth() + 1, saved: [], driverId: null, filter: "", onlyIssues: false, loaded: false, refreshError: null };
   let queue = Promise.resolve();
-  let saveTimer = null;
   let refreshing = false;
   let nextRefreshAt = 0;
 
@@ -49,23 +50,9 @@ export function createCatb({ getSettings, saveSettings }) {
 
   // ---- saving ----
 
-  function markDirty() {
-    state.dirty = true;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(flush, SAVE_DELAY_MS);
-  }
-
-  async function flush() {
-    clearTimeout(saveTimer);
-    if (!state.dirty || !state.sheet) return;
-    state.dirty = false;
-    try {
-      await api.catbSave(state.sheet);
-    } catch (err) {
-      state.dirty = true;
-      toast(`Modificările nu au putut fi salvate: ${err}`, { kind: "warn" });
-    }
-  }
+  const { markDirty, flush } = createAutosave(async () => state.sheet && (await api.catbSave(state.sheet)), {
+    onError: (err) => toast(`Modificările nu au putut fi salvate: ${err}`, { kind: "warn" }),
+  });
 
   // ---- editing ----
 
@@ -161,9 +148,9 @@ export function createCatb({ getSettings, saveSettings }) {
       ...monthFields(state, openMonth, today),
       h("button", { class: "btn primary", title: "Aduce acum din API ultimele date ale lunii. Corecturile din API (mașină, oră, loc) înlocuiesc datele vechi; ce ai modificat tu rămâne neschimbat.", onclick: fetchMonth }, state.sheet ? "⟳ Actualizează din API" : "⬇ Descarcă din API"),
       state.sheet && h("button", { class: "btn", title: "Pentru cazul în care orele au fost schimbate direct în Excel: alegi fișierul Excel și orele din aplicație se aduc la ce scrie în el (vezi mai întâi ce se schimbă).", onclick: reconcileWithExcel }, "⇄ Reglează după Excel"),
-      h("span", { class: "muted" },
+      h("span", { class: "muted", title: "Se actualizează singură la câteva minute; ce ai modificat tu rămâne neschimbat." },
         state.sheet?.fetchedAt
-          ? `Actualizat din API la ${state.sheet.fetchedAt}. Se actualizează singură la câteva minute; ce ai modificat tu rămâne neschimbat.${state.refreshError ? " Ultima încercare n-a mers (internet?); se mai încearcă." : ""}`
+          ? `Actualizat din API la ${state.sheet.fetchedAt}${state.refreshError ? " · ultima încercare n-a mers (internet?), se mai încearcă" : " · se actualizează singură"}`
           : saved ? "Luna este salvată pe acest calculator." : "Luna nu a fost descărcată încă."));
   }
 
@@ -179,15 +166,23 @@ export function createCatb({ getSettings, saveSettings }) {
     const over = drivers.filter((d) => d.totals.overMin > 0).length;
     const noTariff = sum(untariffed);
     const adjusted = sum((d) => d.totals.adjustMin ?? 0);
+    const weekIssues = sum(flaggedWeeks);
+    const limits = getSettings().catb ?? {};
     box.replaceChildren(
       h("div", { class: "title" }, h("h2", {}, `${MONTHS[sheet.month - 1]} ${sheet.year}`), h("span", {}, "Categoria B · curse din API")),
       chip("Șoferi", drivers.length),
       chip("Plafon lunar", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore, sărbătorile incluse` }),
-      chip("Total ore", duration(sum((d) => d.totals.totalMin))),
-      chip("Din care staționare", duration(sum((d) => d.totals.stationMin))),
-      chip("Din care completare", duration(sum((d) => d.totals.fillMin ?? 0)), { title: "O oră pentru fiecare cursă regulată (jumătate înainte de plecare, jumătate după sosire)" }),
-      ...(adjusted ? [chip("Reglări după Excel", signed(adjusted), { tone: "adjust", title: "Cât au adăugat (sau scos) zilele cu ore fixate după un Excel, față de ce ar fi dat cursele și regulile. Fiecare zi are „Anulează reglarea” în pontajul șoferului." })] : []),
+      chip("Total ore", duration(sum((d) => d.totals.totalMin)), {
+        title: "Orele din curse, cu timpul adăugat în orele de plecare și de sosire ale zilelor (o oră pe cursă regulată, fără ca o zi să treacă de 8 ore). Staționarea nu intră aici.",
+      }),
+      chip("Staționare (nu intră în total)", duration(sum((d) => d.totals.stationMin)), { title: "Așteptarea dintre curse: se arată doar ca informație și se plătește după regula ei, dar nu intră în orele de lucru." }),
+      ...(adjusted ? [chip("Reglări după Excel", signed(adjusted), { tone: "adjust", title: "Cât au adăugat (sau scos) zilele cu ore fixate după un Excel, față de ce ar fi dat cursele și regulile (sunt incluse în Total ore). Fiecare zi are „Anulează reglarea” în pontajul șoferului." })] : []),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),
+      chip("Săptămâni de verificat", weekIssues, {
+        tone: weekIssues ? "warn" : "",
+        title: `Săptămâni de 7 zile (de la începutul lunii) cu peste ${duration(limits.weekMaxActiveMin ?? 2400)} ore active pe cursă sau cu mai puțin de ${limits.weekMinFreeDays ?? 2} zile libere. Click: arată doar șoferii care au ceva de verificat`,
+        onclick: toggleIssues,
+      }),
       chip("Curse fără tarif", noTariff, { tone: noTariff ? "bad" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
       chip("Estimare plată", `~${lei(sum((d) => d.totals.payTotal))} lei`, { title: "Orientativ" }));
   }
@@ -196,8 +191,12 @@ export function createCatb({ getSettings, saveSettings }) {
     const notes = state.sheet?.notices ?? [];
     const box = $("#catb-notices");
     box.hidden = !notes.length;
-    box.replaceChildren(h("b", {}, "De reținut de la ultima actualizare din API"), h("ul", {}, notes.map((n) => h("li", {}, n))));
+    // One line until opened: the notes can be long and the days are what the page is for.
+    box.replaceChildren(h("details", { open: noticesOpen, ontoggle: (e) => (noticesOpen = e.target.open) },
+      h("summary", {}, h("b", {}, "De reținut de la ultima actualizare din API"), ` · ${notes.length} ${notes.length === 1 ? "notă" : "note"}`),
+      h("ul", {}, notes.map((n) => h("li", {}, n)))));
   }
+  let noticesOpen = false;
 
   function renderDrivers() {
     const box = $("#catb-drivers");
@@ -253,15 +252,25 @@ export function createCatb({ getSettings, saveSettings }) {
       view.replaceChildren(h("div", { class: "empty-note" }, state.sheet.drivers.length ? "Alege un șofer din listă." : "API-ul nu a trimis nicio cursă pentru luna aceasta."));
       return;
     }
-    // Drawing again must not take the cursor or the scroll position away.
+    // Drawing again must not take the cursor, the scroll position or the row being edited away: the row stays where it was on
+    // screen (even when the edit moves it in the list) and is marked, so the eyes find it again.
     const active = document.activeElement;
     const key = view.contains(active) ? active.dataset?.key : null;
-    const scroll = $("#catb-scroll")?.scrollTop ?? 0;
+    if (view.contains(active)) workRow = rowIdOf(active) ?? workRow;
+    const restore = holdRow(view, workRow, () => view.querySelector(".driver-sticky")?.offsetHeight ?? 0);
     renderCatbDriver(view, { driver, sheet: () => state.sheet, edit, resolveOverlap, moveTrip, addTrip: () => askNewTrip(current, state.sheet) });
-    const area = $("#catb-scroll");
-    if (area) area.scrollTop = scroll;
-    if (key) view.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+    if (freshDriver) view.scrollTop = 0;
+    else {
+      const { row, jumped } = restore();
+      row?.classList.add("working", ...(jumped ? ["jumped"] : []));
+    }
+    freshDriver = false;
+    if (key) view.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
   }
+
+  /** The row (a trip, a pause, a day) the office touched last, and whether the driver on screen was just chosen. */
+  let workRow = null;
+  let freshDriver = false;
 
   function emptyState() {
     return h("div", { class: "empty-note" },
@@ -285,6 +294,10 @@ export function createCatb({ getSettings, saveSettings }) {
   // ---- actions ----
 
   function selectDriver(id) {
+    if (id !== state.driverId) {
+      workRow = null;
+      freshDriver = true;
+    }
     state.driverId = id;
     renderDrivers();
     renderView();
@@ -298,6 +311,8 @@ export function createCatb({ getSettings, saveSettings }) {
   async function openMonth(year, month) {
     await flush();
     Object.assign(state, { year, month, sheet: null, driverId: null, refreshError: null });
+    workRow = null;
+    freshDriver = true;
     renderAll();
     busy("Se deschide luna…");
     try {
@@ -330,6 +345,15 @@ export function createCatb({ getSettings, saveSettings }) {
     const view = $("#catb-view");
     view.addEventListener("input", () => (unconfirmed = true));
     for (const event of ["change", "focusout"]) view.addEventListener(event, () => (unconfirmed = false));
+    // The row of the last field entered or button pressed is the one being worked on (see `renderView`).
+    const touched = (e) => {
+      const id = rowIdOf(e.target);
+      if (!id || id === workRow) return;
+      view.querySelector(".working")?.classList.remove("working", "jumped");
+      workRow = id;
+    };
+    view.addEventListener("focusin", touched);
+    view.addEventListener("pointerdown", touched, true);
   }
 
   const tripKeys = (sheet) => new Set(sheet ? sheet.drivers.flatMap((d) => d.trips.map((t) => `${d.id}|${t.id}`)) : []);

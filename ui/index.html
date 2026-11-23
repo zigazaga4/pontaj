@@ -26,7 +26,7 @@
     <div class="actions">
       <button id="btn-update-ready" class="btn primary" type="button" title="Instalează versiunea nouă; aplicația se repornește" hidden></button>
       <button id="btn-add" class="btn" data-for="pdf">＋ Adaugă PDF-uri</button>
-      <button id="btn-clear" class="btn ghost" hidden>Golește</button>
+      <button id="btn-clear" class="btn ghost" title="Închide luna de pe ecran; rămâne salvată și o poți deschide din nou" hidden>Închide luna</button>
       <button id="btn-settings" class="btn ghost">⚙︎ Reguli</button>
       <button id="btn-export" class="btn primary" disabled>⬇ Exportă Excel</button>
     </div>
@@ -65,6 +65,10 @@
           <li><b>3.</b> Verifici pontajul pe zile</li>
           <li><b>4.</b> Exporți Excel-ul</li>
         </ol>
+        <div class="saved" id="saved" hidden>
+          <h3>Luni salvate pe acest calculator</h3>
+          <div id="saved-list"></div>
+        </div>
       </div>
     </section>
 

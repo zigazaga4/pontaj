@@ -1,20 +1,22 @@
-//! Saving the months: one JSON file per month (`2026-10.json`) in a folder of the app.
-//! The office's edits live only here and in the Excel files, so a write never destroys the previous version:
-//! the file is written beside the old one and moved into place, and the old one is kept as `2026-10.json.bak`.
+//! Saving the Categoria B months: one JSON file per month in the `catb` folder of the app (how the files are written and
+//! kept is in [`crate::store`]).
 
 use std::path::Path;
 
 use super::model::Sheet;
-use crate::{month_file, Result};
+use crate::store;
+use crate::Result;
+
+pub use crate::store::list;
 
 /// Saves a month.
 pub fn save(dir: &Path, sheet: &Sheet) -> Result<()> {
-    month_file::save(dir, sheet.year, sheet.month, sheet)
+    store::save(dir, sheet.year, sheet.month, sheet)
 }
 
 /// A saved month, if there is one. A file that cannot be read is an error (and stays where it is).
 pub fn load(dir: &Path, year: i32, month: u32) -> Result<Option<Sheet>> {
-    month_file::load(dir, year, month)
+    store::load(dir, year, month)
 }
 
 /// The months saved on each side of one (before, after), if there are any: the trips just outside a month are theirs (see
@@ -23,11 +25,6 @@ pub fn load_around(dir: &Path, year: i32, month: u32) -> (Option<Sheet>, Option<
     let (before_year, before_month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
     let (after_year, after_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
     (load(dir, before_year, before_month).ok().flatten(), load(dir, after_year, after_month).ok().flatten())
-}
-
-/// The saved months, newest first.
-pub fn list(dir: &Path) -> Vec<(i32, u32)> {
-    month_file::list(dir)
 }
 
 #[cfg(test)]

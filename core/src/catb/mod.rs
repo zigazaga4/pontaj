@@ -16,6 +16,7 @@ pub mod reconcile;
 pub mod store;
 pub mod tariffs;
 mod transfers;
+mod weeks;
 
 pub use compute::{monthly_cap_min, recompute, recompute_driver};
 pub use config::CatbSettings;

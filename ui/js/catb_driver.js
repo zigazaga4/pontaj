@@ -4,7 +4,8 @@
 import { h } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { boundInput } from "./table.js";
-import { duration, formatWhen, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, signed, spanText, weekdayName } from "./time.js";
+import { flaggedWeeks, weeksBody } from "./catb_weeks.js";
+import { duration, formatWhen, hhmm, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, signed, spanText, weekdayName } from "./time.js";
 
 export const KIND_LABELS = { eco: "Eco", private: "Privată", vip: "VIP", bus: "Autocar", passenger: "Pasager", transfer: "Deplasare" };
 const GENERATED_HINT = "Adăugată de aplicație: șoferul a ajuns într-un loc și următoarea cursă pleacă din altul (Otopeni la un capăt), iar drumul ăsta nu apare în API (a mers cu mașina goală sau ca pasager). Se numără ca o cursă regulată. Poți schimba orele și locurile, o poți muta cu o zi înainte sau după (și o pui la loc) sau o poți scoate cu ✕.";
@@ -25,6 +26,8 @@ export const LEAVE_TYPES = [
 ];
 const leaveName = (code) => LEAVE_TYPES.find(([c]) => c === code)?.[1] ?? code;
 
+const STATION_NOT_COUNTED = "Staționarea nu intră în orele de lucru (nici în Excel): se arată doar ca informație și se plătește după regula ei (primele ore sunt incluse în preț).";
+
 /** Staționare as it counts now: chosen by the office, or by the rules (waiting at Otopeni). */
 const isStation = (pause) => pause.state === "stayed" || (pause.state === "auto" && pause.kind === "normal");
 
@@ -36,12 +39,12 @@ function pauseHint(pause) {
   if (pause.kind === "overlap") return "Sosirea e doar estimată (plecarea + durata fixă a traseului), plecările sunt reale. Apasă „Rezolvă suprapunerea” ca aplicația să mute orele celor două curse, sau corectează-le tu.";
   if (isStation(pause)) {
     return pause.state === "stayed"
-      ? "Ai ales staționare: se numără toată pauza de mai sus (sau scrie tu orele)."
-      : "Staționare la Otopeni: toată așteptarea dintre cele două curse se numără (sau scrie tu orele).";
+      ? "Ai ales staționare: toată pauza de mai sus se arată ca staționare (sau scrie tu orele). Nu intră în orele de lucru; contează doar la plată."
+      : "Staționare la Otopeni: așteptarea dintre cele două curse (sau scrie tu orele). Nu intră în orele de lucru; contează doar la plată.";
   }
   return pause.state === "off"
     ? "Ai ales pauză: nu se numără nimic din ea și nu se plătește."
-    : "Pauză: nu se numără în ore și nu se plătește (stă acasă, are o pauză lungă sau a fost în excursie între curse). Staționarea e doar la Otopeni; dacă a stat totuși acolo, alege „Staționare”.";
+    : "Pauză: nu se numără și nu se plătește (stă acasă, are o pauză lungă sau a fost în excursie între curse). Staționarea e doar la Otopeni; dacă a stat totuși acolo, alege „Staționare”.";
 }
 
 /** Pauses whose optional fields (hours, note) were opened by hand although nothing was decided yet. */
@@ -70,12 +73,9 @@ function setTripField(trip, field, value, original) {
   trip.edit[field] = value === original || value === "" ? null : value;
 }
 
+/** A proposal takes its whole day out of the pontaj (the waiting is not in the hours, so there is nothing else to shorten). */
 export function applyProposal(driver, proposal) {
-  if (proposal.kind === "day") {
-    if (!driver.excludedDays.includes(proposal.date)) driver.excludedDays.push(proposal.date);
-  } else {
-    setPause(driver, { prev: proposal.prev, next: proposal.next }, { hours: proposal.setHours });
-  }
+  if (!driver.excludedDays.includes(proposal.date)) driver.excludedDays.push(proposal.date);
 }
 
 export function toggleDay(driver, date) {
@@ -213,44 +213,59 @@ function moveControls(trip, moveTrip) {
 }
 
 /**
- * A trip that leaves after midnight but belongs to the shift of the day before (it follows a staționare over midnight) is listed
- * under that day, the way the accountants write it. This line says on which day it really leaves.
+ * The way back of a trip to Otopeni that leaves after midnight (or after a staționare over midnight) is counted on the day of
+ * the trip before it: it stays listed on the day it really leaves, while the hours, the night and the intervals go to the day of
+ * the way there in the Excel. This line says on which day it is counted.
  */
 function sameShiftNote(trip) {
   const leaves = trip.eff.departure ? isoDate(trip.eff.departure) : null;
   if (!trip.eff.workDay || !leaves || leaves === trip.eff.workDay) return null;
-  return h("small", { class: "moved-note", title: "Pleacă după miezul nopții, dar e din aceeași tură cu cursa dinainte (staționarea trece peste miezul nopții), deci se trece pe ziua în care a început tura." },
-    `pleacă pe ${shortDate(leaves)}, din tura de pe ${shortDate(trip.eff.workDay)}`);
+  return h("small", { class: "moved-note", title: "Este cursa de întoarcere a cursei dinainte: după ceas pleacă în ziua următoare, dar în Excel cursa de venire se trece mereu pe ziua cursei de plecare." },
+    `(în Excel se trece pe ziua cursei de plecare, ${shortDate(trip.eff.workDay)})`);
 }
 
-function tripRow(trip, edit, moveTrip) {
+/** The trips of other days that are counted on `date` (the shift that started on `date` goes on after midnight). */
+function joinedTrips(driver, date) {
+  return driver.trips.filter((t) => t.eff.workDay === date && t.eff.departure && isoDate(t.eff.departure) !== date);
+}
+
+function tripRow(trip, edit, moveTrip, driver) {
   const removed = trip.edit.removed;
   const counted = trip.eff.countsHours && trip.eff.minutes > 0;
   const regular = trip.eff.regular;
+  // The hours of the trip: its driving time plus the time added to the day when this trip opens or closes it.
+  const added = (trip.eff.addedBeforeMin ?? 0) + (trip.eff.addedAfterMin ?? 0);
+  const hoursTitle = counted
+    ? added > 0 ? `${duration(trip.eff.minutes)} în cursă + ${duration(added)} adăugat (vezi orele de plecare și de sosire)` : ""
+    : trip.eff.arrival ? "" : "Sosire necunoscută: durata nu se numără";
+  // What does not fit the columns goes on a line of its own under the row (only when there is something to say).
+  const notes = [
+    trip.generated && trip.movedDays ? h("small", { class: "moved-note" }, `mutată ${movedText(trip.movedDays)}`) : null,
+    sameShiftNote(trip),
+    trip.generated && !removed ? moveControls(trip, moveTrip) : null,
+  ].filter(Boolean);
   const cells = [
-    h("td", { class: "kind" },
-      h("span", { class: `badge ${trip.kind}`, title: trip.generated ? GENERATED_HINT : "" }, KIND_LABELS[trip.kind] ?? trip.kind),
+    h("div", { class: "c-kind" },
+      h("span", { class: `badge ${trip.kind}`, title: trip.generated ? GENERATED_HINT : trip.car ? `Mașina din API: ${carText(trip)}` : "" }, KIND_LABELS[trip.kind] ?? trip.kind),
       trip.manual ? h("span", { class: "muted", title: "Adăugată manual" }, " ✎") : null,
-      trip.generated ? h("span", { class: "muted", title: GENERATED_HINT }, " auto") : null,
-      trip.generated && trip.movedDays ? h("small", { class: "moved-note" }, `mutată ${movedText(trip.movedDays)}`) : null,
-      sameShiftNote(trip),
-      trip.generated && !removed ? moveControls(trip, moveTrip) : null),
-    h("td", {}, timeInput(trip, "departure", edit)),
-    h("td", {}, timeInput(trip, "arrival", edit)),
-    h("td", {}, placeInput(trip, "from", edit)),
-    h("td", {}, placeInput(trip, "to", edit)),
-    h("td", { class: `calc ${counted ? "strong" : ""}`, title: counted ? "" : trip.eff.arrival ? "" : "Sosire necunoscută: durata nu se numără" }, counted ? duration(trip.eff.minutes) : "–"),
-    h("td", { class: "money" }, trip.eff.excursion ? h("small", { class: "muted", title: trip.eff.priceNote }, "tahograf") : regular ? lei(trip.eff.price) : priceInput(trip, edit)),
-    h("td", { class: "actions" },
+      trip.generated ? h("span", { class: "muted", title: GENERATED_HINT }, " auto") : null),
+    h("div", { class: "c-time" }, timeCell(driver, trip, "departure", edit)),
+    h("div", { class: "c-time" }, timeCell(driver, trip, "arrival", edit)),
+    h("div", { class: "c-place" }, placeInput(trip, "from", edit)),
+    h("div", { class: "c-place" }, placeInput(trip, "to", edit)),
+    h("div", { class: `c-num calc ${counted ? "strong" : ""}`, title: hoursTitle }, counted ? duration(trip.eff.minutes + added) : "–"),
+    h("div", { class: "c-num money" }, trip.eff.excursion ? h("small", { class: "muted", title: trip.eff.priceNote }, "tahograf") : regular ? lei(trip.eff.price) : priceInput(trip, edit)),
+    h("div", { class: "c-act" },
       removed
         ? h("button", { class: "icon-btn", title: "Pune cursa la loc", onclick: () => edit((d) => (d.trips.find((x) => x.id === trip.id).edit.removed = false)) }, "↺")
         : h("button", { class: "icon-btn", title: trip.manual ? "Șterge cursa adăugată" : trip.generated ? "Scoate deplasarea (nu se mai generează la locul ăsta)" : "Scoate cursa din pontaj", onclick: () => edit((d) => {
             if (trip.manual) d.trips.splice(d.trips.findIndex((x) => x.id === trip.id), 1);
             else d.trips.find((x) => x.id === trip.id).edit.removed = true;
-          }) }, "✕"),
-      trip.car ? h("small", { class: "muted car", title: "Mașina, modelul și locurile din API" }, carText(trip)) : null),
+          }) }, "✕")),
+    notes.length ? h("div", { class: "trip-notes" }, notes) : null,
   ];
-  return h("tr", { class: `trip-row ${removed ? "removed" : ""} ${trip.eff.excursion ? "excursion" : ""} ${trip.generated ? "generated" : ""} ${trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null ? "edited" : ""}` }, cells);
+  const edited = trip.edit.departure != null || trip.edit.arrival != null || trip.edit.from != null || trip.edit.to != null;
+  return h("div", { class: `row trip-row ${removed ? "removed" : ""} ${trip.eff.excursion ? "excursion" : ""} ${trip.generated ? "generated" : ""} ${edited ? "edited" : ""}`, "data-row": `trip:${trip.id}` }, cells);
 }
 
 /** A caption above a control, so nobody has to guess what an empty box is for. */
@@ -319,61 +334,103 @@ function needsControls(pause) {
   return decided || pause.kind === "overlap" || pause.alerts.some((a) => a.level !== "info") || opened.has(pauseId(pause));
 }
 
-function pauseRows(driver, pause, edit, resolveOverlap) {
+/** The wait between two trips: one line (what, from when to when, how much counts), and under it the controls and remarks if it needs them. */
+function pauseBlock(driver, pause, edit, resolveOverlap) {
   const quiet = pause.kind === "rest" && pause.state === "auto" && !pause.alerts.length;
   const cls = pauseClass(pause);
   const counted = pause.countedMin > 0;
   const overlap = pause.kind === "overlap";
   const controls = needsControls(pause);
   const change = h("button", { class: "btn small ghost", title: "Alege ce a fost, scrie orele sau o notă", onclick: () => { opened.add(pauseId(pause)); edit(() => {}); } }, "Schimbă");
-  const rows = [
-    h("tr", { class: `pause-row ${cls} ${quiet ? "quiet" : ""} ${controls ? "with-controls" : ""}` },
-      h("td", { class: "kind" }, h("span", { class: `badge pause ${cls}` }, PAUSE_BADGES[cls])),
-      h("td", { colspan: 4, class: "pause-what" },
-        h("b", {}, `${formatWhen(pause.start, pause.start)} → ${formatWhen(pause.end, pause.start)}`),
-        h("span", { class: "pause-span" }, overlap ? `se suprapun cu ${spanText(-pause.gapMin)}` : `pauză de ${spanText(pause.gapMin)}`),
-        h("span", { class: "muted" }, pausePlace(pause)),
-        overlap
-          ? h("button", { class: "btn small primary", title: "Ora de plecare a fiecărei curse e reală, sosirea e doar estimată. Mută sosirea cursei dinainte (iar dacă ar rămâne prea scurtă, și plecarea celei de după) ca să nu se mai suprapună. Se schimbă doar aceste două curse.", onclick: () => resolveOverlap(pause) }, "Rezolvă suprapunerea")
-          : null),
-      h("td", { class: `calc ${counted ? "strong" : ""}`, title: counted ? "Cât se numără din pauză, în ore" : "Nu se numără în ore" }, counted ? duration(pause.countedMin) : "–"),
-      h("td", { class: "money calc" }, pause.extraPay > 0 ? lei(pause.extraPay) : ""),
-      h("td", { class: "actions" }, controls ? null : change)),
-  ];
-  if (controls) rows.push(h("tr", { class: `pause-ctl-row ${cls} ${quiet ? "quiet" : ""}` }, h("td"), h("td", { colspan: 7, class: "pause-cell" }, pauseControls(driver, pause, edit))));
-  if (pause.alerts.length) rows.push(h("tr", { class: "alert-row" }, h("td"), h("td", { colspan: 7 }, alertList(pause.alerts))));
-  return rows;
+  const line = h("div", { class: "row pause-line" },
+    h("div", { class: "c-kind" }, h("span", { class: `badge pause ${cls}` }, PAUSE_BADGES[cls])),
+    h("div", { class: "pause-what" },
+      h("b", {}, `${formatWhen(pause.start, pause.start)} → ${formatWhen(pause.end, pause.start)}`),
+      h("span", { class: "pause-span" }, overlap ? `se suprapun cu ${spanText(-pause.gapMin)}` : `pauză de ${spanText(pause.gapMin)}`),
+      h("span", { class: "muted" }, pausePlace(pause)),
+      overlap
+        ? h("button", { class: "btn small primary", title: "Ora de plecare a fiecărei curse e reală, sosirea e doar estimată. Mută sosirea cursei dinainte (iar dacă ar rămâne prea scurtă, și plecarea celei de după) ca să nu se mai suprapună. Se schimbă doar aceste două curse.", onclick: () => resolveOverlap(pause) }, "Rezolvă suprapunerea")
+        : null),
+    h("div", { class: `c-num calc ${counted ? "strong" : ""}`, title: counted ? "Cât se numără din pauză, în ore" : "Nu se numără în ore" }, counted ? duration(pause.countedMin) : "–"),
+    h("div", { class: "c-num money calc" }, pause.extraPay > 0 ? lei(pause.extraPay) : ""),
+    h("div", { class: "c-act" }, controls ? null : change));
+  return h("div", { class: `pause ${cls} ${quiet ? "quiet" : ""}`, "data-row": `pause:${pause.prev}` },
+    line,
+    controls ? h("div", { class: "pause-detail" }, pauseControls(driver, pause, edit)) : null,
+    pause.alerts.length ? h("div", { class: "pause-detail" }, alertList(pause.alerts)) : null);
 }
 
-/** One figure of the day header with its caption under it. */
-const dayStat = (label, value, tone = "") => h("div", { class: `day-stat ${tone}` }, h("b", {}, value), h("small", {}, label));
+/** One figure of the day header, the caption before the value ("Ore zi 8:00"). */
+const dayStat = (label, value, tone = "", title) => h("span", { class: `day-stat ${tone}`, title }, h("small", {}, label), h("b", {}, value));
+
+/** The clock minutes of an ISO date-time ("2026-10-05T12:00:00" → 720). */
+const isoMinutes = (iso) => Number(iso.slice(11, 13)) * 60 + Number(iso.slice(14, 16));
 
 /**
- * The time added to a day, an hour for each regular trip: before the first departure and after the last arrival. Both boxes show what
- * counts now (the rules' value or the office's), and typing changes it; an empty box goes back to the rules, 0 adds nothing.
+ * What the time added to a day is called next to each time, in words only (the numbers and the rules are the same on both
+ * sides). At the departure it makes the time earlier (12:00 → 11:30), so it is taken *from* the time: "scăzut", with a "−".
+ * At the arrival it makes the time later (12:00 → 12:30), so it is "adăugat", with a "＋".
  */
-function fillStat(driver, row, date, edit) {
-  const side = (key, field, label) => {
-    const typed = () => driver.fills?.[date]?.[key];
-    return h("label", { class: "ctl", title: `${label}. Scrie orele (ex. 1, 1:30), 0 = nimic, gol = după reguli.` },
-      h("span", {}, key === "before" ? "la plecare" : "la sosire"),
-      bound({
-        className: "fill-input",
-        dataset: { key: `fill-${key}:${date}` },
-        placeholder: "0",
-        get: () => row,
-        format: (r) => (r[field] > 0 || typed() === 0 ? hoursText(r[field] / 60) : ""),
-        parse: (text) => {
-          const hours = parseHours(text, 12);
-          return hours === undefined ? undefined : hours === null ? null : Math.round(hours * 60);
-        },
-        classes: () => (typed() != null ? "manual" : ""),
-        commit: (value) => edit((d) => setFill(d, date, key, value)),
-      }));
-  };
-  return h("div", { class: "day-stat fill" },
-    h("div", { class: "fill-inputs" }, side("before", "fillBeforeMin", "Timp adăugat înainte de prima plecare"), side("after", "fillAfterMin", "Timp adăugat după ultima sosire")),
-    h("small", {}, "Completare (o oră pe cursă)"));
+const FILL_WORDS = {
+  departure: {
+    label: "scăzut",
+    glyph: "−",
+    start: "Scade timp din ora de plecare (jumătate de oră; apoi îl schimbi)",
+    done: (minutes, was, now) => `S-a scăzut ${duration(minutes)} din ora de plecare: inițial era ${was}, acum e ${now}.`,
+    none: "Nu s-a scăzut timp din ora de plecare (scris de birou).",
+    box: "Timp scăzut din ora de plecare (ora se face mai devreme). Scrie orele (ex. 1, 0:30), 0 = nimic, gol = după reguli.",
+  },
+  arrival: {
+    label: "adăugat",
+    glyph: "＋",
+    start: "Adaugă timp la ora de sosire (jumătate de oră; apoi îl schimbi)",
+    done: (minutes, was, now) => `S-a adăugat ${duration(minutes)} la ora de sosire: inițial era ${was}, acum e ${now}.`,
+    none: "Nu s-a adăugat timp la ora de sosire (scris de birou).",
+    box: "Timp adăugat la ora de sosire (ora se face mai târziu). Scrie orele (ex. 1, 0:30), 0 = nimic, gol = după reguli.",
+  },
+};
+
+/**
+ * The departure or the arrival of a trip. The first departure and the last arrival of a day carry the time added to the day:
+ * the cell then shows the time that counts (what the Excel writes: the departure earlier, the arrival later), and under it
+ * what it was before ("era 12:00", the real time, still editable here) and how much was taken from the departure / added to
+ * the arrival (a box: type to change it, 0 = nothing, empty = back to the rules; see [`FILL_WORDS`]). Any other time is the
+ * plain box. Where nothing was added a small − / ＋ adds some by hand.
+ */
+function timeCell(driver, trip, side, edit) {
+  const departure = side === "departure";
+  const edge = departure ? trip.eff.opensDay : trip.eff.closesDay;
+  const plain = timeInput(trip, side, edit);
+  if (!edge || trip.edit.removed) return plain;
+  const key = departure ? "before" : "after";
+  const date = trip.eff.workDay;
+  const added = (departure ? trip.eff.addedBeforeMin : trip.eff.addedAfterMin) ?? 0;
+  const typed = driver.fills?.[date]?.[key];
+  const words = FILL_WORDS[side];
+  if (added <= 0 && typed == null) {
+    return h("div", { class: "timed" }, plain,
+      h("button", { class: "icon-btn add-time", type: "button", title: words.start, onclick: () => edit((d) => setFill(d, date, key, 30)) }, words.glyph));
+  }
+  const real = isoMinutes(trip.eff[side]);
+  const counted = hhmm(departure ? real - added : real + added);
+  const sentence = added > 0 ? words.done(added, hhmm(real), counted) : words.none;
+  const box = bound({
+    className: "fill-input",
+    dataset: { key: `fill-${key}:${date}` },
+    placeholder: "0",
+    get: () => trip,
+    format: (t) => duration(departure ? t.eff.addedBeforeMin : t.eff.addedAfterMin),
+    parse: (text) => {
+      const hours = parseHours(text, 12);
+      return hours === undefined ? undefined : hours === null ? null : Math.round(hours * 60);
+    },
+    classes: () => (driver.fills?.[date]?.[key] != null ? "manual" : ""),
+    title: () => words.box,
+    commit: (value) => edit((d) => setFill(d, date, key, value)),
+  });
+  return h("div", { class: "timed has-added", title: sentence },
+    h("b", { class: "counted" }, counted),
+    h("div", { class: "was" }, h("small", {}, "era"), plain, h("small", {}, words.label), box));
 }
 
 /** Types the time added to a day on one side (`"before"` / `"after"`, in minutes; `null` = back to the rules). */
@@ -391,7 +448,7 @@ export function clearSetHours(driver, date) {
 
 /** The button of a day whose hours were fixed by hand: the day goes back to what its trips and the rules make of it. */
 const undoAdjustButton = (date, edit) =>
-  h("button", { class: "btn small ghost", title: "Ziua revine la orele ei din curse, staționări și completare.", onclick: () => edit((d) => clearSetHours(d, date)) }, "Anulează reglarea");
+  h("button", { class: "btn small ghost", title: "Ziua revine la orele ei din curse și din timpul adăugat (după reguli).", onclick: () => edit((d) => clearSetHours(d, date)) }, "Anulează reglarea");
 
 /** The day header's figure for an adjusted day: how much the fixed hours add to (or take from) what the trips and the rules make. */
 const adjustStat = (row) => dayStat("Reglare după Excel", signed(row.adjustMin), "adjust");
@@ -436,61 +493,64 @@ function leaveRunRows(driver, sheet, run, edit) {
       fixed > 0 ? undoAdjustButton(date, edit) : null,
       excluded ? h("button", { class: "btn small ghost", title: "Pune ziua la loc în pontaj", onclick: () => edit((d) => toggleDay(d, date)) }, "Pune ziua la loc") : null);
   });
-  return [
-    h("tr", { class: "day-gap" }, h("td", { colspan: 8 })),
-    h("tr", { class: "leave-run" },
-      h("td", { colspan: 8 },
-        h("div", { class: "day-line" },
-          h("div", { class: "day-title" }, h("b", {}, title), h("span", { class: "muted" }, "fără nicio cursă")),
-          marked ? h("span", { class: "pill code" }, `${marked} ${marked === 1 ? "zi" : "zile"} de concediu`) : null,
-          all),
-        h("div", { class: "leave-days" }, days))),
-  ];
+  return h("section", { class: "day leave-run", "data-row": `leave:${first}` },
+    h("header", { class: "day-head" },
+      h("div", { class: "day-title" }, h("b", {}, title), h("span", { class: "muted" }, "fără nicio cursă")),
+      marked ? h("span", { class: "pill code" }, `${marked} ${marked === 1 ? "zi" : "zile"} de concediu`) : null,
+      all),
+    h("div", { class: "leave-days" }, days));
 }
 
-function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip }) {
+function daySection(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip }) {
   const row = driver.days.find((d) => d.date === date);
   const info = dayInfo(sheet, date);
   const outside = !info;
   const excursionOnly = trips.length > 0 && trips.every((t) => t.eff.excursion);
   const excluded = !!row?.excluded;
+  const joined = joinedTrips(driver, date);
+  const cars = [...new Set(trips.map(carText).filter(Boolean))];
+  // Every trip listed here is counted on the day of an earlier shift: this day has no hours of its own to show.
+  const elsewhere = trips.length > 0 && trips.every((t) => t.eff.workDay && t.eff.workDay !== date);
+  // The hours of this day were fixed by hand (from an Excel file): it says so, and how to give it back to the rules.
   const adjusted = !!row?.adjusted && !excluded;
-  const head = h("tr", { class: `day-head ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${excluded ? "excluded" : ""}` },
-    h("td", { colspan: 8 },
-      h("div", { class: "day-line" },
-        h("div", { class: "day-title" },
-          h("b", {}, weekdayName(date)),
-          h("span", { class: "day-date" }, shortDate(date)),
-          info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
-          outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
-          excursionOnly ? h("span", { class: "pill excursion" }, "excursie · se pontează din tahograf") : null,
-          excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null,
-          adjusted ? h("span", { class: "pill adjusted", title: "Orele zilei au fost aduse la ce scria în Excel" }, "ore fixate după Excel") : null),
-        row
-          ? h("div", { class: "day-stats" },
-              dayStat("Curse regulate", row.legs),
-              dayStat("Ore curse", duration(row.tripMin)),
-              dayStat("Staționare", duration(row.stationMin)),
-              !excluded && !adjusted && row.tripMin + row.stationMin > 0 ? fillStat(driver, row, date, edit) : null,
-              adjusted ? adjustStat(row) : null,
-              dayStat("Total ziua", duration(row.totalMin), "total"),
-              dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted"))
-          : null,
-        adjusted ? undoAdjustButton(date, edit) : null,
-        row ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null),
-      row?.alerts.length ? alertList(row.alerts) : null));
+  const head = h("header", { class: "day-head" },
+    h("div", { class: "day-title" },
+      h("b", {}, weekdayName(date)),
+      h("span", { class: "day-date" }, shortDate(date)),
+      info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
+      outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
+      joined.length
+        ? h("span", { class: "pill", title: "Cursa de întoarcere pleacă după ceas în ziua următoare, dar se trece pe ziua cursei de plecare: orele, noaptea și intervalele ei sunt pe această zi." },
+            `(include ${joined.length === 1 ? "cursa" : "cursele"} de pe ziua următoare, ${[...new Set(joined.map((t) => shortDate(isoDate(t.eff.departure))))].join(", ")})`)
+        : null,
+      elsewhere ? h("span", { class: "pill" }, `(orele se numără pe ziua dinainte, ${[...new Set(trips.map((t) => shortDate(t.eff.workDay)))].join(", ")})`) : null,
+      excursionOnly ? h("span", { class: "pill excursion" }, "excursie · se pontează din tahograf") : null,
+      excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null,
+      adjusted ? h("span", { class: "pill adjusted", title: "Orele zilei au fost aduse la ce scria în Excel" }, "ore fixate după Excel") : null,
+      cars.length ? h("small", { class: "muted", title: "Mașina, modelul și locurile din API (model sau locuri mari = vehicul de categoria D)" }, cars.join(" / ")) : null),
+    row && !elsewhere
+      ? h("div", { class: "day-stats" },
+          dayStat("Curse", row.legs, "", "Curse regulate în ziua asta"),
+          dayStat("Ore zi", duration(row.totalMin), "total", "Cât a fost în cursă, cu timpul adăugat la prima plecare și la ultima sosire (se vede în orele cursei, mai jos). Staționarea nu intră aici."),
+          adjusted ? adjustStat(row) : null,
+          dayStat("Staționare", duration(row.stationMin), "muted", STATION_NOT_COUNTED),
+          dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted", "Plată orientativă pentru ziua asta"))
+      : null,
+    adjusted ? undoAdjustButton(date, edit) : null,
+    row && !elsewhere ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null);
   const body = [];
   const pauseOf = new Map(driver.pauses.map((p) => [p.prev, p]));
   for (const trip of trips) {
-    body.push(tripRow(trip, edit, moveTrip));
+    body.push(tripRow(trip, edit, moveTrip, driver));
     const pause = pauseOf.get(trip.id);
     // Two trips that meet with no time between them (a generated drive and the trip it leads to) have nothing to show.
     const meets = pause && pause.gapMin === 0 && !needsControls(pause) && !pause.alerts.length;
-    if (pause && !meets) body.push(...pauseRows(driver, pause, edit, resolveOverlap));
+    if (pause && !meets) body.push(pauseBlock(driver, pause, edit, resolveOverlap));
   }
-  const group = [h("tr", { class: "day-gap" }, h("td", { colspan: 8 })), head, ...body];
-  if (excluded) group.forEach((tr) => tr.classList.add("day-excluded"));
-  return group;
+  return h("section", { class: `day ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${excluded ? "excluded" : ""}`, "data-row": `day:${date}` },
+    head,
+    row?.alerts.length ? h("div", { class: "day-alerts" }, alertList(row.alerts)) : null,
+    h("div", { class: "day-rows" }, body));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -582,46 +642,77 @@ export function renderCatbDriver(container, ctx) {
           h("li", {}, h("span", {}, p.text, p.pay >= 0.5 ? h("small", { class: "muted" }, ` (~${lei(p.pay)} lei din estimare)`) : null), h("button", { class: "btn small", onclick: () => edit((d) => applyProposal(d, p)) }, "Aplică")))))
     : null;
 
-  const head = h("div", { class: "driver-head" },
-    h("div", { class: "driver-title" },
-      h("h3", {}, driver.name),
-      h("div", { class: "driver-actions" },
-        h("button", { class: "btn small", onclick: async () => { const trip = await ctx.addTrip(); if (trip) edit((d) => d.trips.push(trip)); } }, "＋ Adaugă cursă"))),
-    h("div", { class: "chips" },
-      chip("Zile", t.days),
-      chip("Curse regulate", t.legs),
-      chip("Ore curse", duration(t.tripMin)),
-      chip("Ore staționare", duration(t.stationMin), { title: "Dedusă: plecarea cursei următoare minus sosirea celei dinainte" }),
-      t.fillMin > 0 ? chip("Ore completare", duration(t.fillMin), { title: "O oră pentru fiecare cursă regulată a zilei (jumătate înainte de prima plecare, jumătate după ultima sosire): o cursă face o zi de 4 ore, două curse 8 ore. O zi nu trece de 8 ore din cauza asta (Reguli → Categoria B). Îl poți schimba pe fiecare zi." }) : null,
-      excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
-      Object.keys(t.leaveDays ?? {}).length
-        ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
-        : null,
-      chip("Total ore", duration(t.totalMin), { tone: t.overMin > 0 ? "bad" : "" }),
-      chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
-      t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,
-      chip("Estimare plată", `~${lei(t.payTotal)} lei`, { title: `Curse ${lei(t.payLegs)} · exterioare ${lei(t.payExterior)} · staționare ${lei(t.payStation)}. Orientativ.` })),
-    driver.alerts.length ? alertList(driver.alerts) : null,
-    proposals);
+  // The weeks live in the checks panel; their remarks (week_hours / week_rest) say the same as the weeks, so they are not listed twice.
+  const weekRemark = (a) => a.code === "week_hours" || a.code === "week_rest";
+  const alerts = (driver.weeks?.length ? driver.alerts.filter((a) => !weekRemark(a)) : driver.alerts);
+  const weekFlags = flaggedWeeks(driver);
+  const weeks = weeksBody(driver, { info: (date) => dayInfo(sheet, date), onToggle: (date) => edit((d) => toggleDay(d, date)) });
+  const red = alerts.some((a) => a.level === "alert");
+  const todo = alerts.length + weekFlags + driver.proposals.length;
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const review = alerts.length || weeks || proposals
+    ? h("details", { class: `review ${todo ? (red ? "red" : "warn") : ""}`, open: reviewOpen.get(driver.id) ?? false, ontoggle: (e) => reviewOpen.set(driver.id, e.target.open) },
+        h("summary", {},
+          h("b", {}, todo ? "De verificat" : "Verificări"),
+          todo
+            ? h("span", { class: "review-counts" },
+                alerts.length ? h("span", {}, count(alerts.length, "avertisment", "avertismente")) : null,
+                weekFlags ? h("span", { title: "Săptămâni peste limita de ore în cursă sau fără zilele libere cerute" }, count(weekFlags, "săptămână cu probleme", "săptămâni cu probleme")) : null,
+                driver.proposals.length ? h("span", {}, count(driver.proposals.length, "sugestie", "sugestii")) : null)
+            : h("span", { class: "muted" }, "totul în regulă")),
+        h("div", { class: "review-body" }, alerts.length ? alertList(alerts) : null, weeks, proposals))
+    : null;
 
-  // A trip sits under its work day: the day it leaves, or the day of the shift it continues (see `tripRow`).
+  const addTrip = async () => {
+    const trip = await ctx.addTrip();
+    if (trip) edit((d) => d.trips.push(trip));
+  };
+  // Name, the figures that matter and the column captions stay on screen while the days scroll under them.
+  const sticky = h("div", { class: "driver-sticky" },
+    h("div", { class: "driver-bar" },
+      h("h3", {}, driver.name),
+      h("div", { class: "bar-figures" },
+        chip("Total ore", duration(t.totalMin), {
+          tone: t.overMin > 0 ? "bad" : "",
+          title: "Orele din curse, cu timpul adăugat în orele de plecare și de sosire ale zilei (o oră pe cursă regulată, fără ca o zi să treacă de 8 ore: Reguli → Categoria B). Staționarea nu intră aici.",
+        }),
+        chip("Plafon", duration(sheet.capMin), { title: `${sheet.weekdays} zile luni–vineri × 8 ore (sărbătorile incluse)` }),
+        t.overMin > 0 ? chip("Depășire", duration(t.overMin), { tone: "bad" }) : null,
+        chip("Estimare plată", `~${lei(t.payTotal)} lei`, { title: `Curse ${lei(t.payLegs)} · exterioare ${lei(t.payExterior)} · staționare ${lei(t.payStation)}. Orientativ.` })),
+      h("button", { class: "btn small", onclick: addTrip }, "＋ Adaugă cursă")),
+    h("div", { class: "row col-head" }, COLUMNS.map(([text, cls]) => h("div", { class: cls }, text))));
+
+  const facts = h("div", { class: "chips driver-facts" },
+    chip("Zile", t.days),
+    chip("Curse regulate", t.legs),
+    chip("Staționare (nu intră în total)", duration(t.stationMin), { title: `Dedusă: plecarea cursei următoare minus sosirea celei dinainte. ${STATION_NOT_COUNTED}` }),
+    excursions ? chip("Curse de excursie (tahograf)", excursions, { title: "Cursele în afara județului fără tarif sunt excursii: ies din Categoria B, se pontează din tahograf, nu intră în ore și nu se plătesc aici." }) : null,
+    Object.keys(t.leaveDays ?? {}).length
+      ? chip("Concediu", LEAVE_TYPES.filter(([code]) => t.leaveDays[code]).map(([code]) => `${code} ${t.leaveDays[code]}`).join(" · "), { title: "Zilele fără nicio cursă pe care le-ai marcat ca fiind concediu" })
+      : null);
+
+  // A trip sits under the day it leaves (the Excel may count it on another day: see `sameShiftNote`).
   const byDate = new Map();
   for (const trip of driver.trips) {
-    const date = trip.eff.workDay ?? isoDate(trip.eff.departure ?? trip.departure);
+    const date = isoDate(trip.eff.departure ?? trip.departure);
     if (!byDate.has(date)) byDate.set(date, []);
     byDate.get(date).push(trip);
   }
   // Days with trips and blocks of free days, together, in date order.
-  const blocks = [...byDate.keys()].map((date) => ({ date, rows: () => dayRows(driver, sheet, date, byDate.get(date), edit, ctx) }));
-  for (const run of freeRuns(driver.freeDays ?? [])) blocks.push({ date: run[0], rows: () => leaveRunRows(driver, sheet, run, edit) });
+  const blocks = [...byDate.keys()].map((date) => ({ date, draw: () => daySection(driver, sheet, date, byDate.get(date), edit, ctx) }));
+  for (const run of freeRuns(driver.freeDays ?? [])) blocks.push({ date: run[0], draw: () => leaveRunRows(driver, sheet, run, edit) });
   blocks.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  const body = h("tbody");
-  for (const block of blocks) body.append(...block.rows());
 
-  const table = h("table", { class: "data-table catb-table" },
-    h("thead", {}, h("tr", {}, ["Tip", "Plecare", "Sosire", "Din", "Spre", "Ore", "Lei", ""].map((text) => h("th", {}, text)))),
-    body);
   container.replaceChildren(
-    head,
-    blocks.length ? h("div", { class: "table-scroll", id: "catb-scroll" }, table) : h("div", { class: "empty-note" }, "Șoferul nu are curse în luna aceasta."));
+    sticky,
+    h("div", { class: "driver-body" },
+      facts,
+      review,
+      blocks.length ? h("div", { class: "days" }, blocks.map((block) => block.draw())) : h("div", { class: "empty-note" }, "Șoferul nu are curse în luna aceasta.")));
 }
+
+/** Column captions of the trip rows, with the class of the cell they sit over (the rows use the same grid). */
+const COLUMNS = [["Tip", "c-kind"], ["Plecare", "c-time"], ["Sosire", "c-time"], ["Din", "c-place"], ["Spre", "c-place"], ["Ore", "c-num"], ["Lei", "c-num"], ["", "c-act"]];
+
+/** Whether the checks panel of a driver (driver id → open) is open, so a redraw after an edit does not close it. */
+const reviewOpen = new Map();

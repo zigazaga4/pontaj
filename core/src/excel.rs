@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use chrono::NaiveDate;
-use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, FormatBorder, Formula, RowNum, Workbook, Worksheet, XlsxError};
+use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, FormatBorder, Formula, Note, RowNum, Workbook, Worksheet, XlsxError};
 
 use crate::calendar::month_name;
 use crate::settings::{IntervalMode, NightSource, Settings};
@@ -322,6 +322,10 @@ fn write_employee(
                 Some(min) => ws.write_number_with_format(r, col, min.rem_euclid(DAY) as f64 / DAY as f64, &time_fmt)?,
                 None => ws.write_blank(r, col, &time_fmt)?,
             };
+            // A remark about this very time (e.g. "an hour was added here: it was 12:00, now 11:00") sits on its cell.
+            if let Some(note) = entry.time_notes.iter().find(|n| n.interval == k / 2 && n.end == (k % 2 == 1)).filter(|_| value.is_some()) {
+                ws.insert_note(r, col, &Note::new(&note.text).add_author_prefix(false).set_width(300).set_height(80))?;
+            }
         }
     }
 
@@ -665,7 +669,8 @@ mod tests {
 
     #[test]
     fn audit_states_the_rules_in_use() {
-        let mut settings = Settings::default();
+        // A minimum of 3 hours for the night chosen by the office (the default writes every night hour).
+        let mut settings = Settings { night_threshold_min: 180, ..Settings::default() };
         let blank = Timesheet {
             company: String::new(),
             location: String::new(),
@@ -687,7 +692,7 @@ mod tests {
 
         settings.interval_mode = IntervalMode::Card;
         settings.night_source = NightSource::Card;
-        settings.night_threshold_min = 0;
+        settings.night_threshold_min = Settings::default().night_threshold_min;
         let lines = audit_rules(&blank, &settings).join("\n");
         assert!(lines.contains("orele reale de pe card"));
         assert!(lines.contains("coloana „Noapte” din raportul de tahograf") && lines.contains("se trec toate orele de noapte"));

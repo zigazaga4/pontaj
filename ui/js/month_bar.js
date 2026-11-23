@@ -1,7 +1,6 @@
 // The "Luna" and "Anul" pickers of a month bar, shared by every tab that works on one month (Categoria B, Birou, Garaj, Oraș).
 import { h } from "./dom.js";
-
-export const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
+import { MONTHS } from "./time.js";
 
 /**
  * The two pickers for `{ year, month }`; `open(year, month)` is called when either changes.
