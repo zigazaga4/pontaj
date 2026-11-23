@@ -12,18 +12,18 @@ use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, FormatBorder, Formula,
 use crate::calendar::month_name;
 use crate::settings::{IntervalMode, NightSource, Settings};
 use crate::time::{fmt_clock, fmt_duration, DAY};
-use crate::timesheet::{DayEntry, Employee, Interval, Timesheet, CODES, OLP};
+use crate::timesheet::{DayEntry, Employee, Group, Interval, Timesheet, CODES, OLP};
 use crate::{Error, Result};
 
 /// Row of the first header line (Excel row 9); the days numbers are on the next one.
-const HEADER_ROW: RowNum = 8;
-const FIRST_DATA_ROW: RowNum = 10;
+pub(crate) const HEADER_ROW: RowNum = 8;
+pub(crate) const FIRST_DATA_ROW: RowNum = 10;
 /// The hours and the night hours, the two rows on top of every employee; the start/end pairs come under them.
 const TOP_ROWS: RowNum = 2;
 /// Start/end pairs of an employee in the payroll file; a day with more intervals gives the employee more pairs.
 const MIN_SLOTS: usize = 2;
 /// Column E: A is the number, B the name, C the job, D the department (left empty, as in the payroll file).
-const FIRST_DAY_COL: ColNum = 4;
+pub(crate) const FIRST_DAY_COL: ColNum = 4;
 
 pub(crate) const HEADER_FILL: u32 = 0xD9E1F2;
 pub(crate) const OFF_FILL: u32 = 0xEDEDED;
@@ -31,8 +31,12 @@ pub(crate) const HOLIDAY_FILL: u32 = 0xFCE4D6;
 pub(crate) const TOTAL_FILL: u32 = 0xFFF2CC;
 /// The green of weekends, holidays and the month header in the payroll file (theme accent 3, 40% lighter).
 const WEEKEND_FILL: u32 = 0xC3D69B;
-/// What is calculated, and the names.
+/// What is calculated, and the names of the tachograph drivers.
 const YELLOW: u32 = 0xFFFF00;
+/// The names of everybody whose hours are not on a tachograph (Categoria B, office, garage, city).
+const WHITE: u32 = 0xFFFFFF;
+/// The names of the truck drivers.
+pub(crate) const TIR_GREEN: u32 = 0x92D050;
 const CODE_FONT: u32 = 0xFF0000;
 /// Absence codes on the "Verificare" sheet.
 const CODE_FILL: u32 = 0xE2EFDA;
@@ -53,6 +57,16 @@ const MONTH_ABBREVIATIONS: [&str; 12] = ["IAN", "FEB", "MAR", "APR", "MAI", "IUN
 const DAY_WIDTHS: [f64; 31] = [
     5.57, 4.71, 5.43, 4.86, 5.57, 5.57, 5.57, 4.86, 4.86, 4.71, 4.71, 4.71, 4.71, 5.57, 5.86, 4.71, 4.71, 4.86, 5.57, 4.86, 4.86, 4.86, 4.86, 4.86, 4.86, 4.86, 5.43, 5.43, 5.43, 5.43, 5.43,
 ];
+
+/// The colour of a person's name, as in the payroll file: yellow for the tachograph (category D drivers included), green for
+/// the truck drivers, white for everybody else.
+pub(crate) fn name_fill(group: Group) -> u32 {
+    match group {
+        Group::Tachograph => YELLOW,
+        Group::Tir => TIR_GREEN,
+        Group::CatB | Group::Office | Group::Garage | Group::City => WHITE,
+    }
+}
 
 /// Column positions derived from the number of days in the month.
 struct Cols {
@@ -163,12 +177,17 @@ pub(crate) fn xlsx_err(e: XlsxError) -> Error {
 /// the day has no hours: the formula gives an empty text then, since a formula cannot return an empty cell).
 pub(crate) type HoursFormula<'a> = &'a dyn Fn(usize, u32) -> Option<String>;
 
+/// The name of the first sheet of every file: "Pontaj 11.2026" (read back by [`crate::pontaj_file`]).
+pub(crate) fn pontaj_sheet_name(year: i32, month: u32) -> String {
+    format!("Pontaj {month:02}.{year}")
+}
+
 /// The worksheet "Pontaj MM.YYYY": the payroll team's foaie colectivă, with a formula for every total.
 pub(crate) fn pontaj_sheet(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings, hours_from: Option<HoursFormula>) -> std::result::Result<(), XlsxError> {
     let st = Styles::pontaj();
     let cols = Cols::new(sheet.days.len());
     let month = month_name(sheet.month);
-    ws.set_name(format!("Pontaj {:02}.{}", sheet.month, sheet.year))?;
+    ws.set_name(pontaj_sheet_name(sheet.year, sheet.month))?;
 
     write_title(ws, sheet, settings, &cols)?;
     write_header(ws, sheet, &st, &cols, month)?;
@@ -260,11 +279,12 @@ fn write_employee(
     let times = 2 * slots(emp);
     let last = row + rows - 1;
 
-    // Number and name over all the rows; the job over the first two (hours and night), then the labels of the times.
+    // Number and name over all the rows (the name in the colour of its group); the job over the first two (hours and night),
+    // then the labels of the times.
     let numbered = st.base.clone().set_text_wrap();
     ws.merge_range(row, 0, last, 0, "", &numbered)?;
     ws.write_number_with_format(row, 0, nr as f64, &numbered)?;
-    ws.merge_range(row, 1, last, 1, &emp.name, &st.fill(YELLOW).set_font_name("Arial").set_align(FormatAlign::Left).set_text_wrap())?;
+    ws.merge_range(row, 1, last, 1, &emp.name, &st.fill(name_fill(emp.group)).set_font_name("Arial").set_align(FormatAlign::Left).set_text_wrap())?;
     ws.merge_range(row, 2, row + 1, 2, &emp.function, &st.base.clone().set_font_size(9).set_text_wrap())?;
     let label = st.base.clone().set_font_size(9).set_italic().set_align(FormatAlign::Left).set_text_wrap();
     for k in 0..times {
@@ -325,11 +345,12 @@ fn write_employee(
         range(row, cols.code(olp_idx + 1), cols.code(CODES.len() - 1))
     );
 
+    let norm = emp.norm_hours.unwrap_or(sheet.norm_hours);
     let mut formulas: Vec<(ColNum, String, f64)> = vec![
         (cols.worked, format!("=SUM({hours_range})"), t.worked),
         (cols.night, format!("=SUM({night_range})"), t.night),
-        (cols.not_worked, format!("=MAX(0,{}-{worked_ref})", sheet.norm_hours), t.not_worked),
-        (cols.overtime, format!("=MAX(0,{worked_ref}+{absences}-{})", sheet.norm_hours), t.overtime),
+        (cols.not_worked, format!("=MAX(0,{norm}-{worked_ref})"), t.not_worked),
+        (cols.overtime, format!("=MAX(0,{worked_ref}+{absences}-{norm})"), t.overtime),
     ];
     for (i, (code, _)) in CODES.iter().enumerate() {
         let value = t.code_hours.get(i).copied().unwrap_or(0.0);
@@ -517,7 +538,7 @@ pub(crate) fn write_duration(ws: &mut Worksheet, row: RowNum, col: ColNum, minut
     Ok(())
 }
 
-fn build_audit(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> std::result::Result<(), XlsxError> {
+pub(crate) fn build_audit(ws: &mut Worksheet, sheet: &Timesheet, settings: &Settings) -> std::result::Result<(), XlsxError> {
     let st = Styles::new();
     let plain = Styles::plain();
     ws.set_name("Verificare")?;
@@ -693,6 +714,8 @@ mod tests {
             name: "X".into(),
             function: String::new(),
             location: String::new(),
+            group: Group::default(),
+            norm_hours: None,
             activities: Vec::new(),
             days: vec![DayEntry::default(); 3],
             totals: Default::default(),

@@ -148,6 +148,8 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
     let engine = Engine::new(wb);
     let from = settings.round_up_from_min.clamp(1, 60);
     let hours = |m: i32| if m < from { None } else { Some(round_hours(m, from)) };
+    // What the hours cell of a day says: a day fixed by hand has exactly its typed hours (half hours too), any other the rounding.
+    let cell_hours = |row: &pontaj_core::catb::DayRow| if row.adjusted { Some(f64::from(row.total_min) / 60.0) } else { hours(row.total_min).map(f64::from) };
     let month_days = days_in_month(sheet.year, sheet.month);
     let problems = &mut report.problems;
 
@@ -219,7 +221,7 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
         if pairs > 2 {
             report.extra_rows += 1;
         }
-        let (mut sum_hours, mut sum_night) = (0, 0);
+        let (mut sum_hours, mut sum_night) = (0.0_f64, 0);
         for row in &driver.days {
             let Some(date) = row.date else { continue };
             if (date.year(), date.month()) != (sheet.year, sheet.month) {
@@ -229,11 +231,12 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
             let col = 4 + date.day() - 1;
             let label = format!("{} {}", driver.name, date);
             let app = format!(
-                "aplicația {} (curse {}, staționare {}, completare {}{}{})",
+                "aplicația {} (curse {}, staționare {}, completare {}{}{}{})",
                 hm(row.total_min),
                 hm(row.trip_min),
                 hm(row.station_min),
                 hm(row.fill_min),
+                if row.adjusted { format!(", FIXATĂ (reglare {})", hm(row.adjust_min)) } else { String::new() },
                 if row.excluded { ", ZI SCOASĂ" } else { "" },
                 row.leave.as_deref().map(|l| format!(", concediu {l}")).unwrap_or_default()
             );
@@ -243,14 +246,14 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
             } else if let Some(code) = &row.leave {
                 Value::Text(code.clone())
             } else {
-                hours(row.total_min).map_or(Value::Empty, |h| Value::Num(f64::from(h)))
+                cell_hours(row).map_or(Value::Empty, Value::Num)
             };
             let shown = engine.value(0, r, col);
             if !same(&shown, &want) {
                 problems.push(format!("{label}: {app} → celula de ore trebuia {}, Excel arată {}", want.show(), shown.show()));
             }
             if let Value::Num(h) = want {
-                sum_hours += h as i32;
+                sum_hours += h;
             }
 
             // The times written under the hours: every trip of the day, from its departure to its arrival, the rest blank.
@@ -294,7 +297,7 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
         // The totals of the row.
         let total_col = 4 + month_days;
         let total = engine.value(0, r, total_col);
-        if total.num() != Some(f64::from(sum_hours)) {
+        if total.num().is_none_or(|t| (t - sum_hours).abs() > 1e-7) {
             problems.push(format!("{}: „Total ore lucrate” {}, zilele dau {sum_hours}", driver.name, total.show()));
         }
         let night_total = engine.value(0, r + 1, total_col + 1);
@@ -323,7 +326,8 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
                 let col = 3 + date.day() - 1;
                 let m = |n: u32| engine.value(grid, top + n, col).minutes().unwrap_or(0);
                 let got = [m(0), m(1), m(2), m(3)];
-                let want = [row.trip_min, row.station_min, row.fill_min, row.total_min];
+                // The time added and the adjustment of the office share one row (the adjustment can be negative).
+                let want = [row.trip_min, row.station_min, row.fill_min + row.adjust_min, row.total_min];
                 if got != want {
                     problems.push(format!(
                         "{} {date}: „Pontaj zilnic” {} / {} / {} / {}, aplicația {} / {} / {} / {}",
@@ -355,7 +359,7 @@ pub fn check(sheet: &Sheet, settings: &Settings, wb: &Workbook) -> Report {
             seen.push(norm(&driver.name));
             let v = |c: u32| engine.value(si, r, c);
             let t = &driver.totals;
-            let pairs = [("curse", 4, t.trip_min), ("staționare", 5, t.station_min), ("completare", 6, t.fill_min), ("total", 7, t.total_min)];
+            let pairs = [("curse", 4, t.trip_min), ("staționare", 5, t.station_min), ("completare / reglare", 6, t.fill_min + t.adjust_min), ("total", 7, t.total_min)];
             for (what, c, want) in pairs {
                 let got = v(c).minutes().unwrap_or(0);
                 if got != want {

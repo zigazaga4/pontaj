@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 
-use pontaj_core::{add_pdfs, catb, recompute, suggested_file_name, write_xlsx, Settings, Timesheet};
+use pontaj_core::timesheet::Group;
+use pontaj_core::{add_pdfs, catb, combined, pontaj_file, recompute, roster, Settings, Timesheet};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -81,21 +82,62 @@ fn ask_xlsx_path(app: &AppHandle, file_name: String) -> Option<PathBuf> {
     Some(if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xlsx")) { path } else { path.with_extension("xlsx") })
 }
 
-/// Asks where to save, writes the workbook and returns the chosen path.
+/// The one Excel file of a month: the tachograph month on the screen (when it is this month), Categoria B and the office, garage
+/// and city staff as they are saved on this computer. Asks where to save and returns the chosen path.
 #[tauri::command]
-async fn export_excel(app: AppHandle, timesheet: Timesheet, settings: Settings) -> CmdResult<Option<String>> {
+async fn export_all(app: AppHandle, timesheet: Option<Timesheet>, year: i32, month: u32, settings: Settings) -> CmdResult<Option<String>> {
     blocking(move || {
-        let Some(path) = ask_xlsx_path(&app, suggested_file_name(&timesheet, &settings)) else { return Ok(None) };
-        write_xlsx(&timesheet, &settings, &path).map_err(|e| e.to_string())?;
+        let catb_sheet = open_catb(&app, year, month, &settings)?;
+        let staff = roster::open_employees(&roster_dir(&app)?, year, month, &settings).map_err(|e| e.to_string())?;
+        let parts = combined::Parts { year, month, tachograph: timesheet.as_ref(), catb: catb_sheet.as_ref(), staff };
+        let Some(path) = ask_xlsx_path(&app, combined::suggested_file_name(&parts, &settings)) else { return Ok(None) };
+        combined::write_xlsx(&parts, &settings, &path).map_err(|e| e.to_string())?;
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
+}
+
+// ---- Office, garage and city: the hours follow a plan (8 hours on weekdays, 12 hours two days on and two off) ----
+
+fn roster_dir(app: &AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("roster"))
+}
+
+/// The month of a group: what the office saved laid over what the plans say (the list of people is in the settings).
+#[tauri::command]
+async fn roster_open(app: AppHandle, group: Group, year: i32, month: u32, settings: Settings) -> CmdResult<Timesheet> {
+    blocking(move || roster::open(&roster_dir(&app)?, group, year, month, &settings).map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+async fn roster_save(app: AppHandle, group: Group, sheet: Timesheet) -> CmdResult<()> {
+    blocking(move || roster::save(&roster_dir(&app)?, group, &sheet).map_err(|e| e.to_string())).await
+}
+
+/// Puts one person's days back as his plan says (after the plan changed, or to drop what was typed on his days).
+#[tauri::command]
+fn roster_regenerate(mut timesheet: Timesheet, name: String, settings: Settings) -> Timesheet {
+    roster::regenerate(&mut timesheet, &name, &settings.roster, &settings);
+    timesheet
 }
 
 // ---- Categoria B: drivers' trips from the ALT API ----
 
 fn catb_dir(app: &AppHandle) -> CmdResult<PathBuf> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("catb"))
+}
+
+/// A saved month ready to show (the same for the screen and for the Excel file), or nothing when it was never downloaded.
+fn open_catb(app: &AppHandle, year: i32, month: u32, settings: &Settings) -> CmdResult<Option<catb::Sheet>> {
+    let dir = catb_dir(app)?;
+    let mut sheet = catb::store::load(&dir, year, month).map_err(|e| e.to_string())?;
+    if let Some(sheet) = &mut sheet {
+        // A month downloaded before the days around it were kept still gets the drives between months: the months
+        // saved beside it have exactly those trips. The drivers taken out of the pontaj stay out of every month.
+        let (previous, next) = catb::store::load_around(&dir, year, month);
+        catb::open_saved(sheet, previous, next, settings);
+    }
+    Ok(sheet)
 }
 
 /// The months saved on this computer, newest first.
@@ -107,18 +149,7 @@ fn catb_months(app: AppHandle) -> CmdResult<Vec<(i32, u32)>> {
 /// A saved month (recomputed with the current settings), or nothing when it was never downloaded.
 #[tauri::command]
 async fn catb_open(app: AppHandle, year: i32, month: u32, settings: Settings) -> CmdResult<Option<catb::Sheet>> {
-    blocking(move || {
-        let dir = catb_dir(&app)?;
-        let mut sheet = catb::store::load(&dir, year, month).map_err(|e| e.to_string())?;
-        if let Some(sheet) = &mut sheet {
-            // A month downloaded before the days around it were kept still gets the drives between months: the months
-            // saved beside it have exactly those trips. The drivers taken out of the pontaj stay out of every month.
-            let (previous, next) = catb::store::load_around(&dir, year, month);
-            catb::open_saved(sheet, previous, next, &settings);
-        }
-        Ok(sheet)
-    })
-    .await
+    blocking(move || open_catb(&app, year, month, &settings)).await
 }
 
 /// The network half of a download: asks the API for the month and gives the rows back, merging nothing. The screen merges
@@ -159,20 +190,25 @@ fn catb_move_trip(driver: catb::Driver, trip: String, days: i32, year: i32, mont
     catb::move_transfer(driver, &trip, days, year, month, &settings).map_err(|e| e.to_string())
 }
 
+/// "Reglează după Excel": asks for an Excel file of this month that was changed outside the app and gives back the sheet
+/// with the hours of that file (and a report of what changed, what could not and who is not in the file). Nothing is saved:
+/// the screen shows the report first and saves only when the office confirms. `None` = no file chosen.
+#[tauri::command]
+async fn catb_reconcile(app: AppHandle, sheet: catb::Sheet, settings: Settings) -> CmdResult<Option<catb::reconcile::Reconciled>> {
+    blocking(move || {
+        let Some(file) = app.dialog().file().set_title("Alege Excel-ul după care se reglează orele").add_filter("Excel", &["xlsx", "XLSX"]).blocking_pick_file() else {
+            return Ok(None);
+        };
+        let path = file.into_path().map_err(|e| e.to_string())?;
+        let file = pontaj_file::read(&path).map_err(|e| e.to_string())?;
+        catb::reconcile::reconcile(&sheet, &file, &settings).map(Some).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn catb_save(app: AppHandle, sheet: catb::Sheet) -> CmdResult<()> {
     blocking(move || catb::store::save(&catb_dir(&app)?, &sheet).map_err(|e| e.to_string())).await
-}
-
-/// Asks where to save, writes the Categoria B workbook and returns the chosen path.
-#[tauri::command]
-async fn catb_export(app: AppHandle, sheet: catb::Sheet, settings: Settings) -> CmdResult<Option<String>> {
-    blocking(move || {
-        let Some(path) = ask_xlsx_path(&app, catb::suggested_file_name(&sheet)) else { return Ok(None) };
-        catb::excel::write_xlsx(&sheet, &settings, &path).map_err(|e| e.to_string())?;
-        Ok(Some(path.to_string_lossy().into_owned()))
-    })
-    .await
 }
 
 /// Opens a file with the system's default application (Excel, Numbers...).
@@ -248,7 +284,10 @@ pub fn run() {
             startup_files,
             parse_pdfs,
             recalculate,
-            export_excel,
+            export_all,
+            roster_open,
+            roster_save,
+            roster_regenerate,
             catb_months,
             catb_open,
             catb_download,
@@ -257,8 +296,8 @@ pub fn run() {
             catb_recalculate_driver,
             catb_resolve_overlap,
             catb_move_trip,
+            catb_reconcile,
             catb_save,
-            catb_export,
             open_file,
             app_version,
             check_update,

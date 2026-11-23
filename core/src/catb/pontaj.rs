@@ -13,7 +13,7 @@ use super::model::{DayRow, Driver, Sheet};
 use crate::rules::{compute_totals, recompute_day};
 use crate::settings::{IntervalMode, NightSource, Settings};
 use crate::time::round_hours;
-use crate::timesheet::{display_name, DayEntry, Employee, Interval, Timesheet, Totals};
+use crate::timesheet::{display_name, DayEntry, Employee, Group, Interval, Timesheet, Totals};
 
 /// A period that counts, on the day it belongs to: `start` and `minutes` from the midnight that opens `day`, so what happens
 /// after midnight in a shift that began on `day` is past 24:00 (a trip at 03:30 the next day starts at 27:30).
@@ -77,6 +77,10 @@ fn day_entry(driver: &Driver, day: u32, date: NaiveDate, settings: &Settings) ->
             entry.code = Some(code.clone());
         } else if row.total_min > 0 {
             entry.worked_min = row.total_min;
+            // A day fixed by hand has exactly the hours typed for it (whole or half hours), not the rounding of its minutes.
+            if row.adjusted {
+                entry.override_hours = Some(f64::from(row.total_min) / 60.0);
+            }
             // The span of the day with the time added to it (the times written are only those of the trips).
             if let Some((first, last)) = day_span(driver, date) {
                 entry.first_start = Some(first - row.fill_before_min);
@@ -109,6 +113,8 @@ fn employee(driver: &Driver, sheet: &Sheet, settings: &Settings) -> Employee {
         name: display_name(&driver.name, settings.plain_names),
         function: settings.default_function.clone(),
         location: String::new(),
+        group: Group::CatB,
+        norm_hours: Some(sheet.cap_min / 60),
         activities: Vec::new(),
         days,
         totals: Totals::default(),

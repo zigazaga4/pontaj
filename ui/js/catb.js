@@ -4,9 +4,10 @@ import { api } from "./api.js";
 import { $, h, toast, busy } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { askNewTrip, chip, renderCatbDriver } from "./catb_driver.js";
-import { duration, lei } from "./time.js";
+import { askReconcile } from "./catb_reconcile.js";
+import { MONTHS, monthFields } from "./month_bar.js";
+import { duration, lei, signed } from "./time.js";
 
-const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
 const SAVE_DELAY_MS = 1200;
 /** The month on screen is asked from the API again this often (a correction made there shows up without a click). */
 const REFRESH_EVERY_MS = 10 * 60 * 1000;
@@ -155,16 +156,11 @@ export function createCatb({ getSettings, saveSettings }) {
   // ---- drawing ----
 
   function renderBar() {
-    const years = [...new Set([today.getFullYear() - 1, today.getFullYear(), today.getFullYear() + 1, state.year])].sort();
-    const month = h("select", { onchange: (e) => openMonth(state.year, Number(e.target.value)) },
-      MONTHS.map((name, i) => h("option", { value: i + 1, selected: i + 1 === state.month }, name)));
-    const year = h("select", { onchange: (e) => openMonth(Number(e.target.value), state.month) },
-      years.map((y) => h("option", { value: y, selected: y === state.year }, y)));
     const saved = state.saved.some(([y, m]) => y === state.year && m === state.month);
     $("#catb-bar").replaceChildren(
-      h("label", { class: "bar-field" }, "Luna", month),
-      h("label", { class: "bar-field" }, "Anul", year),
+      ...monthFields(state, openMonth, today),
       h("button", { class: "btn primary", title: "Aduce acum din API ultimele date ale lunii. Corecturile din API (mașină, oră, loc) înlocuiesc datele vechi; ce ai modificat tu rămâne neschimbat.", onclick: fetchMonth }, state.sheet ? "⟳ Actualizează din API" : "⬇ Descarcă din API"),
+      state.sheet && h("button", { class: "btn", title: "Pentru cazul în care orele au fost schimbate direct în Excel: alegi fișierul Excel și orele din aplicație se aduc la ce scrie în el (vezi mai întâi ce se schimbă).", onclick: reconcileWithExcel }, "⇄ Reglează după Excel"),
       h("span", { class: "muted" },
         state.sheet?.fetchedAt
           ? `Actualizat din API la ${state.sheet.fetchedAt}. Se actualizează singură la câteva minute; ce ai modificat tu rămâne neschimbat.${state.refreshError ? " Ultima încercare n-a mers (internet?); se mai încearcă." : ""}`
@@ -182,6 +178,7 @@ export function createCatb({ getSettings, saveSettings }) {
     const sum = (pick) => drivers.reduce((acc, d) => acc + pick(d), 0);
     const over = drivers.filter((d) => d.totals.overMin > 0).length;
     const noTariff = sum(untariffed);
+    const adjusted = sum((d) => d.totals.adjustMin ?? 0);
     box.replaceChildren(
       h("div", { class: "title" }, h("h2", {}, `${MONTHS[sheet.month - 1]} ${sheet.year}`), h("span", {}, "Categoria B · curse din API")),
       chip("Șoferi", drivers.length),
@@ -189,6 +186,7 @@ export function createCatb({ getSettings, saveSettings }) {
       chip("Total ore", duration(sum((d) => d.totals.totalMin))),
       chip("Din care staționare", duration(sum((d) => d.totals.stationMin))),
       chip("Din care completare", duration(sum((d) => d.totals.fillMin ?? 0)), { title: "O oră pentru fiecare cursă regulată (jumătate înainte de plecare, jumătate după sosire)" }),
+      ...(adjusted ? [chip("Reglări după Excel", signed(adjusted), { tone: "adjust", title: "Cât au adăugat (sau scos) zilele cu ore fixate după un Excel, față de ce ar fi dat cursele și regulile. Fiecare zi are „Anulează reglarea” în pontajul șoferului." })] : []),
       chip("Peste plafon", over, { tone: over ? "bad" : "", title: "Click: arată doar șoferii care au ceva de verificat", onclick: toggleIssues }),
       chip("Curse fără tarif", noTariff, { tone: noTariff ? "bad" : "", title: "Cursele private/autocar cu destinații care nu sunt în lista de tarife (Reguli → Categoria B)" }),
       chip("Estimare plată", `~${lei(sum((d) => d.totals.payTotal))} lei`, { title: "Orientativ" }));
@@ -434,6 +432,34 @@ export function createCatb({ getSettings, saveSettings }) {
     }
   }
 
+  /**
+   * "Reglează după Excel": somebody changed the hours in the Excel file without changing the app first, so the app follows the
+   * file. Rust reads the file the office picks and works out the sheet with its hours; the office sees what would change and
+   * only then does the sheet on screen become that one. No refresh from the API runs meanwhile (it would be merged into a sheet
+   * that is about to be replaced).
+   */
+  async function reconcileWithExcel() {
+    if (refreshing || !state.sheet) return;
+    await queue; // let a pending edit finish
+    await flush();
+    refreshing = true;
+    try {
+      const done = await api.catbReconcile(state.sheet, getSettings());
+      if (!done || !(await askReconcile(done.report))) return;
+      state.sheet = done.sheet;
+      if (!driver()) state.driverId = state.sheet.drivers[0]?.id ?? null;
+      markDirty();
+      renderAll();
+      await flush();
+      const days = done.report.changes.length;
+      toast(`Orele din aplicație au fost aduse la Excel (${days} ${days === 1 ? "zi" : "zile"}). Ziua reglată se vede în pontajul fiecărui șofer, cu „Anulează reglarea”.`, { kind: "ok", timeout: 9000 });
+    } catch (err) {
+      fail(err);
+    } finally {
+      refreshing = false;
+    }
+  }
+
   /** What the office should still look at before the file goes out (the decision stays theirs). */
   function exportWarning() {
     const over = state.sheet.drivers.filter((d) => d.totals.overMin > 0);
@@ -450,29 +476,23 @@ export function createCatb({ getSettings, saveSettings }) {
         : null);
   }
 
-  async function exportExcel() {
-    if (!state.sheet) {
-      toast("Nu e nimic de exportat: descarcă mai întâi luna din API.", { kind: "warn" });
-      return;
-    }
-    const warning = exportWarning();
-    if (warning) {
-      const go = await showDialog({
-        title: "Înainte de export",
-        body: warning,
-        wide: true,
-        buttons: [{ label: "Înapoi la verificare", value: false }, { label: "Exportă oricum", kind: "primary", value: true }],
-      });
-      if (!go) return;
-    }
+  /**
+   * Before the one Excel file of a month goes out: the last edit is saved (the file is made from what is saved), and when this
+   * is the Categoria B month being exported, the office is told what it should still look at. Resolves `false` when the
+   * office goes back to check.
+   */
+  async function confirmExport(year, month) {
     await queue; // let a pending edit finish
     await flush();
-    try {
-      const path = await api.catbExport(state.sheet, getSettings());
-      if (path) toast(`Excel salvat: ${path.split(/[\\/]/).pop()}`, { kind: "ok", timeout: 10000, action: { label: "Deschide", run: () => api.openFile(path) } });
-    } catch (err) {
-      fail(err);
-    }
+    const warning = state.sheet && state.year === year && state.month === month ? exportWarning() : null;
+    if (!warning) return true;
+    const go = await showDialog({
+      title: "Înainte de export",
+      body: warning,
+      wide: true,
+      buttons: [{ label: "Înapoi la verificare", value: false }, { label: "Exportă oricum", kind: "primary", value: true }],
+    });
+    return Boolean(go);
   }
 
   /** The rules changed (tariffs, thresholds…): everything is recomputed. */
@@ -520,5 +540,5 @@ export function createCatb({ getSettings, saveSettings }) {
   window.addEventListener("pagehide", flush);
   document.addEventListener("visibilitychange", () => (document.hidden ? flush() : refreshIfDue()));
 
-  return { show, hide, fetchMonth, exportExcel, settingsChanged, flush };
+  return { show, hide, fetchMonth, confirmExport, settingsChanged, flush, month: () => ({ year: state.year, month: state.month }) };
 }

@@ -19,6 +19,9 @@
     <div class="modes" id="modes" role="tablist" aria-label="Sursa datelor">
       <button class="mode active" data-mode="pdf" role="tab">Tahograf (PDF)</button>
       <button class="mode" data-mode="catb" role="tab">Categoria B (API)</button>
+      <button class="mode" data-mode="office" role="tab">Birou</button>
+      <button class="mode" data-mode="garage" role="tab">Garaj</button>
+      <button class="mode" data-mode="city" role="tab">Oraș</button>
     </div>
     <div class="actions">
       <button id="btn-update-ready" class="btn primary" type="button" title="Instalează versiunea nouă; aplicația se repornește" hidden></button>
@@ -41,6 +44,15 @@
       <datalist id="catb-places"></datalist>
     </section>
 
+    <section id="roster" hidden>
+      <div class="summary" id="roster-summary"></div>
+      <div class="catb-bar" id="roster-bar"></div>
+      <div class="split">
+        <aside class="drivers" id="roster-people"></aside>
+        <div class="view" id="roster-view"></div>
+      </div>
+    </section>
+
     <section id="empty" class="dropzone">
       <div class="dropzone-inner">
         <div class="drop-icon">📄</div>
@@ -59,6 +71,7 @@
     <section id="workspace" hidden>
       <div class="summary" id="summary"></div>
       <nav class="tabs" id="tabs"></nav>
+      <nav class="kinds" id="kinds" aria-label="Tahograf sau tir"></nav>
       <div class="files" id="files"></div>
       <div class="warnings" id="warnings" hidden></div>
       <div class="split">

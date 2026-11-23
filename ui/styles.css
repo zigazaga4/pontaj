@@ -93,6 +93,7 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .grid thead .sticky-1, .grid thead .sticky-2 { z-index: 4; background: #e9eef8; }
 .grid .sticky-1 { left: 0; min-width: 34px; }
 .grid .sticky-2 { left: 34px; min-width: 180px; text-align: left; box-shadow: 2px 0 0 var(--border); }
+#roster .grid .sticky-2 { min-width: 236px; } /* the long names of the staff list ("GHIGEANU MARIAN ALEXANDRU") fit whole */
 .grid td.nr { color: var(--muted); }
 .grid td.name { padding: 4px 10px; }
 .emp-name { font-weight: 700; font-size: 12.5px; border: none; background: transparent; color: var(--text); font-family: inherit; width: 100%; padding: 1px 0; }
@@ -260,19 +261,21 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 
 /* ---------- Mode switch (tachograph PDF / Categoria B) ---------- */
 .modes { display: flex; gap: 2px; padding: 3px; background: var(--off); border-radius: 10px; }
-.mode { border: none; background: transparent; font: inherit; font-weight: 600; color: var(--muted); padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+.mode { border: none; background: transparent; font: inherit; font-weight: 600; color: var(--muted); padding: 7px 12px; border-radius: 8px; cursor: pointer; }
 .mode:hover { color: var(--text); }
 .mode.active { background: var(--surface); color: var(--accent-dark); box-shadow: 0 1px 3px rgba(20, 30, 60, .15); }
 
-/* ---------- Categoria B ---------- */
-#catb { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px 20px; overflow: hidden; }
-#catb .split { min-height: 0; }
+/* ---------- Categoria B, and the staff tabs (Birou, Garaj, Oraș) that share its layout ---------- */
+#catb, #roster { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px 20px; overflow: hidden; }
+#catb .split, #roster .split { min-height: 0; }
 .catb-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .bar-field { display: flex; align-items: center; gap: 6px; color: var(--muted); font-weight: 600; }
 .bar-field select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; font: inherit; background: #fff; color: var(--text); text-transform: capitalize; }
 .chip.bad { border-color: #f0b4b4; background: #fdeeee; }
 .chip.bad b { color: var(--danger); }
 .chip.warn { border-color: #f5d38a; background: #fff7e6; }
+.chip.adjust { border-color: #f1d98d; background: #fff8e1; }
+.chip.adjust b { color: #7a5a00; }
 .chip.clickable { cursor: pointer; }
 .chip.clickable:hover { border-color: #b8c2d6; }
 .driver-filter { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; font: inherit; width: 100%; }
@@ -280,8 +283,32 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .driver-list { display: flex; flex-direction: column; gap: 6px; }
 .driver-row { position: relative; }
 .driver-row .driver { width: 100%; padding-right: 34px; }
-.driver-remove { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 17px; line-height: 20px; text-align: center; cursor: pointer; }
+.driver-remove, .driver-reset { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 17px; line-height: 20px; text-align: center; cursor: pointer; }
 .driver-remove:hover, .driver-remove:focus-visible { background: #fdeeee; color: var(--danger); }
+.driver-reset { right: 30px; font-size: 15px; }
+.driver-reset:hover, .driver-reset:focus-visible { background: #eef2fb; color: var(--accent-dark); }
+.driver-row.has-reset .driver { padding-right: 58px; }
+.driver-row .driver small { display: block; }
+.driver-row.has-tir .driver { padding-right: 52px; }
+
+/* ---------- Tahograf | Tir, and the "Tir" switch ---------- */
+.kinds { display: flex; gap: 6px; }
+.kind { font: inherit; font-weight: 600; color: var(--muted); padding: 5px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 99px; cursor: pointer; }
+.kind:hover { border-color: #b8c2d6; }
+.kind.active { color: var(--accent-dark); border-color: var(--accent); background: #eff4ff; }
+.kind-count { margin-left: 8px; padding: 0 7px; border-radius: 99px; background: var(--off); color: var(--muted); font-size: 11px; }
+.tir-toggle { border: 1px solid var(--border); background: transparent; border-radius: 99px; font: inherit; font-size: 10.5px; font-weight: 700; color: var(--muted); padding: 0 8px; line-height: 17px; cursor: pointer; }
+.tir-toggle:hover { border-color: #92d050; color: #3d6a14; }
+.tir-toggle.on { background: #92d050; border-color: #6fae33; color: #1f3d0c; }
+.driver-row.has-tir .tir-toggle { position: absolute; top: 8px; right: 8px; }
+.grid td.name .tir-toggle { margin-top: 2px; }
+
+/* ---------- The form of a person of the staff ---------- */
+.form-row { display: flex; gap: 12px; align-items: flex-end; }
+.form-row .field { flex: 1; }
+.form-day { min-width: 48px; padding-bottom: 16px; }
+.form-error { min-height: 16px; margin: 6px 0 0; color: var(--danger); font-size: 12px; }
+.form-note { margin: 0 0 10px; padding: 6px 10px; border-radius: 8px; background: #fff7e6; color: #92400e; font-size: 12px; }
 .hidden-drivers { margin-top: 8px; border: 1px dashed var(--border); border-radius: 9px; padding: 6px 10px; font-size: 12px; }
 .hidden-drivers summary { cursor: pointer; color: var(--muted); font-weight: 600; }
 .hidden-drivers p { margin: 6px 0; }
@@ -342,6 +369,12 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .trip-row.excursion td { background: #f1f1f4; color: var(--muted); }
 .trip-row.excursion td input { color: var(--muted); }
 .pill.excursion { background: #e6e8ef; color: #4b5266; }
+.pill.adjusted { background: #fff1c9; color: #7a5a00; }
+.day-stat.adjust b { color: #7a5a00; }
+.reconcile { display: flex; flex-direction: column; gap: 10px; }
+.reconcile .reconcile-table { font-size: 13px; }
+.reconcile .reconcile-table td.left { text-align: left; white-space: normal; }
+.reconcile .reconcile-table tr.group td { background: #eef2fa; text-align: left; padding: 6px 8px; }
 .pause-row td { background: #fbfaf3; }
 .pause-row.rest td, .pause-row.quiet td { background: #fafbfd; color: var(--muted); }
 .pause-row.overlap td { background: #fde9e9; }

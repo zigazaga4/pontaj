@@ -4,7 +4,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::catb::CatbSettings;
+use crate::roster::StaffMember;
 use crate::time::parse_hm;
+use crate::timesheet::display_name;
 
 /// Where the night minutes of a day come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -72,6 +74,13 @@ pub struct Settings {
     pub approved_by: String,
     /// Rules and API access of the "Categoria B" mode (trips read from the ALT API).
     pub catb: CatbSettings,
+    /// The truck drivers (tir), by name: a base kept so that it is always known who they are, also in the months when they are
+    /// missing from the tachograph. They are green in the foaie colectivă and have their own tab in the tachograph mode.
+    /// A file saved before this existed starts with the list of [`crate::roster::seed`].
+    pub tir_drivers: Vec<String>,
+    /// The office, garage and city staff, each with the plan their hours are inferred from (see [`crate::roster`]).
+    /// A file saved before this existed starts with the list of [`crate::roster::seed`].
+    pub roster: Vec<StaffMember>,
 }
 
 impl Default for Settings {
@@ -96,6 +105,8 @@ impl Default for Settings {
             prepared_by: String::new(),
             approved_by: String::new(),
             catb: CatbSettings::default(),
+            tir_drivers: crate::roster::seed::tir_drivers(),
+            roster: crate::roster::seed::staff(),
         }
     }
 }
@@ -121,6 +132,12 @@ impl Settings {
     pub fn default_start_min(&self) -> i32 {
         parse_hm(&self.default_start).unwrap_or(8 * 60)
     }
+
+    /// Is this person on the list of truck drivers? Names are compared the way the pontaj writes them (capitals, no diacritics).
+    pub fn is_tir(&self, name: &str) -> bool {
+        let key = display_name(name, true);
+        self.tir_drivers.iter().any(|listed| display_name(listed, true) == key)
+    }
 }
 
 #[cfg(test)]
@@ -145,6 +162,15 @@ mod tests {
         assert_eq!((s.night_source, s.night_window()), (NightSource::Intervals, (0, 7 * 60)));
         assert_eq!((s.night_threshold_min, s.company_name.as_str()), (240, "EXEMPLU SRL"));
         assert_eq!(s.settings_version, SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn a_file_saved_before_the_staff_existed_starts_with_the_staff_and_a_list_the_office_emptied_stays_empty() {
+        let old: Settings = serde_json::from_str(r#"{ "companyName": "EXEMPLU SRL" }"#).unwrap();
+        assert!(!old.roster.is_empty() && !old.tir_drivers.is_empty(), "the people of October are there from the start");
+        assert!(old.is_tir(&old.tir_drivers[0].to_lowercase()), "names are compared the way the pontaj writes them");
+        let emptied: Settings = serde_json::from_str(r#"{ "roster": [], "tirDrivers": [] }"#).unwrap();
+        assert!(emptied.roster.is_empty() && emptied.tir_drivers.is_empty());
     }
 
     #[test]

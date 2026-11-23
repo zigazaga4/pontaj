@@ -33,7 +33,7 @@ static FILES: AtomicUsize = AtomicUsize::new(0);
 /// the threads).
 static SPENT: [AtomicUsize; 5] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)];
 /// Milliseconds per action, by its place in [`ACTIONS`].
-static ACTION_MS: [AtomicUsize; 14] = [const { AtomicUsize::new(0) }; 14];
+static ACTION_MS: [AtomicUsize; 15] = [const { AtomicUsize::new(0) }; 15];
 
 fn timed<T>(slot: usize, work: impl FnOnce() -> T) -> T {
     let started = std::time::Instant::now();
@@ -209,6 +209,32 @@ fn type_fills(c: &mut Case) {
     }
 }
 
+/// Hours fixed by hand (what "Reglează după Excel" leaves): shorter and longer than the day, a half hour, on a day with no
+/// trip at all, and one day given back to the rules.
+fn fix_hours(c: &mut Case) {
+    for id in busy(&c.sheet, 3) {
+        let days = c.worked(id);
+        let s = &c.settings;
+        for (i, minutes) in [(0, 480), (1, 270), (2, 720), (3, 30), (3, 450)] {
+            if let Some(day) = days.get(i) {
+                ui::set_hours(&mut c.sheet, id, *day, Some(minutes), s);
+            }
+        }
+        if let Some(day) = days.get(4) {
+            ui::set_hours(&mut c.sheet, id, *day, Some(600), s);
+            ui::set_hours(&mut c.sheet, id, *day, None, s);
+        }
+        let free: Vec<NaiveDate> = ui::driver(&c.sheet, id).unwrap().free_days.iter().copied().filter(|d| c.in_month(*d)).collect();
+        for day in free.iter().take(2) {
+            ui::set_hours(&mut c.sheet, id, *day, Some(360), s);
+        }
+        if !days.is_empty() {
+            let fixed = ui::driver(&c.sheet, id).unwrap().days.iter().filter(|d| d.adjusted).count();
+            assert!(fixed > 0, "nicio zi fixată, deși s-au fixat ore");
+        }
+    }
+}
+
 /// Days taken out of the pontaj (one put back) and leave on free days, every code, one taken back.
 fn days_and_leave(c: &mut Case) {
     for id in busy(&c.sheet, 3) {
@@ -311,12 +337,13 @@ fn reopen(c: &mut Case) {
 
 type Action = fn(&mut Case);
 
-const ACTIONS: [(&str, Action); 14] = [
+const ACTIONS: [(&str, Action); 15] = [
     ("ore tastate", type_times),
     ("curse scoase", remove_trips),
     ("curse adăugate", add_trips),
     ("pauze decise", decide_pauses),
     ("completare tastată", type_fills),
+    ("ore fixate", fix_hours),
     ("zile scoase și concedii", days_and_leave),
     ("deplasări mutate", move_drives),
     ("suprapuneri rezolvate", resolve_overlaps),

@@ -61,12 +61,45 @@ impl DayInfo {
     }
 }
 
+/// Where an employee's hours come from. It decides the colour of the name in the foaie colectivă, as in the payroll file:
+/// yellow for the tachograph, white for everybody else, green for the truck drivers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Group {
+    /// Read from a tachograph report (the category D drivers are here too). Yellow.
+    #[default]
+    Tachograph,
+    /// A truck driver (tir): on the tachograph too, but listed apart in the settings (`Settings::tir_drivers`). Green.
+    Tir,
+    /// Categoria B: the trips of the ALT API. White.
+    CatB,
+    /// Office staff; the hours are inferred from a plan (see [`crate::roster`]). White.
+    Office,
+    /// The mechanics of the garage, inferred like the office. White.
+    Garage,
+    /// The drivers on the city routes, inferred like the office. White.
+    City,
+}
+
+impl Group {
+    /// Does a person of this group come from a tachograph report?
+    pub fn is_tachograph(self) -> bool {
+        matches!(self, Group::Tachograph | Group::Tir)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Employee {
     pub name: String,
     pub function: String,
     pub location: String,
+    /// Where the hours come from; old files without it are tachograph sheets.
+    #[serde(default)]
+    pub group: Group,
+    /// The norm of this person when it is not the month's (Categoria B has a ceiling of its own); `None` = the sheet's.
+    #[serde(default)]
+    pub norm_hours: Option<i32>,
     /// The rows read from the report(s); editing them re-derives every day.
     #[serde(default)]
     pub activities: Vec<Segment>,
@@ -208,6 +241,8 @@ pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timeshee
                 name,
                 function: settings.default_function.clone(),
                 location: report.location,
+                group: Group::default(),
+                norm_hours: None,
                 activities: report.segments,
                 days: (1..=n_days).map(|day| DayEntry { day, ..Default::default() }).collect(),
                 totals: Totals::default(),

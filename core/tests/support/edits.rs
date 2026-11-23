@@ -150,6 +150,21 @@ pub fn type_fill(sheet: &mut Sheet, id: i64, date: NaiveDate, before: bool, minu
     })
 }
 
+/// The hours of a day fixed by hand, as "Reglează după Excel" leaves them (None = the day goes back to the rules).
+pub fn set_hours(sheet: &mut Sheet, id: i64, date: NaiveDate, minutes: Option<i32>, settings: &Settings) -> bool {
+    edit(sheet, id, settings, |d| {
+        match minutes {
+            Some(m) => {
+                d.set_hours.insert(date, m);
+            }
+            None => {
+                d.set_hours.remove(&date);
+            }
+        }
+        true
+    })
+}
+
 /// "Scoate ziua din pontaj" / "Pune ziua la loc".
 pub fn toggle_day(sheet: &mut Sheet, id: i64, date: NaiveDate, settings: &Settings) -> bool {
     edit(sheet, id, settings, |d| {

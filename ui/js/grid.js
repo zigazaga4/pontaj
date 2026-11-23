@@ -2,6 +2,7 @@
 import { h } from "./dom.js";
 import { clock, duration, hoursText, parseHours } from "./time.js";
 import { KNOWN_CODES, hoursCellEdit, isCompleteCell, whileTyping } from "./table.js";
+import { tirToggle } from "./tir.js";
 
 // Total columns, pinned to the right edge of the grid.
 const SUMS = [
@@ -48,29 +49,37 @@ function sendOnce(input, send) {
  * changes (also while it is typed), `onSelect(empIndex, dayIndex)` when a cell gets focus,
  * `onFunction(empIndex, text)` / `onName(empIndex, text)` when the job title / name is edited
  * (`onName` returns the name now in use).
+ * Options: `visible(employee)` leaves some people out (the indexes in the callbacks stay those of the sheet); `heading` is the
+ * title of the first column; `onTir(empIndex, on)` adds the "Tir" switch to each name; `onName` and `onFunction` missing
+ * make the name and the job read-only (the staff list decides them).
  */
-export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onName }) {
+export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onName, onTir, visible = () => true, heading = "Șofer" }) {
   const days = sheet.days;
   const head = h("tr", {},
     h("th", { class: "sticky-1" }, "Nr"),
-    h("th", { class: "sticky-2" }, "Șofer"),
+    h("th", { class: "sticky-2" }, heading),
     days.map((d) => h("th", { class: `day ${d.weekend || d.holiday ? "off" : ""} ${d.holiday ? "holiday" : ""}`, title: d.holiday ?? "" },
       h("div", {}, d.day), h("small", {}, d.weekday))),
     SUMS.map((s, i) => h("th", { class: "sum", style: sumStyle(i) }, s.label)),
   );
 
   const body = h("tbody");
+  let shown = 0;
   sheet.employees.forEach((emp, ei) => {
+    if (!visible(emp)) return;
+    shown += 1;
     const hoursRow = h("tr", { class: "hours-row" },
-      h("td", { class: "sticky-1 nr", rowspan: 2 }, ei + 1),
+      h("td", { class: "sticky-1 nr", rowspan: 2 }, shown),
       h("td", { class: "sticky-2 name", rowspan: 2 },
         h("input", {
           class: "emp-name",
           value: emp.name,
-          title: "Numele; îl poți corecta",
-          onchange: (e) => (e.target.value = onName(ei, e.target.value)), // gets back the name in use (the old one if the new is empty or taken)
+          readonly: !onName,
+          title: onName ? "Numele; îl poți corecta" : "Numele din lista de personal",
+          onchange: onName && ((e) => (e.target.value = onName(ei, e.target.value))), // gets back the name in use (the old one if the new is empty or taken)
         }),
-        h("input", { class: "emp-func", value: emp.function, title: "Funcția", onchange: (e) => onFunction(ei, e.target.value) })),
+        h("input", { class: "emp-func", value: emp.function, readonly: !onFunction, title: "Funcția", onchange: onFunction && ((e) => onFunction(ei, e.target.value)) }),
+        onTir ? tirToggle(emp, (on) => onTir(ei, on)) : null),
     );
     const nightRow = h("tr", { class: "night-row" });
 
@@ -116,7 +125,7 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onN
     body.append(hoursRow, nightRow);
   });
 
-  container.replaceChildren(h("table", { class: "grid" }, h("thead", {}, head), body));
+  container.replaceChildren(h("table", { class: "grid", dataset: { people: sheet.employees.length } }, h("thead", {}, head), body));
 }
 
 function totalValue(emp, key) {
@@ -151,7 +160,13 @@ function navigate(e, container, ei, di) {
   if (!move) return;
   e.preventDefault();
   e.target.dispatchEvent(new Event("change"));
-  container.querySelector(`input.cell[data-k="${e.target.dataset.k}"][data-e="${ei + move[0]}"][data-d="${di + move[1]}"]`)?.focus();
+  // Up and down go to the next person on screen (people left out of the grid are skipped).
+  const rows = Number(container.querySelector("table.grid")?.dataset.people ?? 0);
+  for (let step = 1; step <= Math.max(rows, 1); step += 1) {
+    const target = container.querySelector(`input.cell[data-k="${e.target.dataset.k}"][data-e="${ei + move[0] * step}"][data-d="${di + move[1]}"]`);
+    if (target) return target.focus();
+    if (!move[0]) return;
+  }
 }
 
 /** Explains how a day was computed. */
@@ -163,7 +178,9 @@ export function renderDetails(target, sheet, ei, di) {
   const parts = [h("b", {}, `${emp.name} · ${date}`)];
   if (info.holiday) parts.push(h("span", { class: "pill holiday" }, info.holiday));
 
-  if (entry.workedMin > 0) {
+  if (emp.group !== "tachograph" && emp.group !== "tir") {
+    // Office, garage and city: the hours come from the plan of the person, not from a tachograph report.
+  } else if (entry.workedMin > 0) {
     const blocks = entry.cardIntervals.map((s) => `${clock(s.start)}–${clock(s.end)}`).join(", ");
     parts.push(h("span", {}, `Tahograf: ${duration(entry.workedMin)} lucrat (${blocks})`));
   } else {

@@ -22,7 +22,7 @@ use chrono::NaiveDate;
 use crate::pdf::Segment;
 use crate::settings::{IntervalMode, NightSource, Settings};
 use crate::time::{floor_to_slot, round_hours, round_to_half, round_to_slot, DAY};
-use crate::timesheet::{DayEntry, Employee, Interval, Timesheet, Totals, CODES, OLP};
+use crate::timesheet::{DayEntry, Employee, Group, Interval, Timesheet, Totals, CODES, OLP};
 
 #[derive(Debug, Clone)]
 pub struct Shift {
@@ -271,6 +271,10 @@ pub fn recompute(sheet: &mut Timesheet, s: &Settings) {
     sheet.notices.clear();
     let Some(first) = NaiveDate::from_ymd_opt(sheet.year, sheet.month, 1) else { return };
     for employee in &mut sheet.employees {
+        // The truck drivers are known from the list in the settings, whatever the month's reports say about them.
+        if employee.group.is_tachograph() {
+            employee.group = if s.is_tir(&employee.name) { Group::Tir } else { Group::Tachograph };
+        }
         for activity in &mut employee.activities {
             activity.normalize();
         }
@@ -278,7 +282,7 @@ pub fn recompute(sheet: &mut Timesheet, s: &Settings) {
         for entry in &mut employee.days {
             recompute_day(entry, s);
         }
-        employee.totals = compute_totals(employee, sheet.norm_hours, s.hours_per_day);
+        employee.totals = compute_totals(employee, employee.norm_hours.unwrap_or(sheet.norm_hours), s.hours_per_day);
     }
 }
 

@@ -1,9 +1,34 @@
 //! Dev helper for previewing the UI in a plain browser: reads `{ "cmd", "args" }`
 //! from stdin and prints what the matching Tauri command would return.
 use std::io::Read;
+use std::path::PathBuf;
 
-use pontaj_core::{add_pdfs, catb, recompute, Settings, Timesheet};
+use pontaj_core::roster::{self, Plan, StaffMember};
+use pontaj_core::timesheet::Group;
+use pontaj_core::{add_pdfs, catb, combined, recompute, Settings, Timesheet};
 use serde_json::{json, Value};
+
+/// The folder of the saved months of the staff (the app's `roster` folder), `ROSTER_DIR` or a temp one.
+fn roster_dir() -> PathBuf {
+    std::env::var("ROSTER_DIR").map(Into::into).unwrap_or_else(|_| std::env::temp_dir().join("pontaj-preview-roster"))
+}
+
+/// A tachograph month made up for the preview (there is no PDF reader in a browser): two drivers, two truck drivers of the list.
+fn preview_tachograph(year: i32, month: u32, settings: &Settings) -> Timesheet {
+    let names = ["Andrei Nicolae", "Arif Redin", "Badaluta Marius Adrian", "Chenaru Florin"];
+    let drivers: Vec<StaffMember> = names
+        .iter()
+        .map(|name| StaffMember { name: (*name).into(), function: "Șofer de autoturisme".into(), group: Group::Office, plan: Plan::standard_weekdays(), note: String::new() })
+        .collect();
+    let mut sheet = roster::build_sheet(&drivers, Group::Office, year, month, settings);
+    sheet.company = "AUTO LUX TRADING SRL".into();
+    sheet.sources = vec!["raport-tahograf.pdf".into()];
+    for employee in &mut sheet.employees {
+        employee.group = Group::Tachograph;
+    }
+    recompute(&mut sheet, settings);
+    sheet
+}
 
 fn main() {
     let mut input = String::new();
@@ -28,6 +53,43 @@ fn main() {
             recompute(&mut sheet, &settings);
             json!(sheet)
         }
+        "preview_tachograph" => json!(preview_tachograph(get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(11) as u32, &settings)),
+        // Office, garage and city: the saved months are in `ROSTER_DIR`.
+        "roster_open" => {
+            let group: Group = serde_json::from_value(get("group")).expect("group");
+            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(11) as u32);
+            match roster::open(&roster_dir(), group, year, month, &settings) {
+                Ok(sheet) => json!(sheet),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "roster_save" => {
+            let group: Group = serde_json::from_value(get("group")).expect("group");
+            let sheet: Timesheet = serde_json::from_value(get("sheet")).expect("sheet");
+            match roster::save(&roster_dir(), group, &sheet) {
+                Ok(()) => json!(true),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "roster_regenerate" => {
+            let mut sheet: Timesheet = serde_json::from_value(get("timesheet")).expect("timesheet");
+            roster::regenerate(&mut sheet, get("name").as_str().unwrap_or_default(), &settings.roster, &settings);
+            json!(sheet)
+        }
+        // The one Excel file; Categoria B is not part of it here (its months are saved by the app, not by this helper).
+        "export_all" => {
+            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(11) as u32);
+            let tachograph: Option<Timesheet> = serde_json::from_value(get("timesheet")).ok().flatten();
+            let path = std::env::var("EXPORT_PATH").unwrap_or_else(|_| "/tmp/pontaj-export.xlsx".into());
+            let result = roster::open_employees(&roster_dir(), year, month, &settings).and_then(|staff| {
+                let parts = combined::Parts { year, month, tachograph: tachograph.as_ref(), catb: None, staff };
+                combined::write_xlsx(&parts, &settings, std::path::Path::new(&path))
+            });
+            match result {
+                Ok(()) => json!(path),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
         // Categoria B: no network here. `catb_download` reads an answer of the API saved in the file named by `CATB_API_JSON`.
         "catb_download" => {
             let body = std::env::var("CATB_API_JSON").ok().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
@@ -49,6 +111,31 @@ fn main() {
             let path = get("path").as_str().unwrap_or("/tmp/catb.xlsx").to_string();
             match catb::excel::write_xlsx(&sheet, &settings, std::path::Path::new(&path)) {
                 Ok(()) => json!({ "path": path }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        // A month saved by the app, read from the folder named by `CATB_DIR` (only read; the preview never saves into it).
+        "catb_months" => json!(std::env::var("CATB_DIR").map(|dir| catb::store::list(std::path::Path::new(&dir))).unwrap_or_default()),
+        "catb_open" => {
+            let (year, month) = (get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(11) as u32);
+            let dir = PathBuf::from(std::env::var("CATB_DIR").unwrap_or_default());
+            match catb::store::load(&dir, year, month) {
+                Ok(Some(mut sheet)) => {
+                    let (previous, next) = catb::store::load_around(&dir, year, month);
+                    catb::open_saved(&mut sheet, previous, next, &settings);
+                    json!(sheet)
+                }
+                Ok(None) => Value::Null,
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        // "Reglează după Excel": the file the native dialog would pick is the one named by `RECONCILE_FILE`.
+        "catb_reconcile" => {
+            let sheet: catb::Sheet = serde_json::from_value(get("sheet")).expect("sheet");
+            let Ok(path) = std::env::var("RECONCILE_FILE") else { return println!("null") };
+            let done = pontaj_core::pontaj_file::read(std::path::Path::new(&path)).and_then(|file| catb::reconcile::reconcile(&sheet, &file, &settings));
+            match done {
+                Ok(done) => json!(done),
                 Err(e) => json!({ "error": e.to_string() }),
             }
         }

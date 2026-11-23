@@ -4,7 +4,7 @@
 import { h } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { boundInput } from "./table.js";
-import { duration, formatWhen, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, spanText, weekdayName } from "./time.js";
+import { duration, formatWhen, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, signed, spanText, weekdayName } from "./time.js";
 
 export const KIND_LABELS = { eco: "Eco", private: "Privată", vip: "VIP", bus: "Autocar", passenger: "Pasager", transfer: "Deplasare" };
 const GENERATED_HINT = "Adăugată de aplicație: șoferul a ajuns într-un loc și următoarea cursă pleacă din altul (Otopeni la un capăt), iar drumul ăsta nu apare în API (a mers cu mașina goală sau ca pasager). Se numără ca o cursă regulată. Poți schimba orele și locurile, o poți muta cu o zi înainte sau după (și o pui la loc) sau o poți scoate cu ✕.";
@@ -384,6 +384,18 @@ export function setFill(driver, date, side, minutes) {
   if (edit.before == null && edit.after == null) delete driver.fills[date];
 }
 
+/** Gives a day fixed by hand (see "Reglează după Excel") back to the rules. */
+export function clearSetHours(driver, date) {
+  if (driver.setHours) delete driver.setHours[date];
+}
+
+/** The button of a day whose hours were fixed by hand: the day goes back to what its trips and the rules make of it. */
+const undoAdjustButton = (date, edit) =>
+  h("button", { class: "btn small ghost", title: "Ziua revine la orele ei din curse, staționări și completare.", onclick: () => edit((d) => clearSetHours(d, date)) }, "Anulează reglarea");
+
+/** The day header's figure for an adjusted day: how much the fixed hours add to (or take from) what the trips and the rules make. */
+const adjustStat = (row) => dayStat("Reglare după Excel", signed(row.adjustMin), "adjust");
+
 /** The calendar entry (weekend, holiday) of an ISO date of the month; undefined outside the month. */
 const dayInfo = (sheet, date) => sheet.days.find((d) => `${sheet.year}-${String(sheet.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}` === date);
 
@@ -412,12 +424,16 @@ function leaveRunRows(driver, sheet, run, edit) {
     const info = dayInfo(sheet, date);
     const code = leaves[date] ?? "";
     const excluded = driver.excludedDays.includes(date);
+    // A day with no trip that has hours anyway: the office fixed them (from an Excel file).
+    const fixed = !code && !excluded ? driver.setHours?.[date] : 0;
     return h("div", { class: `leave-day ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${code ? "on" : ""} ${excluded ? "excluded" : ""}`,
       title: excluded ? "Ziua e scoasă din pontaj, deci concediul nu se numără" : info?.holiday ?? "" },
       h("b", {}, `${weekdayName(date).slice(0, 3)} ${shortDate(date)}`),
       h("select", { class: `leave-select ${code ? "manual" : ""}`, "data-key": `leave:${date}`, title: "Felul concediului. „Fără” = zi liberă obișnuită.", onchange: (e) => set([date], e.target.value || null) },
         h("option", { value: "", selected: !code }, "Fără concediu"),
         ...kinds(code)),
+      fixed > 0 ? h("span", { class: "pill adjusted", title: "Ziua nu are curse, dar are ore: au fost aduse la ce scria în Excel" }, `ore fixate după Excel: ${duration(fixed)}`) : null,
+      fixed > 0 ? undoAdjustButton(date, edit) : null,
       excluded ? h("button", { class: "btn small ghost", title: "Pune ziua la loc în pontaj", onclick: () => edit((d) => toggleDay(d, date)) }, "Pune ziua la loc") : null);
   });
   return [
@@ -438,6 +454,7 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
   const outside = !info;
   const excursionOnly = trips.length > 0 && trips.every((t) => t.eff.excursion);
   const excluded = !!row?.excluded;
+  const adjusted = !!row?.adjusted && !excluded;
   const head = h("tr", { class: `day-head ${info?.weekend ? "off" : ""} ${info?.holiday ? "holiday" : ""} ${excluded ? "excluded" : ""}` },
     h("td", { colspan: 8 },
       h("div", { class: "day-line" },
@@ -447,16 +464,19 @@ function dayRows(driver, sheet, date, trips, edit, { resolveOverlap, moveTrip })
           info?.holiday ? h("span", { class: "pill holiday" }, info.holiday) : null,
           outside ? h("span", { class: "pill" }, "în afara lunii: nu se numără") : null,
           excursionOnly ? h("span", { class: "pill excursion" }, "excursie · se pontează din tahograf") : null,
-          excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null),
+          excluded ? h("span", { class: "pill" }, "scoasă din pontaj") : null,
+          adjusted ? h("span", { class: "pill adjusted", title: "Orele zilei au fost aduse la ce scria în Excel" }, "ore fixate după Excel") : null),
         row
           ? h("div", { class: "day-stats" },
               dayStat("Curse regulate", row.legs),
               dayStat("Ore curse", duration(row.tripMin)),
               dayStat("Staționare", duration(row.stationMin)),
-              !excluded && row.tripMin + row.stationMin > 0 ? fillStat(driver, row, date, edit) : null,
+              !excluded && !adjusted && row.tripMin + row.stationMin > 0 ? fillStat(driver, row, date, edit) : null,
+              adjusted ? adjustStat(row) : null,
               dayStat("Total ziua", duration(row.totalMin), "total"),
               dayStat("Estimare", `~${lei(row.payTotal)} lei`, "muted"))
           : null,
+        adjusted ? undoAdjustButton(date, edit) : null,
         row ? h("button", { class: "btn small ghost", onclick: () => edit((d) => toggleDay(d, date)) }, excluded ? "Pune ziua la loc" : "Scoate ziua din pontaj") : null),
       row?.alerts.length ? alertList(row.alerts) : null));
   const body = [];

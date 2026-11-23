@@ -2,8 +2,12 @@
 
 pub mod calendar;
 pub mod catb;
+pub mod combined;
 pub mod excel;
+pub mod month_file;
 pub mod pdf;
+pub mod pontaj_file;
+pub mod roster;
 pub mod rules;
 pub mod settings;
 pub mod time;

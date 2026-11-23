@@ -392,16 +392,32 @@ fn days(driver: &Driver, year: i32, month: u32, settings: &Settings) -> Vec<DayR
         }
     }
 
+    // A day whose hours were fixed by hand has a row even when the rules left it empty (no trip, no waiting).
+    for date in driver.set_hours.iter().filter(|(date, minutes)| **minutes > 0 && !driver.excluded_days.contains(date)).map(|(date, _)| *date) {
+        day_row(&mut rows, date, year, month);
+    }
+
     let mut list: Vec<DayRow> = rows.into_values().collect();
     for row in &mut list {
-        if let Some(date) = row.date {
-            (row.fill_before_min, row.fill_after_min, row.fill_manual) = fill_of(driver, date, row.legs, row.trip_min + row.station_min, settings);
+        // The hours fixed by hand replace what the rules add and take: the day is its trips and waiting plus one adjustment
+        // (a leave wins over them, it is a day without hours).
+        let fixed = row.date.and_then(|date| driver.set_hours.get(&date)).copied().filter(|minutes| *minutes > 0 && row.leave.is_none());
+        if fixed.is_none() {
+            if let Some(date) = row.date {
+                (row.fill_before_min, row.fill_after_min, row.fill_manual) = fill_of(driver, date, row.legs, row.trip_min + row.station_min, settings);
+            }
         }
         row.fill_min = row.fill_before_min + row.fill_after_min;
         row.total_min = row.trip_min + row.station_min + row.fill_min;
-        // A day is not shortened when it already has more than a full day, but the office is told.
+        if let Some(minutes) = fixed {
+            row.adjust_min = minutes - row.total_min;
+            row.total_min = minutes;
+            row.adjusted = true;
+        }
+        // A day is not shortened when it already has more than a full day, but the office is told (not when the office itself
+        // fixed the hours of the day: that is the answer to the question).
         let work_min = row.trip_min + row.station_min;
-        if work_min > settings.hours_per_day * 60 {
+        if work_min > settings.hours_per_day * 60 && !row.adjusted {
             let text = format!(
                 "Ziua are {} de lucru (curse și staționare), peste cele {} ore ale unei zile. Nu se completează nimic, dar verifică foaia șoferului: poate a plecat sau s-a întors altfel.",
                 fmt_duration(work_min),
@@ -427,6 +443,7 @@ fn totals(days: &[DayRow], cap_min: i32) -> Totals {
         totals.trip_min += day.trip_min;
         totals.station_min += day.station_min;
         totals.fill_min += day.fill_min;
+        totals.adjust_min += day.adjust_min;
         totals.total_min += day.total_min;
         totals.pay_legs += day.pay_legs;
         totals.pay_exterior += day.pay_exterior;
@@ -646,6 +663,35 @@ mod tests {
         let warning = d.days[0].alerts.iter().find(|a| a.code == "long_day").expect("a warning for a day over 8 hours");
         assert_eq!(warning.level, Level::Warn);
         assert!(warning.text.contains("10:00") && warning.text.contains("8 ore"), "{}", warning.text);
+        // The office fixed that day at 8 h (from an Excel file): the answer is given, nothing is flagged, and the day says
+        // how far it is from what the trips make.
+        let date = d.days[0].date.unwrap();
+        d.set_hours.insert(date, 8 * 60);
+        run(&mut d);
+        let day = &d.days[0];
+        assert_eq!((day.total_min, day.adjust_min, day.adjusted, day.fill_min), (480, -120, true, 0));
+        assert!(day.alerts.iter().all(|a| a.code != "long_day"), "{:?}", day.alerts);
+        assert_eq!((d.totals.total_min, d.totals.adjust_min), (480, -120));
+        // Given back to the rules, the day is what its trips make again.
+        d.set_hours.clear();
+        run(&mut d);
+        assert_eq!((d.days[0].total_min, d.days[0].adjust_min, d.days[0].adjusted), (600, 0, false));
+    }
+
+    #[test]
+    fn a_day_fixed_by_hand_with_no_trip_has_its_hours_and_leave_wins_over_it() {
+        let mut d = round_trip("2026-10-05 10:00", "2026-10-05 13:00");
+        // 6 Oct has no trip: it gets a row with exactly the hours fixed for it (a half hour included).
+        let free = chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        d.set_hours.insert(free, 6 * 60 + 30);
+        run(&mut d);
+        let day = d.days.iter().find(|day| day.date == Some(free)).expect("a row for the fixed day");
+        assert_eq!((day.total_min, day.adjust_min, day.adjusted), (390, 390, true));
+        // A leave on that day wins: it is a day without hours.
+        d.leaves.insert(free, "CO".into());
+        run(&mut d);
+        let day = d.days.iter().find(|day| day.date == Some(free));
+        assert!(day.is_none_or(|day| !day.adjusted && day.total_min == 0), "{day:?}");
     }
 
     #[test]

@@ -12,6 +12,7 @@ mod model;
 mod overlap;
 mod places;
 mod pontaj;
+pub mod reconcile;
 pub mod store;
 pub mod tariffs;
 mod transfers;

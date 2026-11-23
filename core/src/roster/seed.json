@@ -1,0 +1,568 @@
+{
+  "staff": [
+    {
+      "function": "Şofer de autoturisme",
+      "group": "office",
+      "name": "BACALE MIHAI",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "secretara",
+      "group": "office",
+      "name": "BACALE SULTANA",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Şofer de autoturisme",
+      "group": "city",
+      "name": "BASANU DUMITRU-IULIAN",
+      "note": "",
+      "plan": {
+        "anchor": "2026-10-01",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 540
+          },
+          {
+            "end": 1200,
+            "start": 480
+          }
+        ]
+      }
+    },
+    {
+      "function": "Şofer de autoturisme",
+      "group": "city",
+      "name": "BASAU PETRICA",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1920,
+            "start": 1260
+          },
+          {
+            "end": 1980,
+            "start": 1260
+          }
+        ]
+      }
+    },
+    {
+      "function": "secretara",
+      "group": "office",
+      "name": "BODEA JENICA",
+      "note": "În octombrie nu scria dacă e la birou, la garaj sau pe oraș: grupa s-a ales după funcție și program. Verific-o.",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 480
+          },
+          {
+            "end": 1920,
+            "start": 1200
+          }
+        ]
+      }
+    },
+    {
+      "function": "Manipulant",
+      "group": "garage",
+      "name": "BURLACU BOGDAN",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Şofer de autoturisme",
+      "group": "city",
+      "name": "BUTNARU ANDREI",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1920,
+            "start": 1260
+          },
+          {
+            "end": 1980,
+            "start": 1260
+          }
+        ]
+      }
+    },
+    {
+      "function": "Secretara",
+      "group": "office",
+      "name": "DELANGE DANIELA",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-30",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 480
+          },
+          {
+            "end": 1920,
+            "start": 1200
+          }
+        ]
+      }
+    },
+    {
+      "function": "Secretara",
+      "group": "office",
+      "name": "DESCULTU ANDREEA",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-28",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 480
+          },
+          {
+            "end": 1920,
+            "start": 1200
+          }
+        ]
+      }
+    },
+    {
+      "function": "Sofer de autoturisme",
+      "group": "city",
+      "name": "DRAGAN MIREL",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 540
+          },
+          {
+            "end": 1260,
+            "start": 540
+          }
+        ]
+      }
+    },
+    {
+      "function": "Manager",
+      "group": "office",
+      "name": "DUMITRU DANIELA",
+      "note": "Nu a lucrat nicio zi în octombrie: programul s-a luat din ce scria lângă nume. Verific-o.",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Coordonator activ. transport rutier",
+      "group": "office",
+      "name": "DUMITRU DORU",
+      "note": "Nu a lucrat nicio zi în octombrie: programul s-a luat din ce scria lângă nume. Verific-o.",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Lacatus mecanic",
+      "group": "garage",
+      "name": "DUMITRU IONEL",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Mecanic auto",
+      "group": "garage",
+      "name": "DUMITRU IULIAN",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Asistent Manager",
+      "group": "office",
+      "name": "DUMITRU RIANA",
+      "note": "",
+      "plan": {
+        "end": 1080,
+        "kind": "weekdays",
+        "start": 960
+      }
+    },
+    {
+      "function": "ghid",
+      "group": "office",
+      "name": "ERTUTK RAMONA",
+      "note": "Nu a lucrat nicio zi în octombrie: programul s-a luat din ce scria lângă nume. Verific-o.",
+      "plan": {
+        "end": 720,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Mecanic auto",
+      "group": "garage",
+      "name": "FOTACHE ALEXANDRU",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Şofer de autoturisme",
+      "group": "office",
+      "name": "GHIGEANU MARIAN ALEXANDRU",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Secretara",
+      "group": "office",
+      "name": "HULUBA LAVINIA NICOLETA",
+      "note": "",
+      "plan": {
+        "anchor": "2026-10-01",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 540
+          },
+          {
+            "end": 1320,
+            "start": 600
+          }
+        ]
+      }
+    },
+    {
+      "function": "Şofer de autoturisme",
+      "group": "office",
+      "name": "IBRAM SENER",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Director economic",
+      "group": "office",
+      "name": "IOANA NICOLETA",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Secretara",
+      "group": "office",
+      "name": "LEANCU SONIA",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-30",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 540
+          },
+          {
+            "end": 1200,
+            "start": 480
+          }
+        ]
+      }
+    },
+    {
+      "function": "Sofer de autoturisme",
+      "group": "city",
+      "name": "MANOLE IONUT",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1920,
+            "start": 1260
+          },
+          {
+            "end": 1980,
+            "start": 1260
+          }
+        ]
+      }
+    },
+    {
+      "function": "Sofer de autoturisme",
+      "group": "city",
+      "name": "MARIN ALEXANDRU",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1920,
+            "start": 1260
+          },
+          {
+            "end": 1980,
+            "start": 1260
+          }
+        ]
+      }
+    },
+    {
+      "function": "Sofer de autoturisme",
+      "group": "city",
+      "name": "NUTU MIHAIL",
+      "note": "",
+      "plan": {
+        "anchor": "2026-10-01",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1920,
+            "start": 1260
+          },
+          {
+            "end": 1980,
+            "start": 1260
+          }
+        ]
+      }
+    },
+    {
+      "function": "Sofer de autoturisme",
+      "group": "city",
+      "name": "OANCEA CONSTANTIN",
+      "note": "Nu a lucrat nicio zi în octombrie, deci nu se știe în ce zi începe ciclul de 2 zile lucrate / 2 libere. Alege prima zi de lucru.",
+      "plan": {
+        "anchor": "2026-10-01",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1260,
+            "start": 540
+          },
+          {
+            "end": 1260,
+            "start": 540
+          }
+        ]
+      }
+    },
+    {
+      "function": "Manipulant",
+      "group": "garage",
+      "name": "PUT MIHAI GAVRIL",
+      "note": "",
+      "plan": {
+        "end": 960,
+        "kind": "weekdays",
+        "start": 480
+      }
+    },
+    {
+      "function": "Sofer de autoturisme",
+      "group": "city",
+      "name": "SAIU STEFAN NICOLAE",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-30",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 540
+          },
+          {
+            "end": 1260,
+            "start": 540
+          }
+        ]
+      }
+    },
+    {
+      "function": "Secretara",
+      "group": "office",
+      "name": "STOENCIU DOINA CRISTINA",
+      "note": "",
+      "plan": {
+        "end": 1200,
+        "kind": "weekdays",
+        "start": 720
+      }
+    },
+    {
+      "function": "Secretara",
+      "group": "office",
+      "name": "TICU ANA MARIA",
+      "note": "",
+      "plan": {
+        "end": 1200,
+        "kind": "weekdays",
+        "start": 720
+      }
+    },
+    {
+      "function": "Şofer de autoturisme",
+      "group": "city",
+      "name": "TUDOR GEORGE",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 540
+          },
+          {
+            "end": 1260,
+            "start": 540
+          }
+        ]
+      }
+    },
+    {
+      "function": "Secretara",
+      "group": "office",
+      "name": "VASEA STEFANIA",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-30",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 540
+          },
+          {
+            "end": 1200,
+            "start": 480
+          }
+        ]
+      }
+    },
+    {
+      "function": "Şofer de autoturisme",
+      "group": "city",
+      "name": "VASILE DUMITREL",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1200,
+            "start": 540
+          },
+          {
+            "end": 1260,
+            "start": 540
+          }
+        ]
+      }
+    },
+    {
+      "function": "Şofer de autoturisme",
+      "group": "city",
+      "name": "VIJU ALEXANDRU",
+      "note": "",
+      "plan": {
+        "anchor": "2026-09-29",
+        "kind": "rotation",
+        "off": 2,
+        "on": [
+          {
+            "end": 1920,
+            "start": 1260
+          },
+          {
+            "end": 1980,
+            "start": 1260
+          }
+        ]
+      }
+    }
+  ],
+  "tir": [
+    "BADALUTA MARIUS ADRIAN",
+    "BARABAS IONUT-CIPRIAN",
+    "CHENARU FLORIN",
+    "LACHE IONEL",
+    "MALTEZU ANA MARIA",
+    "MARDARE IONUT",
+    "MAXIM GEORGE",
+    "TOMA CIPRIAN STEFAN"
+  ]
+}

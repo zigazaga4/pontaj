@@ -8,9 +8,10 @@ import { acceptedName } from "./driver_fields.js";
 import { renderSettings } from "./settings.js";
 import { checkForUpdates, watchForUpdates } from "./updater.js";
 import { createCatb } from "./catb.js";
+import { GROUPS, createRoster } from "./roster.js";
+import { MONTHS } from "./month_bar.js";
+import { isTir, tirToggle, withTir } from "./tir.js";
 import { hoursText, signed } from "./time.js";
-
-const MONTHS = ["ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie"];
 
 /** The three steps, in the order the user goes through them. */
 const TABS = [
@@ -19,34 +20,77 @@ const TABS = [
   { id: "sheet", label: "Foaia colectivă", hint: "Rezultatul final, gata de export", perDriver: false },
 ];
 
+/** The two lists of the tachograph mode: the truck drivers (tir) have a tab of their own. */
+const KINDS = [
+  { id: "tachograph", label: "Tahograf" },
+  { id: "tir", label: "Tir" },
+];
+
 const TAGLINES = {
   pdf: "Din raportul de tahograf direct în foaia colectivă de prezență",
   catb: "Din cursele aplicației ALT direct în foaia de pontaj",
+  ...Object.fromEntries(Object.values(GROUPS).map((group) => [group.id, group.tagline])),
 };
 
-const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null, mode: "pdf", focusDate: null };
+const MODES = ["pdf", "catb", ...Object.keys(GROUPS)];
+
+const state = { settings: null, sheet: null, files: [], selected: null, tab: "scanned", emp: 0, kind: "tachograph", view: null, mode: "pdf", focusDate: null };
 
 const catb = createCatb({ getSettings: () => state.settings, saveSettings: persistSettings });
+const roster = createRoster({ getSettings: () => state.settings, saveSettings: persistSettings });
 
 const basename = (path) => path.split(/[\\/]/).pop();
 
-/** Switches between the tachograph PDFs and the Categoria B (API) pontaj. */
+/** Switches between the tachograph PDFs, the Categoria B (API) pontaj and the office, garage and city staff. */
 function setMode(mode) {
   state.mode = mode;
   localStorage.setItem("pontaj.mode", mode);
   document.querySelectorAll("#modes .mode").forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
   $("#tagline").textContent = TAGLINES[mode];
   $("#btn-add").hidden = mode !== "pdf";
+  if (mode !== "catb") catb.hide();
+  if (!(mode in GROUPS)) roster.hide();
   if (mode === "pdf") {
-    catb.hide();
     render();
-  } else {
-    $("#empty").hidden = true;
-    $("#workspace").hidden = true;
-    $("#btn-clear").hidden = true;
-    $("#btn-export").disabled = false;
-    catb.show();
+    return;
   }
+  $("#empty").hidden = true;
+  $("#workspace").hidden = true;
+  $("#btn-clear").hidden = true;
+  $("#btn-export").disabled = false;
+  if (mode === "catb") catb.show();
+  else roster.show(mode);
+}
+
+// ---- the tachograph sheet: drivers and truck drivers (tir) ----
+
+const inKind = (employee) => (state.kind === "tir") === isTir(employee);
+
+/** Keeps the chosen driver inside the open list (Tahograf or Tir): when he is not there, the first one of the list. */
+function ensureDriver() {
+  const employees = state.sheet?.employees ?? [];
+  if (employees[state.emp] && inKind(employees[state.emp])) return;
+  state.emp = Math.max(0, employees.findIndex(inKind));
+}
+
+/** The "Tir" switch of a driver: the settings keep the list, so he is a truck driver in every month; the sheet is recomputed. */
+async function setTir(employee, on) {
+  await persistSettings(withTir(state.settings, employee.name, on));
+  await edit(null, { structural: true });
+  toast(`${employee.name} este acum în fila ${on ? "Tir" : "Tahograf"}.`, { kind: "ok", timeout: 3500 });
+}
+
+function setKind(kind) {
+  state.kind = kind;
+  render();
+}
+
+function renderKinds() {
+  const employees = state.sheet.employees;
+  $("#kinds").replaceChildren(
+    ...KINDS.map(({ id, label }) =>
+      h("button", { class: `kind ${id === state.kind ? "active" : ""}`, type: "button", onclick: () => setKind(id) },
+        label, h("span", { class: "kind-count" }, employees.filter((e) => isTir(e) === (id === "tir")).length))));
 }
 
 async function loadFiles(paths) {
@@ -90,6 +134,7 @@ function edit(mutate, { structural = false } = {}) {
       state.sheet = await api.recalculate(state.sheet, state.settings);
       structural ? renderView() : state.view?.refresh();
       renderSummary();
+      renderKinds();
       renderDrivers();
       renderWarnings();
       if (state.tab === "sheet" && state.selected) renderDetails($("#details"), state.sheet, ...state.selected);
@@ -137,6 +182,7 @@ function render() {
   renderFiles();
   renderWarnings();
   renderTabs();
+  renderKinds();
   renderDrivers();
   renderView();
 }
@@ -160,17 +206,21 @@ function renderTabs() {
 
 /** Driver list for the per-driver steps. */
 function renderDrivers() {
+  ensureDriver();
   const tab = TABS.find((t) => t.id === state.tab);
   const box = $("#drivers");
   box.hidden = !tab.perDriver;
   if (!tab.perDriver) return;
   box.replaceChildren(
-    h("h3", {}, "Șoferi"),
-    ...state.sheet.employees.map((emp, i) => {
+    h("h3", {}, state.kind === "tir" ? "Șoferi de tir" : "Șoferi"),
+    ...state.sheet.employees.flatMap((emp, i) => {
+      if (!inKind(emp)) return [];
       const edited = emp.activities.filter((a) => a.manual).length + emp.days.filter((d) => d.overrideHours != null || d.overrideNight != null || d.overrideIntervals || d.code).length;
-      return h("button", { class: `driver ${i === state.emp ? "active" : ""}`, onclick: () => selectDriver(i) },
-        h("b", {}, emp.name),
-        h("small", {}, `${hoursText(emp.totals.worked)} ore · ${emp.days.filter((d) => d.hours > 0).length} zile`, edited ? h("span", { class: "edited" }, ` · ✎ ${edited}`) : null));
+      return h("div", { class: "driver-row has-tir" },
+        h("button", { class: `driver ${i === state.emp ? "active" : ""}`, onclick: () => selectDriver(i) },
+          h("b", {}, emp.name),
+          h("small", {}, `${hoursText(emp.totals.worked)} ore · ${emp.days.filter((d) => d.hours > 0).length} zile`, edited ? h("span", { class: "edited" }, ` · ✎ ${edited}`) : null)),
+        tirToggle(emp, (on) => setTir(emp, on)));
     }));
 }
 
@@ -181,10 +231,16 @@ function selectDriver(i) {
 }
 
 function renderView() {
+  ensureDriver();
   const tab = state.tab;
   const holder = $("#view");
   $("#workspace").dataset.tab = tab;
-  if (tab === "scanned") {
+  if (!state.sheet.employees.some(inKind)) {
+    holder.replaceChildren(h("div", { class: "empty-note" }, state.kind === "tir"
+      ? "Niciun șofer de tir în luna aceasta. Apasă „Tir” lângă un șofer din lista Tahograf ca să-l treci aici; rămâne șofer de tir în toate lunile."
+      : "Niciun șofer la tahograf în luna aceasta."));
+    state.view = null;
+  } else if (tab === "scanned") {
     state.view = renderScanned(holder, viewContext(), state.emp);
   } else if (tab === "daily") {
     state.view = renderDaily(holder, viewContext(), state.emp);
@@ -194,6 +250,8 @@ function renderView() {
       h("span", { class: "muted" }, "Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP, ZLP…) pentru absențe sau lasă gol ca să revii la calculul automat."));
     holder.replaceChildren(wrap, details);
     renderGrid(wrap, state.sheet, {
+      visible: inKind,
+      onTir: (ei, on) => setTir(state.sheet.employees[ei], on),
       onEdit: (ei, di, patch) => edit((s) => Object.assign(s.employees[ei].days[di], patch)),
       onSelect: (ei, di) => {
         state.selected = [ei, di];
@@ -243,10 +301,28 @@ function renderWarnings() {
   box.replaceChildren(h("b", {}, "Atenție"), h("ul", {}, list.map((w) => h("li", {}, w))));
 }
 
+/** The month the Excel file is for: the one of the tab in front (null while a tachograph month is not loaded). */
+function exportMonth() {
+  if (state.mode === "pdf") return state.sheet && { year: state.sheet.year, month: state.sheet.month };
+  return state.mode === "catb" ? catb.month() : roster.month();
+}
+
+/**
+ * The one Excel file of the month: the tachograph drivers and the truck drivers (when this is the month loaded from the PDFs),
+ * Categoria B and the office, garage and city staff, all on one foaie colectivă. The last edit of every tab is saved first,
+ * because Categoria B and the staff are read from what is saved.
+ */
 async function exportExcel() {
+  const when = exportMonth();
+  if (!when) return;
   try {
-    const path = await api.exportExcel(state.sheet, state.settings);
-    if (path) toast(`Excel salvat: ${path.split(/[\\/]/).pop()}`, { kind: "ok", timeout: 10000, action: { label: "Deschide", run: () => api.openFile(path) } });
+    if (!(await catb.confirmExport(when.year, when.month))) return;
+    await roster.flush();
+    const path = await api.exportAll(state.sheet, when.year, when.month, state.settings);
+    if (!path) return;
+    const left = state.sheet && (state.sheet.year !== when.year || state.sheet.month !== when.month);
+    const note = left ? `\nTahograful încărcat este pe ${String(state.sheet.month).padStart(2, "0")}.${state.sheet.year} și nu a intrat în fișier.` : "";
+    toast(`Excel salvat: ${path.split(/[\\/]/).pop()}${note}`, { kind: left ? "warn" : "ok", timeout: left ? 20000 : 10000, action: { label: "Deschide", run: () => api.openFile(path) } });
   } catch (err) {
     toast(String(err), { kind: "error", timeout: 0 });
   }
@@ -270,7 +346,7 @@ async function persistSettings(settings) {
 
 async function onSettingsChange(settings) {
   await persistSettings(settings);
-  await Promise.all([state.sheet ? edit(null, { structural: true }) : null, catb.settingsChanged()]);
+  await Promise.all([state.sheet ? edit(null, { structural: true }) : null, catb.settingsChanged(), roster.settingsChanged()]);
 }
 
 async function addViaDialog() {
@@ -282,23 +358,23 @@ async function init() {
   state.settings = await api.loadSettings();
   $("#btn-add").addEventListener("click", addViaDialog);
   $("#btn-add-empty").addEventListener("click", addViaDialog);
-  $("#btn-export").addEventListener("click", () => (state.mode === "catb" ? catb.exportExcel() : exportExcel()));
+  $("#btn-export").addEventListener("click", exportExcel);
   $("#btn-settings").addEventListener("click", () => openSettings($("#settings-panel").hidden));
   $("#btn-close-settings").addEventListener("click", () => openSettings(false));
   document.querySelectorAll("#modes .mode").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
   const idle = () => state.mode === "pdf" && !state.sheet && $("#overlay").hidden; // nothing open, nothing loading: safe to restart
-  // Categoria B saves by itself (the last edit is written first); a sheet read from PDFs is lost on restart, so he is asked.
+  // Categoria B and the staff save by themselves (the last edit is written first); a sheet read from PDFs is lost on restart, so he is asked.
   const updates = {
     canInstallNow: idle,
     beforeInstall: async () => {
       if (state.mode === "pdf" && state.sheet && !confirm("Pontajul deschis din PDF-uri nu se păstrează la repornire. Instalezi totuși actualizarea?")) return false;
-      await catb.flush();
+      await Promise.all([catb.flush(), roster.flush()]);
     },
   };
   $("#btn-update").addEventListener("click", () => checkForUpdates({ ...updates, manual: true }));
   api.appVersion().then((v) => ($("#app-version").textContent = `Versiunea ${v}`)).catch(() => {});
   $("#btn-clear").addEventListener("click", () => {
-    Object.assign(state, { sheet: null, files: [], selected: null, tab: "scanned", emp: 0, view: null });
+    Object.assign(state, { sheet: null, files: [], selected: null, tab: "scanned", emp: 0, kind: "tachograph", view: null });
     render();
   });
   onFileDrop({
@@ -310,11 +386,12 @@ async function init() {
     },
   });
   const startup = await api.startupFiles();
-  setMode(startup.length ? "pdf" : localStorage.getItem("pontaj.mode") === "catb" ? "catb" : "pdf");
+  const remembered = localStorage.getItem("pontaj.mode");
+  setMode(startup.length || !MODES.includes(remembered) ? "pdf" : remembered);
   if (startup.length) await loadFiles(startup);
-  // At start nothing was edited yet and Categoria B months are saved on disk, so that mode can restart too; later checks
-  // only offer the update while something is open.
-  checkForUpdates({ ...updates, canInstallNow: () => idle() || state.mode === "catb" });
+  // At start nothing was edited yet and the months of Categoria B and of the staff are saved on disk, so those modes can restart
+  // too; later checks only offer the update while something is open.
+  checkForUpdates({ ...updates, canInstallNow: () => idle() || state.mode !== "pdf" });
   watchForUpdates(updates);
 }
 

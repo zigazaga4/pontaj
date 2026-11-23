@@ -31,7 +31,9 @@ const RED_FILL: u32 = 0xFFC7CE;
 const AMBER_FILL: u32 = 0xFFEB9C;
 const TIME: &str = "[h]:mm";
 /// Hours that show nothing while they are zero: the cells of a day without trips are formulas too.
-const TIME_BLANK_ZERO: &str = "[h]:mm;;";
+const TIME_BLANK_ZERO: &str = "[h]:mm;-[h]:mm;";
+/// Hours that can be negative: Excel shows a negative time as hashes unless the format has its own section for it.
+const TIME_SIGNED: &str = "[h]:mm;-[h]:mm";
 
 const SUMMARY_SHEET: &str = "Sinteză";
 const GRID_SHEET: &str = "Pontaj zilnic";
@@ -40,8 +42,11 @@ const DETAIL_SHEET: &str = "Detaliu";
 const STATION_KIND: &str = "Staționare";
 /// The kind of the lines for the time added to fill a day; everything else with hours is a trip.
 const FILL_KIND: &str = "Completare";
+/// The kind of the line that brings a day to the hours fixed by hand (can be negative): it adds up with the time added.
+const ADJUST_KIND: &str = "Reglare";
 
-/// The three kinds of hours a driver's day is made of, as "Detaliu" tells them apart.
+/// The three kinds of hours a driver's day is made of, as "Detaliu" tells them apart. The time added and the adjustment of a
+/// day fixed by hand are one part: what is put on top of (or taken from) the trips and the waiting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Part {
     Trips,
@@ -55,8 +60,8 @@ impl Part {
     fn takes(self, kind: &str) -> bool {
         match self {
             Part::Waiting => kind == STATION_KIND,
-            Part::Fill => kind == FILL_KIND,
-            Part::Trips => kind != STATION_KIND && kind != FILL_KIND,
+            Part::Fill => kind == FILL_KIND || kind == ADJUST_KIND,
+            Part::Trips => kind != STATION_KIND && kind != FILL_KIND && kind != ADJUST_KIND,
         }
     }
 }
@@ -65,19 +70,48 @@ impl Part {
 /// where its numbers come from (the lines of "Detaliu" feed the other sheets through formulas).
 pub fn write_xlsx(sheet: &Sheet, settings: &Settings, path: &Path) -> Result<()> {
     let mut workbook = Workbook::new();
-    // One order of the drivers for all the sheets: the alphabetical one of the payroll file.
-    let sheet = &super::pontaj::sort_drivers(sheet, settings);
-    let lines: Vec<Vec<DetailRow>> = sheet.drivers.iter().map(|driver| detail_rows(driver, sheet.year, sheet.month)).collect();
-    let blocks = detail_blocks(&lines);
-
-    let round_from = settings.round_up_from_min;
-    let hours_from = |index: usize, day: u32| grid_hours_formula(sheet, &blocks, index, day, round_from);
-    crate::excel::pontaj_sheet(workbook.add_worksheet(), &super::pontaj::to_timesheet(sheet, settings), settings, Some(&hours_from)).map_err(xlsx_err)?;
-    summary(workbook.add_worksheet(), sheet, settings, &blocks).map_err(xlsx_err)?;
-    grid(workbook.add_worksheet(), sheet, &blocks).map_err(xlsx_err)?;
-    detail(workbook.add_worksheet(), sheet, settings, &lines, &blocks).map_err(xlsx_err)?;
-    remarks(workbook.add_worksheet(), sheet, settings).map_err(xlsx_err)?;
+    let book = Book::new(sheet, settings);
+    let hours_from = |index: usize, day: u32| book.hours_formula(index, day, settings);
+    crate::excel::pontaj_sheet(workbook.add_worksheet(), &book.timesheet(settings), settings, Some(&hours_from)).map_err(xlsx_err)?;
+    book.add_sheets(&mut workbook, settings).map_err(xlsx_err)?;
     workbook.save(path).map_err(|e| Error::new(format!("Nu pot salva fișierul Excel: {e}")))
+}
+
+/// The month prepared for a workbook: the drivers in one order for every sheet (the alphabetical one of the payroll file) and
+/// the lines of "Detaliu" that the other sheets add up. The first sheet is drawn by the caller (it can be shared with other
+/// groups of people, see [`crate::combined`]): [`Book::timesheet`] gives its people and [`Book::hours_formula`] the formula of
+/// a day of one of them, by the position of the driver in [`Book::timesheet`] (the same as in every sheet here).
+pub(crate) struct Book {
+    sheet: Sheet,
+    lines: Vec<Vec<DetailRow>>,
+    blocks: Vec<Option<DetailBlock>>,
+}
+
+impl Book {
+    pub(crate) fn new(sheet: &Sheet, settings: &Settings) -> Self {
+        let sheet = super::pontaj::sort_drivers(sheet, settings);
+        let lines: Vec<Vec<DetailRow>> = sheet.drivers.iter().map(|driver| detail_rows(driver, sheet.year, sheet.month)).collect();
+        let blocks = detail_blocks(&lines);
+        Book { sheet, lines, blocks }
+    }
+
+    /// The drivers as people of the foaie colectivă, in the order of the sheets.
+    pub(crate) fn timesheet(&self, settings: &Settings) -> crate::timesheet::Timesheet {
+        super::pontaj::to_timesheet(&self.sheet, settings)
+    }
+
+    /// The formula of the hours of a day of the driver at `index` (see [`grid_hours_formula`]); `None` = a plain value.
+    pub(crate) fn hours_formula(&self, index: usize, day: u32, settings: &Settings) -> Option<String> {
+        grid_hours_formula(&self.sheet, &self.blocks, index, day, settings.round_up_from_min)
+    }
+
+    /// "Sinteză", "Pontaj zilnic", "Detaliu" and "Avertizări", the sheets the hours of the first one come from.
+    pub(crate) fn add_sheets(&self, workbook: &mut Workbook, settings: &Settings) -> Done {
+        summary(workbook.add_worksheet(), &self.sheet, settings, &self.blocks)?;
+        grid(workbook.add_worksheet(), &self.sheet, &self.blocks)?;
+        detail(workbook.add_worksheet(), &self.sheet, settings, &self.lines, &self.blocks)?;
+        remarks(workbook.add_worksheet(), &self.sheet, settings)
+    }
 }
 
 /// Where the lines of a driver sit in "Detaliu" (first and last row, zero-based): what the formulas of the other sheets add.
@@ -117,38 +151,39 @@ fn detail_span(col: ColNum, block: DetailBlock) -> String {
     format!("{DETAIL_SHEET}!${name}${}:${name}${}", block.first + 1, block.last + 1)
 }
 
-/// The conditions on the kind column of a block that pick one part of the hours (arguments of a SUMIFS).
-fn kind_conditions(block: DetailBlock, part: Part) -> String {
+/// The conditions on the kind column of a block that pick one part of the hours: the arguments of a SUMIFS, one set for each
+/// kind of line the part is made of (a SUMIFS cannot say "either of two kinds", so the part is the sum of several).
+fn kind_conditions(block: DetailBlock, part: Part) -> Vec<String> {
     let kinds = detail_span(DETAIL_KIND_COL, block);
     match part {
-        Part::Waiting => format!("{kinds},\"{STATION_KIND}\""),
-        Part::Fill => format!("{kinds},\"{FILL_KIND}\""),
-        Part::Trips => format!("{kinds},\"<>{STATION_KIND}\",{kinds},\"<>{FILL_KIND}\""),
+        Part::Waiting => vec![format!("{kinds},\"{STATION_KIND}\"")],
+        Part::Fill => vec![format!("{kinds},\"{FILL_KIND}\""), format!("{kinds},\"{ADJUST_KIND}\"")],
+        Part::Trips => vec![format!("{kinds},\"<>{STATION_KIND}\",{kinds},\"<>{FILL_KIND}\",{kinds},\"<>{ADJUST_KIND}\"")],
     }
 }
 
 /// `=SUMIFS(column, kinds, "<kind>")`: the sum of a column of the block over the lines of one part.
 fn sum_by_kind(block: DetailBlock, value_col: ColNum, part: Part) -> String {
-    format!("=SUMIFS({},{})", detail_span(value_col, block), kind_conditions(block, part))
+    let sums: Vec<String> = kind_conditions(block, part).iter().map(|conditions| format!("SUMIFS({},{conditions})", detail_span(value_col, block))).collect();
+    format!("={}", sums.join("+"))
 }
 
 /// `=SUMIFS(hours, dates, DATE(y,m,d), kinds, "<kind>")`: the minutes of one day, trips, waiting or time added.
 fn sum_by_day(block: DetailBlock, date: NaiveDate, part: Part) -> String {
-    format!(
-        "=SUMIFS({},{},DATE({},{},{}),{})",
-        detail_span(DETAIL_HOURS_COL, block),
-        detail_span(DETAIL_DATE_COL, block),
-        date.year(),
-        date.month(),
-        date.day(),
-        kind_conditions(block, part)
-    )
+    let sums: Vec<String> = kind_conditions(block, part)
+        .iter()
+        .map(|conditions| {
+            format!("SUMIFS({},{},DATE({},{},{}),{conditions})", detail_span(DETAIL_HOURS_COL, block), detail_span(DETAIL_DATE_COL, block), date.year(), date.month(), date.day())
+        })
+        .collect();
+    format!("={}", sums.join("+"))
 }
 
-/// A day of a driver is calculated (by formula) unless it was taken out of the pontaj or is a leave: those cells hold text.
+/// A day of a driver is calculated (by formula) unless it was taken out of the pontaj, is a leave, or was fixed by hand: those
+/// cells hold text, or the typed number.
 fn is_calculated(driver: &Driver, date: Option<NaiveDate>) -> bool {
     let day = driver.days.iter().find(|d| d.date == date);
-    !day.is_some_and(|d| d.excluded || d.leave.is_some())
+    !day.is_some_and(|d| d.excluded || d.leave.is_some() || d.adjusted)
 }
 
 /// The cell of "Pontaj zilnic" with the total of a day of the driver at `index`.
@@ -234,7 +269,7 @@ fn warning_summary(driver: &Driver) -> String {
 // Sinteză
 // ---------------------------------------------------------------------------------------------------------------------
 
-const SUMMARY_HEADERS: [&str; 12] = ["Nr.", "Șofer", "Zile lucrate", "Curse regulate", "Ore curse", "Ore staționare", "Ore completare", "Total ore", "Plafon lunar", "Depășire", "Concediu (zile)", "Avertizări"];
+const SUMMARY_HEADERS: [&str; 12] = ["Nr.", "Șofer", "Zile lucrate", "Curse regulate", "Ore curse", "Ore staționare", "Completare / reglare", "Total ore", "Plafon lunar", "Depășire", "Concediu (zile)", "Avertizări"];
 const MONEY_HEADERS: [&str; 4] = ["Curse (lei)", "Exterioare (lei)", "Staționare (lei)", "Total estimat (lei)"];
 
 // Columns of "Sinteză" (zero-based); the amounts, when shown, follow the warnings.
@@ -315,7 +350,7 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, blocks: &[Opt
         ws.write_number_with_format(row, 2, f64::from(t.days), &number)?;
         ws.write_number_with_format(row, 3, f64::from(t.legs), &number)?;
         // Hours of trips, of waiting and of the time added: the sums of the driver's lines in "Detaliu" (nothing to sum without lines).
-        for (col, part, minutes) in [(S_TRIPS, Part::Trips, t.trip_min), (S_WAITING, Part::Waiting, t.station_min), (S_FILL, Part::Fill, t.fill_min)] {
+        for (col, part, minutes) in [(S_TRIPS, Part::Trips, t.trip_min), (S_WAITING, Part::Waiting, t.station_min), (S_FILL, Part::Fill, t.fill_min + t.adjust_min)] {
             match blocks[index] {
                 Some(block) => ws.write_formula_with_format(row, col, formula(sum_by_kind(block, DETAIL_HOURS_COL, part), time_value(minutes)), &time)?,
                 None => ws.write_number_with_format(row, col, time_value(minutes), &time)?,
@@ -352,7 +387,7 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, blocks: &[Opt
     sum(3, all(|t| f64::from(t.legs)), &total, ws)?;
     sum(S_TRIPS, all(|t| time_value(t.trip_min)), &total_time, ws)?;
     sum(S_WAITING, all(|t| time_value(t.station_min)), &total_time, ws)?;
-    sum(S_FILL, all(|t| time_value(t.fill_min)), &total_time, ws)?;
+    sum(S_FILL, all(|t| time_value(t.fill_min + t.adjust_min)), &total_time, ws)?;
     sum(S_TOTAL, all(|t| time_value(t.total_min)), &total_time, ws)?;
     ws.write_blank(last, S_CAP, &total)?;
     sum(S_OVER, all(|t| time_value(t.over_min)), &total_time, ws)?;
@@ -391,7 +426,7 @@ fn summary(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, blocks: &[Opt
 
 const GRID_FIRST_DAY: ColNum = 3;
 const GRID_HEADER_ROW: RowNum = 3;
-const GRID_LABELS: [&str; 4] = ["Cursă", "Staționare", "Completare", "Total"];
+const GRID_LABELS: [&str; 4] = ["Cursă", "Staționare", "Completare / reglare", "Total"];
 /// Rows of one driver in "Pontaj zilnic": trips, waiting, time added, total (the last one).
 const GRID_ROWS: RowNum = GRID_LABELS.len() as RowNum;
 const LEAVE_FILL: u32 = 0xE2EFDA;
@@ -419,7 +454,7 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet, blocks: &[Option<DetailBlock>]) -> Do
         1,
         0,
         format!(
-            "Orele sunt formule peste foaia „Detaliu”. Cursa = durata curselor cunoscute; staționarea se trece în ziua în care începe; completarea = timpul adăugat înainte de prima plecare și după ultima sosire ca ziua să aibă orele unei zile întregi. Zilele gri sunt weekend sau sărbătoare legală; „scos” = ziua a fost scoasă din pontaj; {} = zi de concediu (vezi „Detaliu”).",
+            "Orele sunt formule peste foaia „Detaliu”. Cursa = durata curselor cunoscute; staționarea se trece în ziua în care începe; completarea = timpul adăugat înainte de prima plecare și după ultima sosire ca ziua să aibă orele unei zile întregi; reglarea = diferența până la orele fixate de birou pe o zi (poate fi negativă). Zilele gri sunt weekend sau sărbătoare legală; „scos” = ziua a fost scoasă din pontaj; {} = zi de concediu (vezi „Detaliu”).",
             codes.join(", ")
         ),
         &Styles::plain(),
@@ -474,7 +509,8 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet, blocks: &[Option<DetailBlock>]) -> Do
                 }
                 // Every other day is a formula, empty or not: a line added in "Detaliu" shows up here.
                 (day, Some(date), Some(block)) => {
-                    let (trip_min, station_min, fill_min) = day.map_or((0, 0, 0), |d| (d.trip_min, d.station_min, d.fill_min));
+                    // The time added and the adjustment of a day fixed by hand are one row.
+                    let (trip_min, station_min, fill_min) = day.map_or((0, 0, 0), |d| (d.trip_min, d.station_min, d.fill_min + d.adjust_min));
                     ws.write_formula_with_format(top, col, formula(sum_by_day(block, date, Part::Trips), time_value(trip_min)), &fmt)?;
                     ws.write_formula_with_format(top + 1, col, formula(sum_by_day(block, date, Part::Waiting), time_value(station_min)), &fmt)?;
                     ws.write_formula_with_format(top + 2, col, formula(sum_by_day(block, date, Part::Fill), time_value(fill_min)), &fmt)?;
@@ -489,7 +525,7 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet, blocks: &[Option<DetailBlock>]) -> Do
             }
         }
         let t = &driver.totals;
-        for (i, minutes) in [t.trip_min, t.station_min, t.fill_min, t.total_min].into_iter().enumerate() {
+        for (i, minutes) in [t.trip_min, t.station_min, t.fill_min + t.adjust_min, t.total_min].into_iter().enumerate() {
             let r = top + i as RowNum;
             ws.write_formula_with_format(r, total_col, formula(format!("=SUM({})", range(r, GRID_FIRST_DAY, last_day)), time_value(minutes)), &strong)?;
         }
@@ -505,7 +541,7 @@ fn grid(ws: &mut Worksheet, sheet: &Sheet, blocks: &[Option<DetailBlock>]) -> Do
 
     ws.set_column_width(0, 5)?;
     ws.set_column_width(1, 26)?;
-    ws.set_column_width(2, 11)?;
+    ws.set_column_width(2, 19)?;
     ws.set_column_range_width(GRID_FIRST_DAY, last_day, 6.5)?;
     ws.set_column_width(total_col, 9)?;
     ws.set_column_width(cap_col, 9)?;
@@ -657,6 +693,29 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
             });
         }
     }
+    // The days fixed by hand: one line brings the day (its trips and waiting) to the hours that were typed for it.
+    for day in driver.days.iter().filter(|d| d.adjusted && d.adjust_min != 0) {
+        let Some(date) = day.date else { continue };
+        let counted = counts(date);
+        let mut note = format!("ore fixate de birou la {}; după curse și staționări ziua ar avea {}", fmt_duration(day.total_min), fmt_duration(day.trip_min + day.station_min));
+        if !counted {
+            note = format!("{}; {note}", why_not(date));
+        }
+        rows.push(DetailRow {
+            date,
+            kind: ADJUST_KIND.into(),
+            start: None,
+            end: None,
+            from: String::new(),
+            to: String::new(),
+            minutes: counted.then_some(day.adjust_min),
+            pay: None,
+            note,
+            remarks: String::new(),
+            out: !counted,
+            order: 2,
+        });
+    }
     // The days of leave and the time added to the days: no trip behind them, but the office must see where the hours come from.
     for day in driver.days.iter().filter(|d| d.fill_min > 0) {
         let Some(date) = day.date else { continue };
@@ -753,7 +812,7 @@ fn detail(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, all_lines: &[V
     let wrap = text.clone().set_text_wrap();
     let centered = st.base.clone();
     let dated = st.base.clone().set_num_format("dd.mm.yyyy");
-    let time = st.base.clone().set_num_format(TIME);
+    let time = st.base.clone().set_num_format(TIME_SIGNED);
     let lei = st.base.clone().set_num_format("#,##0");
     let band = st.fill(TOTAL_FILL).set_bold().set_align(FormatAlign::Left);
     let total = st.fill(TOTAL_FILL).set_bold();
@@ -781,7 +840,7 @@ fn detail(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, all_lines: &[V
             ws.write_string_with_format(row, 5, &line.from, &text)?;
             ws.write_string_with_format(row, 6, &line.to, &text)?;
             match line.minutes {
-                Some(m) if m > 0 => {
+                Some(m) if m != 0 => {
                     ws.write_number_with_format(row, hours_col, time_value(m), &time)?;
                 }
                 _ => {
@@ -977,14 +1036,14 @@ mod tests {
             };
             assert_eq!(sum(Part::Trips, None), driver.totals.trip_min, "trip minutes of {}", driver.name);
             assert_eq!(sum(Part::Waiting, None), driver.totals.station_min, "waiting minutes of {}", driver.name);
-            assert_eq!(sum(Part::Fill, None), driver.totals.fill_min, "minutes added to the days of {}", driver.name);
+            assert_eq!(sum(Part::Fill, None), driver.totals.fill_min + driver.totals.adjust_min, "minutes added to the days of {}", driver.name);
             let pay_station: f64 = rows.iter().filter(|r| r.kind == STATION_KIND).filter_map(|r| r.pay).sum();
             assert_eq!(pay_station, driver.totals.pay_station, "waiting pay of {}", driver.name);
             for day in driver.days.iter().filter(|d| !d.excluded) {
                 let date = day.date.unwrap();
                 let parts = (sum(Part::Trips, Some(date)), sum(Part::Waiting, Some(date)), sum(Part::Fill, Some(date)));
-                assert_eq!(parts, (day.trip_min, day.station_min, day.fill_min), "{} on {date}", driver.name);
-                assert_eq!(day.trip_min + day.station_min + day.fill_min, day.total_min, "{} on {date}", driver.name);
+                assert_eq!(parts, (day.trip_min, day.station_min, day.fill_min + day.adjust_min), "{} on {date}", driver.name);
+                assert_eq!(day.trip_min + day.station_min + day.fill_min + day.adjust_min, day.total_min, "{} on {date}", driver.name);
             }
         }
     }

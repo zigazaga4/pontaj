@@ -254,8 +254,13 @@ pub struct DayRow {
     pub fill_min: i32,
     /// The office typed one of the two values.
     pub fill_manual: bool,
-    /// Trips + waiting + the time added.
+    /// Trips + waiting + the time added + the adjustment.
     pub total_min: i32,
+    /// What the day was brought to by hand ([`Driver::set_hours`]) minus what the rules gave it: positive adds time, negative
+    /// takes it away. Part of `total_min`; 0 on a day nobody adjusted.
+    pub adjust_min: i32,
+    /// The day counts the hours typed for it ([`Driver::set_hours`]), not the ones the rules make of its trips.
+    pub adjusted: bool,
     pub pay_legs: f64,
     pub pay_exterior: f64,
     pub pay_station: f64,
@@ -276,6 +281,8 @@ pub struct Totals {
     pub station_min: i32,
     /// Time added to the days to bring them up to a full day (part of `total_min`).
     pub fill_min: i32,
+    /// The adjustments of the days brought to the hours typed for them (part of `total_min`, can be negative).
+    pub adjust_min: i32,
     pub total_min: i32,
     pub pay_legs: f64,
     pub pay_exterior: f64,
@@ -326,6 +333,10 @@ pub struct Driver {
     pub leaves: BTreeMap<NaiveDate, String>,
     /// The time the office typed for the days brought up to a full day: date → [`FillEdit`].
     pub fills: BTreeMap<NaiveDate, FillEdit>,
+    /// Days whose hours were fixed by hand, in minutes (date → minutes): the day counts exactly these, whatever its trips,
+    /// waiting and time added make. This is how the hours of an Excel file that was changed outside the app are brought back
+    /// into the app (see [`super::reconcile`]). A day taken out of the pontaj or marked as leave ignores it.
+    pub set_hours: BTreeMap<NaiveDate, i32>,
     /// The driver's trips just before and just after the month (from the days around it that the download asks for):
     /// not part of this sheet, they only tell where he was when the month began and where he went when it ended, so the
     /// trips between months can be explained (see [`super::transfers`]). Replaced by every download.

@@ -4,13 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+calamine = "0.38"
 chrono = { version = "0.4.45", features = ["serde"] }
 pdf-extract = "0.12"
 rust_xlsxwriter = "0.102"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 ureq = "3"
-
-[dev-dependencies]
-# Reads the exported workbooks back in the tests (the formulas are recomputed by the tests themselves).
-calamine = "0.38"
