@@ -39,17 +39,28 @@ function reportBody(report) {
   const parts = [
     h("p", {}, `Excel-ul este pe ${MONTH_NAMES[report.month - 1]} ${report.year}. ${plural(report.matched, "șofer din aplicație a fost găsit", "șoferi din aplicație au fost găsiți")} în el.`),
   ];
+  // The trips come first: the hours of the days below follow from them.
+  if (report.trips.length) {
+    parts.push(
+      h("p", {}, h("b", {}, plural(report.trips.length, "cursă își schimbă", "curse își schimbă")), " plecarea, sosirea sau locurile în aplicație, ca să fie ca în Excel (foaia „Detaliu”):"),
+      groupedTable(report.trips, [["Cursa", (t) => t.kind, true], ["Acum în aplicație", (t) => (t.app === "" ? "—" : t.app), true], ["În Excel", (t) => h("b", {}, t.excel), true]]));
+  }
   if (report.changes.length) {
     parts.push(
       h("p", {}, h("b", {}, `${plural(report.changes.length, "zi se schimbă", "zile se schimbă")}`), " în aplicație, ca să arate ca în Excel (acolo unde Excel-ul are mai puține ore decât curse, ziua rămâne cu cursele și primește o reglare negativă):"),
       groupedTable(report.changes, [["Acum în aplicație", (c) => hoursText(c.app)], ["În Excel", (c) => h("b", {}, hoursText(c.excel))]]));
-  } else {
-    parts.push(h("p", {}, h("b", {}, "Orele din aplicație sunt deja la fel ca în Excel."), " Nu se schimbă nimic."));
+  } else if (!report.trips.length) {
+    parts.push(h("p", {}, h("b", {}, "Orele și cursele din aplicație sunt deja la fel ca în Excel."), " Nu se schimbă nimic."));
   }
   if (report.skipped.length) {
     parts.push(
       h("p", {}, h("b", {}, plural(report.skipped.length, "zi nu se poate aduce", "zile nu se pot aduce")), " la ce scrie în Excel; ele rămân ca în aplicație:"),
       groupedTable(report.skipped, [["În Excel", (s) => s.excel], ["De ce nu", (s) => s.reason, true]]));
+  }
+  if (report.tripsSkipped.length) {
+    parts.push(
+      h("p", {}, h("b", {}, plural(report.tripsSkipped.length, "observație", "observații")), " despre curse: ce din Excel nu se potrivește cu aplicația (o cursă din Excel fără pereche în aplicație, sau una din aplicație fără pereche în Excel, rămâne cum este):"),
+      groupedTable(report.tripsSkipped, [["În Excel", (s) => s.excel, true], ["Observație", (s) => s.reason, true]]));
   }
   if (report.notInFile.length) {
     parts.push(h("p", { class: "muted" }, `${plural(report.notInFile.length, "șofer din aplicație nu este", "șoferi din aplicație nu sunt")} în Excel, deci orele lor rămân neschimbate: ${report.notInFile.join(", ")}.`));
@@ -65,14 +76,14 @@ function reportBody(report) {
  * @param {object} report the `report` of `catb_reconcile`
  */
 export async function askReconcile(report) {
-  const nothing = !report.changes.length;
+  const nothing = !report.changes.length && !report.trips.length;
   const go = await showDialog({
     title: "Reglează orele după Excel",
     body: reportBody(report),
     wide: true,
     buttons: nothing
       ? [{ label: "Închide", kind: "primary", value: false }]
-      : [{ label: "Renunță", value: false }, { label: `Aduce ${plural(report.changes.length, "zi", "zile")} la Excel`, kind: "primary", value: true }],
+      : [{ label: "Renunță", value: false }, { label: `Aduce ${[report.changes.length && plural(report.changes.length, "zi", "zile"), report.trips.length && plural(report.trips.length, "cursă", "curse")].filter(Boolean).join(" și ")} la Excel`, kind: "primary", value: true }],
   });
   return Boolean(go);
 }
