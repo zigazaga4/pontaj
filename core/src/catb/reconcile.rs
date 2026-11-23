@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use super::compute::recompute_driver;
 use super::model::*;
 use super::pontaj::to_timesheet;
-use super::reconcile_trips::follow_trips;
 use crate::pontaj_file::{Cell, File, Person};
 use crate::settings::Settings;
 use crate::time::{round_hours, round_to_half};
@@ -76,19 +75,6 @@ pub struct Change {
     pub excel: String,
 }
 
-/// A trip whose times or places the app takes from the file, as it was in the app and as it is now.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct TripChange {
-    pub driver: String,
-    /// The day the file lists the trip on.
-    pub date: Option<NaiveDate>,
-    pub kind: String,
-    /// "08:30–11:30 · Constanta → Aeroport Otopeni Bucuresti" (empty: the app had no such trip).
-    pub app: String,
-    pub excel: String,
-}
-
 /// A day of the file the app could not follow, with the reason.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -112,10 +98,6 @@ pub struct Report {
     pub others: usize,
     pub changes: Vec<Change>,
     pub skipped: Vec<Skipped>,
-    /// The trips of the sheet "Detaliu" that bring other times or places into the app.
-    pub trips: Vec<TripChange>,
-    /// The lines of "Detaliu" the app could not match with a trip, the trips with no line, and the trips that stay on another day.
-    pub trips_skipped: Vec<Skipped>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -211,12 +193,6 @@ pub fn reconcile(sheet: &Sheet, file: &File, settings: &Settings) -> Result<Reco
         };
         found.insert(at);
         matched.push((driver.name.clone(), at));
-        // The trips first: the hours of the days are then compared with what the trips of the file make of them.
-        if let Some(detail) = file.details.iter().find(|detail| key(&detail.name) == key(&driver.name)) {
-            let followed = follow_trips(driver, detail, year, month, settings);
-            report.trips.extend(followed.changes);
-            report.trips_skipped.extend(followed.skipped);
-        }
         reasons.insert(driver.name.clone(), follow(driver, person, year, month, settings));
     }
     if matched.is_empty() {
@@ -383,101 +359,6 @@ mod tests {
         let reasons: Vec<&str> = done.report.skipped.iter().map(|s| s.reason.as_str()).collect();
         assert_eq!(reasons.len(), 3, "{reasons:?}");
         assert!(reasons[0].contains("OLP") && reasons[1].contains("prea multe") && reasons[2].contains("are curse"), "{reasons:?}");
-    }
-
-    fn at(text: &str) -> Option<chrono::NaiveDateTime> {
-        crate::catb::api::parse_time(text)
-    }
-
-    /// The file another copy of the app would have written after the office changed trips there (exported, read back).
-    fn file_of_edited_trips(sheet: &Sheet, name: &str, change: impl FnOnce(&mut Sheet)) -> File {
-        let settings = Settings::default();
-        let mut edited = sheet.clone();
-        change(&mut edited);
-        let (year, month) = (edited.year, edited.month);
-        edited.drivers.iter_mut().for_each(|driver| recompute_driver(driver, year, month, &settings));
-        let path = std::env::temp_dir().join(format!("pontaj-reglare-trips-{name}-{}.xlsx", std::process::id()));
-        crate::catb::excel::write_xlsx(&edited, &settings, &path).unwrap();
-        let file = crate::pontaj_file::read(&path).unwrap();
-        std::fs::remove_file(&path).ok();
-        file
-    }
-
-    fn trip_mut<'a>(sheet: &'a mut Sheet, driver: &str, id: &str) -> &'a mut Trip {
-        sheet.drivers.iter_mut().find(|d| d.name == driver).unwrap().trips.iter_mut().find(|t| t.id == id).unwrap()
-    }
-
-    fn trip<'a>(sheet: &'a Sheet, driver: &str, id: &str) -> &'a Trip {
-        sheet.drivers.iter().find(|d| d.name == driver).unwrap().trips.iter().find(|t| t.id == id).unwrap()
-    }
-
-    #[test]
-    fn the_times_the_places_and_the_removed_trips_of_the_detail_sheet_become_those_of_the_app() {
-        let settings = Settings::default();
-        let sheet = october();
-        let file = file_of_edited_trips(&sheet, "times", |s| {
-            let early = trip_mut(s, "Popescu Ion", "eco-2");
-            early.edit.departure = at("2026-10-12 04:00");
-            early.edit.arrival = at("2026-10-12 08:30");
-            let late = trip_mut(s, "Popescu Ion", "eco-3");
-            late.edit.to = Some("Mamaia".into());
-            trip_mut(s, "Anghel Dan", "eco-4").edit.removed = true;
-        });
-        let done = reconcile(&sheet, &file, &settings).expect("the same month");
-
-        let early = trip(&done.sheet, "Popescu Ion", "eco-2");
-        assert_eq!((early.eff.departure, early.eff.arrival), (at("2026-10-12 04:00"), at("2026-10-12 08:30")));
-        assert_eq!((early.edit.departure, early.edit.arrival), (at("2026-10-12 04:00"), at("2026-10-12 08:30")));
-        assert_eq!(trip(&done.sheet, "Popescu Ion", "eco-3").eff.to, "Mamaia");
-        assert!(trip(&done.sheet, "Anghel Dan", "eco-4").edit.removed);
-        assert_eq!(trip(&done.sheet, "Popescu Ion", "eco-1").edit, TripEdit::default(), "a trip the file leaves as it is gets no change");
-
-        let listed: Vec<(&str, &str)> = done.report.trips.iter().map(|t| (t.driver.as_str(), t.kind.as_str())).collect();
-        assert_eq!(listed, [("Anghel Dan", "Eco"), ("Popescu Ion", "Eco"), ("Popescu Ion", "Eco")]);
-        assert!(done.report.trips_skipped.is_empty(), "{:?}", done.report.trips_skipped);
-        // The days follow from the trips: nothing is left to fix by hand.
-        assert!(done.sheet.drivers.iter().all(|d| d.set_hours.is_empty()), "{:?}", done.sheet.drivers.iter().map(|d| &d.set_hours).collect::<Vec<_>>());
-
-        let second = reconcile(&done.sheet, &file, &settings).unwrap();
-        assert!(second.report.trips.is_empty() && second.report.changes.is_empty(), "{:?}", second.report);
-        assert_eq!(second.sheet, done.sheet);
-    }
-
-    #[test]
-    fn a_trip_of_the_night_is_matched_by_the_clock_even_when_the_file_has_it_on_the_evening_before() {
-        let settings = Settings::default();
-        let sheet = october();
-        // Anghel: the app has the trip on Tue 6 Oct at 05:00; the file has it left the evening before (Mon 5 Oct 21:00 → 01:00).
-        let file = file_of_edited_trips(&sheet, "night", |s| {
-            let night = trip_mut(s, "Anghel Dan", "eco-4");
-            night.edit.departure = at("2026-10-05 21:00");
-            night.edit.arrival = at("2026-10-06 01:00");
-        });
-        let done = reconcile(&sheet, &file, &settings).unwrap();
-        let night = trip(&done.sheet, "Anghel Dan", "eco-4");
-        assert_eq!((night.eff.departure, night.eff.arrival), (at("2026-10-05 21:00"), at("2026-10-06 01:00")));
-        assert_eq!(night.eff.work_day, NaiveDate::from_ymd_opt(2026, 10, 5));
-        assert_eq!(done.report.trips.len(), 1);
-        assert!(done.report.trips_skipped.is_empty(), "{:?}", done.report.trips_skipped);
-        let anghel = done.sheet.drivers.iter().find(|d| d.name == "Anghel Dan").unwrap();
-        assert!(anghel.set_hours.is_empty(), "the hours follow from the trip, nothing is fixed by hand");
-    }
-
-    #[test]
-    fn a_line_with_no_trip_in_the_app_and_a_trip_with_no_line_are_told_and_left_alone() {
-        let settings = Settings::default();
-        let sheet = october();
-        let file = file_of_edited_trips(&sheet, "extra", |s| {
-            let driver = s.drivers.iter_mut().find(|d| d.name == "Anghel Dan").unwrap();
-            driver.trips.push(Trip { id: "manual-1".into(), kind: TripKind::Eco, from: "Constanta".into(), to: "Aeroport Otopeni Bucuresti".into(), departure: at("2026-10-20 08:00").unwrap(), arrival: at("2026-10-20 11:00"), manual: true, ..Default::default() });
-        });
-        let done = reconcile(&sheet, &file, &settings).unwrap();
-        assert!(done.report.trips.is_empty());
-        // The trip itself, and the drive the other copy made for it (the app has no such trip to make it for).
-        let reasons: Vec<&str> = done.report.trips_skipped.iter().map(|s| s.reason.as_str()).collect();
-        assert_eq!(reasons.len(), 2, "{reasons:?}");
-        assert!(reasons.iter().any(|r| r.contains("nu este o cursă de același fel")) && reasons.iter().any(|r| r.contains("aplicația nu face deplasarea")), "{reasons:?}");
-        assert_eq!(done.sheet.drivers.iter().find(|d| d.name == "Anghel Dan").unwrap().trips.len(), 1, "no trip is added");
     }
 
     #[test]

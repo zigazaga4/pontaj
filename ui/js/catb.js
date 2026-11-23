@@ -475,9 +475,8 @@ export function createCatb({ getSettings, saveSettings }) {
       markDirty();
       renderAll();
       await flush();
-      const { changes, trips } = done.report;
-      const what = [changes.length && `${changes.length} ${changes.length === 1 ? "zi" : "zile"}`, trips.length && `${trips.length} ${trips.length === 1 ? "cursă" : "curse"}`].filter(Boolean).join(" și ");
-      toast(`Orele din aplicație au fost aduse la Excel (${what}). Ziua reglată se vede în pontajul fiecărui șofer, cu „Anulează reglarea”.`, { kind: "ok", timeout: 9000 });
+      const days = done.report.changes.length;
+      toast(`Orele din aplicație au fost aduse la Excel (${days} ${days === 1 ? "zi" : "zile"}). Ziua reglată se vede în pontajul fiecărui șofer, cu „Anulează reglarea”.`, { kind: "ok", timeout: 9000 });
     } catch (err) {
       fail(err);
     } finally {

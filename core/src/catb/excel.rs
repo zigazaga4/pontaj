@@ -38,10 +38,7 @@ const TIME_SIGNED: &str = "[h]:mm;-[h]:mm";
 
 const SUMMARY_SHEET: &str = "Sinteză";
 const GRID_SHEET: &str = "Pontaj zilnic";
-/// The sheet with every trip and waiting (read back by [`crate::pontaj_file`]).
-pub(crate) const DETAIL_SHEET: &str = "Detaliu";
-/// What follows the kind of a trip the office took out ("Eco (scoasă)").
-pub(crate) const REMOVED_SUFFIX: &str = " (scoasă)";
+const DETAIL_SHEET: &str = "Detaliu";
 /// The kind written in "Detaliu" for a waiting period that counts.
 const STATION_KIND: &str = "Staționare";
 /// The kind of the lines for the time added to fill a day; everything else with hours is a trip.
@@ -126,13 +123,8 @@ struct DetailBlock {
 }
 
 const DETAIL_HEADER_ROW: RowNum = 3;
-/// The columns of "Detaliu" the app reads back: the day, the kind, the departure, the arrival and the places.
-pub(crate) const DETAIL_DATE_COL: ColNum = 0;
-pub(crate) const DETAIL_KIND_COL: ColNum = 2;
-pub(crate) const DETAIL_START_COL: ColNum = 3;
-pub(crate) const DETAIL_END_COL: ColNum = 4;
-pub(crate) const DETAIL_FROM_COL: ColNum = 5;
-pub(crate) const DETAIL_TO_COL: ColNum = 6;
+const DETAIL_DATE_COL: ColNum = 0;
+const DETAIL_KIND_COL: ColNum = 2;
 const DETAIL_HOURS_COL: ColNum = 7;
 const DETAIL_MONEY_COL: ColNum = 8;
 
@@ -676,7 +668,7 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
         let remarks = if counted && eff.price_note == NO_TARIFF { "Fără tarif: trece prețul în aplicație.".to_string() } else { String::new() };
         rows.push(DetailRow {
             date,
-            kind: if trip.edit.removed { format!("{}{REMOVED_SUFFIX}", trip.kind.label()) } else { trip.kind.label().to_string() },
+            kind: if trip.edit.removed { format!("{} (scoasă)", trip.kind.label()) } else { trip.kind.label().to_string() },
             start: Some(departure),
             end: eff.arrival,
             from: eff.from.clone(),
@@ -796,7 +788,7 @@ fn detail_rows(driver: &Driver, year: i32, month: u32) -> Vec<DetailRow> {
 }
 
 /// `05:00`, or `05:00 (+1)` when it falls on another day than `reference`.
-pub(crate) fn clock(at: Option<NaiveDateTime>, reference: NaiveDate) -> String {
+fn clock(at: Option<NaiveDateTime>, reference: NaiveDate) -> String {
     match at {
         None => String::new(),
         Some(at) => match (at.date() - reference).num_days() {
@@ -807,7 +799,7 @@ pub(crate) fn clock(at: Option<NaiveDateTime>, reference: NaiveDate) -> String {
     }
 }
 
-pub(crate) const DETAIL_HEADERS: [&str; 10] = ["Data", "Zi", "Tip", "Plecare", "Sosire", "Din", "Spre", "Ore", "Observații despre rând", "Atenție"];
+const DETAIL_HEADERS: [&str; 10] = ["Data", "Zi", "Tip", "Plecare", "Sosire", "Din", "Spre", "Ore", "Observații despre rând", "Atenție"];
 
 fn detail(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, all_lines: &[Vec<DetailRow>], blocks: &[Option<DetailBlock>]) -> Done {
     let money = settings.catb.show_money;
@@ -859,10 +851,10 @@ fn detail(ws: &mut Worksheet, sheet: &Sheet, settings: &Settings, all_lines: &[V
             ws.write_number_with_format(row, DETAIL_DATE_COL, excel_date(line.date.year(), line.date.month(), line.date.day()), &dated)?;
             ws.write_string_with_format(row, 1, weekday_short(line.date), &centered)?;
             ws.write_string_with_format(row, 2, &line.kind, &text)?;
-            ws.write_string_with_format(row, DETAIL_START_COL, clock(line.start, line.date), &centered)?;
-            ws.write_string_with_format(row, DETAIL_END_COL, clock(line.end, line.date), &centered)?;
-            ws.write_string_with_format(row, DETAIL_FROM_COL, &line.from, &text)?;
-            ws.write_string_with_format(row, DETAIL_TO_COL, &line.to, &text)?;
+            ws.write_string_with_format(row, 3, clock(line.start, line.date), &centered)?;
+            ws.write_string_with_format(row, 4, clock(line.end, line.date), &centered)?;
+            ws.write_string_with_format(row, 5, &line.from, &text)?;
+            ws.write_string_with_format(row, 6, &line.to, &text)?;
             match line.minutes {
                 // (A line of adjustment can be negative: the format has a section for it.)
                 Some(m) if m != 0 => {

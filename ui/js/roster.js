@@ -275,11 +275,16 @@ export function createRoster({ getSettings, saveSettings }) {
     }
     const wrap = h("div", { class: "grid-wrap", id: "roster-grid" });
     const details = h("div", { class: "details", id: "roster-details" },
-      h("span", { class: "muted" }, "Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP…) pentru absențe sau lasă gol pentru o zi liberă. ↺ de lângă nume pune zilele la loc, după program."));
+      h("span", { class: "muted" }, "Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP…) pentru absențe sau lasă gol pentru o zi liberă. Sub ore sunt ora începerii și ora terminării, ca în Excel: scrie-le (08:00) ca să schimbi tura unei zile. ↺ de lângă nume pune zilele la loc, după program."));
     view.replaceChildren(wrap, details);
     renderGrid(wrap, state.sheet, {
       heading: "Angajat",
-      onEdit: (ei, di, patch) => edit((s) => Object.assign(s.employees[ei].days[di], patch)),
+      times: true,
+      // The times typed under the hours come as a function of the day, so they are read from the day as it is when the edit runs.
+      onEdit: (ei, di, patch) => edit((s) => {
+        const day = s.employees[ei].days[di];
+        Object.assign(day, typeof patch === "function" ? patch(day) : patch);
+      }),
       onSelect: (ei, di) => {
         state.selected = [ei, di];
         renderDetails(details, state.sheet, ei, di);

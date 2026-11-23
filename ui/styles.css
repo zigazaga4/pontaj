@@ -121,6 +121,15 @@ td.night { height: 18px; font-size: 11px; font-style: italic; color: var(--night
 input.cell.night-in { height: 18px; font-size: 11px; font-weight: 400; font-style: italic; color: var(--night); }
 input.cell.night-in.manual { font-weight: 700; }
 input.cell.invalid { background: #fde2e2; }
+/* The start and the end of the day, under the hours and the night (the rows "Ora începerii" / "Ora terminării" of the Excel file). */
+.time-row td { height: 16px; border-bottom-color: #eef1f7; }
+.time-row.end td { border-bottom-color: var(--border); }
+.grid td.time-label { padding: 0 10px; text-align: right; font-size: 10px; color: var(--muted); white-space: nowrap; }
+input.cell.time { width: 100%; min-width: 33px; height: 16px; font-size: 10.5px; font-weight: 500; color: #38425a; letter-spacing: -.2px; }
+input.cell.time::placeholder { color: transparent; }
+input.cell.time:focus::placeholder { color: #c3c9d6; }
+input.cell.time.warn { box-shadow: inset 0 -2px 0 var(--danger); }
+#roster .grid thead th.day { min-width: 33px; }
 .grid .sum { position: sticky; width: 50px; min-width: 50px; max-width: 50px; padding: 0 2px; }
 .grid thead th.sum { z-index: 4; font-size: 11px; }
 td.sum { z-index: 2; background: var(--total); font-weight: 700; }
