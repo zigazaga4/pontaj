@@ -85,6 +85,11 @@ fn main() {
             recompute(&mut sheet, &settings);
             json!(sheet)
         }
+        "remove_pdf" => {
+            let mut sheet: Timesheet = serde_json::from_value(get("timesheet")).expect("timesheet");
+            pontaj_core::timesheet::remove_source(&mut sheet, get("source").as_str().unwrap_or_default(), &settings);
+            json!(sheet)
+        }
         "preview_tachograph" => json!(preview_tachograph(get("year").as_i64().unwrap_or(2026) as i32, get("month").as_u64().unwrap_or(11) as u32, &settings)),
         // Office, garage and city: the saved months are in `ROSTER_DIR`.
         "roster_open" => {

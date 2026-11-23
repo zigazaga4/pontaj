@@ -154,13 +154,16 @@ async function loadFiles(paths) {
   }
 }
 
-/** Applies `mutate(sheet)`, recalculates in Rust and updates the screen. */
-function edit(mutate, { structural = false } = {}) {
+/**
+ * Applies `mutate(sheet)`, recalculates in Rust and updates the screen. A change that Rust makes itself passes `replace(sheet)`
+ * (it resolves with the new sheet, already calculated) instead of the plain recalculation.
+ */
+function edit(mutate, { structural = false, replace = null } = {}) {
   queue = queue
     .then(async () => {
       if (!state.sheet) return; // the month was closed meanwhile
       mutate?.(state.sheet);
-      state.sheet = await api.recalculate(state.sheet, state.settings);
+      state.sheet = await (replace ? replace(state.sheet) : api.recalculate(state.sheet, state.settings));
       autosave.markDirty();
       structural ? renderView() : state.view?.refresh();
       renderSummary();
@@ -321,9 +324,28 @@ function renderSummary() {
 
 function renderFiles() {
   $("#files").replaceChildren(
-    ...state.sheet.sources.map((name) => h("span", { class: "file", title: name }, "📄 ", name)),
+    ...state.sheet.sources.map((name) =>
+      h("span", { class: "file", title: name },
+        h("span", { class: "file-name" }, "📄 ", name),
+        h("button", { class: "file-remove", type: "button", title: "Șterge acest PDF din lună", "aria-label": `Șterge ${name}`, onclick: () => removePdf(name) }, "✕"))),
     h("button", { class: "btn small saved-button", type: "button", title: "Lunile citite din PDF-uri rămân salvate pe acest calculator", onclick: showSavedMonths }, `Luni salvate (${state.months.length})`),
   );
+}
+
+/**
+ * Takes one PDF out of the month on screen, after asking: the rows read from it go away, what was typed by hand stays and the
+ * file on the computer is not touched. The only PDF of a month takes the month with it (the same question as deleting the month).
+ */
+async function removePdf(name) {
+  if (!state.sheet) return;
+  if (state.sheet.sources.length <= 1) return void (await deleteSaved(state.sheet));
+  if (!confirm(`Ștergi PDF-ul „${name}” din luna ${monthTitle(state.sheet)}? Rândurile citite din el dispar; ce ai scris tu rămâne. Fișierul de pe calculator nu se atinge.`)) return;
+  state.selected = null;
+  await edit(null, { structural: true, replace: (sheet) => api.removePdf(sheet, name, state.settings) });
+  if (!state.sheet) return;
+  renderFiles();
+  await flushPending();
+  await refreshMonths();
 }
 
 // ---- the months kept on this computer ----

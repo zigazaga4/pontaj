@@ -75,7 +75,10 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .chip b { font-size: 17px; }
 
 .files { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.file { background: #e8eefc; color: #1e3a8a; padding: 3px 10px; border-radius: 99px; font-size: 12px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file { display: inline-flex; align-items: center; gap: 6px; background: #e8eefc; color: #1e3a8a; padding: 3px 6px 3px 10px; border-radius: 99px; font-size: 12px; max-width: 420px; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-remove { border: 0; background: transparent; color: inherit; opacity: 0.55; cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 99px; }
+.file-remove:hover { opacity: 1; background: #fbd5d5; color: #991b1b; }
 
 .warnings { background: #fff7e6; border: 1px solid #f5d38a; border-radius: var(--radius); padding: 8px 14px; max-height: 90px; overflow: auto; }
 .warnings ul { margin: 4px 0 0; padding-left: 18px; }

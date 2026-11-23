@@ -309,6 +309,24 @@ pub fn merge(mut previous: Timesheet, fresh: Timesheet, settings: &Settings) -> 
     previous
 }
 
+/// Takes the PDF `source` out of the sheet: every row read from it goes away (the ones that were edited too), the rows added by
+/// hand stay, and a driver that the PDF left with no rows goes too, unless something was typed on his days. A row that two PDFs
+/// both had belongs to the one read first, so it goes away with that one.
+pub fn remove_source(sheet: &mut Timesheet, source: &str, settings: &Settings) {
+    if source.is_empty() {
+        return; // the rows with no PDF are the ones added by hand
+    }
+    sheet.sources.retain(|name| name != source);
+    let typed = |day: &DayEntry| day.override_hours.is_some() || day.override_night.is_some() || day.override_intervals.is_some() || day.code.is_some();
+    sheet.employees.retain_mut(|employee| {
+        let before = employee.activities.len();
+        employee.activities.retain(|row| row.source != source);
+        let lost_rows = employee.activities.len() < before;
+        !(lost_rows && employee.activities.is_empty() && !employee.days.iter().any(typed))
+    });
+    rules::recompute(sheet, settings);
+}
+
 /// Puts newly read PDFs (`fresh`) where they belong. The sheet on screen takes them when it is the same month; otherwise
 /// the month they cover is looked up among the saved ones (`saved`), so that reading one more PDF of September while
 /// October is open adds to the September already kept, with its edits, instead of starting it again. A month nobody has
@@ -371,6 +389,39 @@ mod tests {
         assert_eq!(popescu.days[0].override_hours, Some(9.0), "manual hours survive");
         assert_eq!(popescu.days[1].hours, Some(4.0));
         assert_eq!(merged.sources, vec!["a.pdf".to_string(), "b.pdf".to_string()]);
+    }
+
+    #[test]
+    fn a_pdf_can_be_taken_out_again() {
+        let s = Settings::default();
+        let first = build(vec![report("a.pdf", "Popescu, Ion", &[(9, 1, 480, 960)])], &s).unwrap();
+        let second = build(
+            vec![report("b.pdf", "Popescu, Ion", &[(9, 2, 480, 720)]), report("b.pdf", "Ionescu, Vasile", &[(9, 3, 480, 960)]), report("b.pdf", "Marin, Dan", &[(9, 4, 480, 960)])],
+            &s,
+        )
+        .unwrap();
+        let mut sheet = merge(first, second, &s);
+        // Something typed by hand on a driver who has rows only in b.pdf, a row added by hand, and a row of b.pdf that was edited.
+        sheet.employees.iter_mut().find(|e| e.name == "MARIN DAN").unwrap().days[3].override_hours = Some(9.0);
+        let popescu = sheet.employees.iter_mut().find(|e| e.name == "POPESCU ION").unwrap();
+        popescu.activities.push(Segment::manual(NaiveDate::from_ymd_opt(2026, 9, 5).unwrap(), 480, 600));
+        popescu.activities.iter_mut().find(|a| a.source == "b.pdf").unwrap().manual = true;
+        popescu.days[0].override_hours = Some(7.0);
+
+        remove_source(&mut sheet, "b.pdf", &s);
+
+        assert_eq!(sheet.sources, ["a.pdf"]);
+        let names: Vec<&str> = sheet.employees.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["MARIN DAN", "POPESCU ION"], "Ionescu had nothing but b.pdf, Marin has something typed");
+        let popescu = sheet.employees.iter().find(|e| e.name == "POPESCU ION").unwrap();
+        assert_eq!(popescu.activities.len(), 2, "a.pdf's row and the one added by hand");
+        assert!(popescu.activities.iter().all(|a| a.source != "b.pdf"));
+        assert_eq!(popescu.days[0].override_hours, Some(7.0), "what was typed stays");
+        assert_eq!(popescu.days[1].hours, None, "the day of b.pdf has no hours any more");
+        assert_eq!(sheet.employees[0].days[3].override_hours, Some(9.0));
+
+        remove_source(&mut sheet, "", &s);
+        assert_eq!(sheet.employees.iter().find(|e| e.name == "POPESCU ION").unwrap().activities.len(), 2, "rows with no PDF are not a PDF");
     }
 
     #[test]

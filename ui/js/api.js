@@ -14,6 +14,8 @@ export const api = {
   pdfSave: (timesheet) => invoke("pdf_save", { timesheet }),
   pdfDelete: (year, month) => invoke("pdf_delete", { year, month }),
   recalculate: (timesheet, settings) => invoke("recalculate", { timesheet, settings }),
+  /** The month without one of its PDFs (by file name): the rows read from it go away, what was typed by hand stays. */
+  removePdf: (timesheet, source, settings) => invoke("remove_pdf", { timesheet, source, settings }),
   /** The one Excel file of a month: the tachograph sheet on screen (or null), Categoria B and the staff as saved. Resolves with the path, or null when cancelled. */
   exportAll: (timesheet, year, month, settings) => invoke("export_all", { timesheet, year, month, settings }),
   // Birou, Garaj, Oraș: `group` is "office", "garage" or "city". The people and their plans are in the settings.

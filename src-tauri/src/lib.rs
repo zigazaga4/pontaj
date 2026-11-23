@@ -101,6 +101,13 @@ fn recalculate(mut timesheet: Timesheet, settings: Settings) -> Timesheet {
     timesheet
 }
 
+/// Takes one PDF out of the month on screen: the rows read from it go away, what was typed by hand stays.
+#[tauri::command]
+fn remove_pdf(mut timesheet: Timesheet, source: String, settings: Settings) -> Timesheet {
+    pontaj_core::timesheet::remove_source(&mut timesheet, &source, &settings);
+    timesheet
+}
+
 /// Asks where to save an Excel file (Downloads by default). `None` when the person cancels.
 fn ask_xlsx_path(app: &AppHandle, file_name: String) -> Option<PathBuf> {
     let mut dialog = app.dialog().file().set_title("Salvează pontajul").set_file_name(file_name).add_filter("Excel", &["xlsx"]);
@@ -322,6 +329,7 @@ pub fn run() {
             pdf_save,
             pdf_delete,
             recalculate,
+            remove_pdf,
             export_all,
             roster_open,
             roster_save,
