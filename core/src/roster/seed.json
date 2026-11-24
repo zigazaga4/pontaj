@@ -239,11 +239,9 @@
       "function": "ghid",
       "group": "office",
       "name": "ERTUTK RAMONA",
-      "note": "Nu a lucrat nicio zi în octombrie: programul s-a luat din ce scria lângă nume. Verific-o.",
+      "note": "",
       "plan": {
-        "end": 720,
-        "kind": "weekdays",
-        "start": 480
+        "kind": "manual"
       }
     },
     {

@@ -36,6 +36,8 @@ pub enum Plan {
     /// `anchor` is a day on which the cycle starts, with its first shift; any day of the cycle works, it goes on from there in
     /// both directions. A shift that ends after midnight has an `end` above 24:00 (20:00–08:00 is 1200–1920).
     Rotation { anchor: NaiveDate, on: Vec<Interval>, off: u32 },
+    /// No plan: the person has no hours of her own (zero), the office writes them by hand when there is something to write.
+    Manual,
 }
 
 impl Plan {
@@ -57,6 +59,7 @@ impl Plan {
                 let working = !calendar::is_weekend(date) && calendar::holiday_name(date).is_none();
                 working.then(|| Interval { start: *start, end: *end })
             }
+            Plan::Manual => None,
             Plan::Rotation { anchor, on, off } => {
                 let cycle = on.len() as i64 + i64::from(*off);
                 if on.is_empty() || cycle <= 0 {
@@ -113,7 +116,7 @@ impl StaffMember {
     pub fn shift_on(&self, date: NaiveDate) -> Option<Interval> {
         match self.plan {
             Plan::Rotation { .. } => self.plan.shift_on(date - Duration::days(self.offset_on(date))),
-            Plan::Weekdays { .. } => self.plan.shift_on(date),
+            Plan::Weekdays { .. } | Plan::Manual => self.plan.shift_on(date),
         }
     }
 }
@@ -325,6 +328,18 @@ pub fn move_cycle(dir: &Path, before: &StaffMember, from: NaiveDate, settings: &
         if changed {
             rules::recompute(&mut sheet, settings);
             save(dir, before.group, &sheet)?;
+        }
+    }
+    Ok(())
+}
+
+/// The plans of some people changed (a migration of the settings): every saved month follows the new plan on the days nobody typed
+/// on, like for a moved cycle ([`move_cycle`]). `before` is the list as it was, the settings hold the list as it is now.
+pub fn follow_plans(dir: &Path, before: &[StaffMember], settings: &Settings) -> Result<()> {
+    for old in before {
+        let changed = settings.roster.iter().any(|now| now.group == old.group && key(&now.name) == key(&old.name) && (now.plan != old.plan || now.moves != old.moves));
+        if changed {
+            move_cycle(dir, old, NaiveDate::MIN, settings)?;
         }
     }
     Ok(())
@@ -627,6 +642,47 @@ mod tests {
         let sheet = open(&dir, Group::City, 2026, 12, &moved).unwrap();
         assert_eq!(codes(&sheet, "DRAGAN MIREL").iter().map(|(d, _)| *d).collect::<Vec<_>>(), [14, 15], "the leave takes the shifts of the new cycle");
         assert_eq!(on_days(&sheet)[..8], [1, 2, 5, 6, 9, 10, 11, 18], "the days of leave are no worked hours");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_person_with_no_plan_has_zero_hours_and_the_office_writes_them_by_hand() {
+        let ramona = member("Ertutk Ramona", Group::Office, Plan::Manual);
+        let settings = Settings::default();
+        let sheet = build_sheet(&[ramona.clone()], Group::Office, 2026, 12, &settings);
+        assert_eq!(sheet.employees[0].totals.worked, 0.0);
+        assert!(sheet.employees[0].days.iter().all(|day| day.hours.is_none() && day.intervals.is_empty()));
+        // The plan is read from and written to the settings as `{ "kind": "manual" }`.
+        assert_eq!(serde_json::to_value(&ramona.plan).unwrap(), serde_json::json!({ "kind": "manual" }));
+        let mut typed = sheet;
+        typed.employees[0].days[2].override_hours = Some(6.0);
+        rules::recompute(&mut typed, &settings);
+        assert_eq!(typed.employees[0].days[2].hours, Some(6.0), "hours typed by hand count like for anybody");
+        assert_eq!(typed.employees[0].totals.worked, 6.0);
+    }
+
+    #[test]
+    fn saved_months_follow_a_plan_that_changed_on_the_days_nobody_typed_on() {
+        let dir = std::env::temp_dir().join(format!("pontaj-roster-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let before = vec![member("Ertutk Ramona", Group::Office, Plan::Weekdays { start: 480, end: 720 })];
+        let old = Settings { roster: before.clone(), ..Settings::default() };
+        let mut november = open(&dir, Group::Office, 2026, 11, &old).unwrap();
+        assert_eq!(november.employees[0].days[1].hours, Some(4.0));
+        november.employees[0].days[2].override_hours = Some(6.0); // typed by the office on the 3rd
+        rules::recompute(&mut november, &old);
+        save(&dir, Group::Office, &november).unwrap();
+        let now = Settings { roster: vec![member("Ertutk Ramona", Group::Office, Plan::Manual)], ..Settings::default() };
+        follow_plans(&dir, &before, &now).unwrap();
+        let again = open(&dir, Group::Office, 2026, 11, &now).unwrap();
+        let hours: Vec<Option<f64>> = again.employees[0].days.iter().map(|day| day.hours).collect();
+        assert_eq!(hours[1], None, "the 2nd was the plan's and is zero now");
+        assert_eq!(hours[2], Some(6.0), "the 3rd the office typed on stays");
+        assert_eq!(again.employees[0].totals.worked, 6.0);
+        // Nothing changed for a list that did not change: no month is written.
+        let stamp = std::fs::metadata(dir.join("birou").join("2026-11.json")).unwrap().modified().unwrap();
+        follow_plans(&dir, &now.roster, &now).unwrap();
+        assert_eq!(std::fs::metadata(dir.join("birou").join("2026-11.json")).unwrap().modified().unwrap(), stamp);
         std::fs::remove_dir_all(&dir).ok();
     }
 

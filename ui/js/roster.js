@@ -37,6 +37,7 @@ const span = (interval) => `${hhmm(interval.start)}–${hhmm(interval.end)}`;
 
 /** A plan in words, for the list of people. */
 function planText(plan) {
+  if (plan.kind === "manual") return "fără program: orele se scriu de mână";
   if (plan.kind === "weekdays") return `${span(plan)}, luni–vineri`;
   const hours = plan.on.length ? (plan.on[0].end - plan.on[0].start) / 60 : 0;
   return `${hoursText(hours)} ore, ${plan.on.length} zile lucrate / ${plan.off} libere, de la ${hhmm(plan.on[0]?.start ?? 0)}`;
@@ -55,7 +56,7 @@ const endAfter = (start, end) => (end <= start ? end + 1440 : end);
 function askPerson({ existing, group, others, anchor }) {
   const person = existing ?? { name: "", function: "", group, plan: defaultPlan(group, anchor), note: "", moves: [] };
   const plan = person.plan;
-  const kinds = { weekdays: "8 ore, luni–vineri", rotation: "12 ore, 2 zile lucrate și 2 libere" };
+  const kinds = { weekdays: "8 ore, luni–vineri", rotation: "12 ore, 2 zile lucrate și 2 libere", manual: "Fără program (orele se scriu de mână)" };
   const shifts = plan.kind === "rotation" ? plan.on : [{ start: 9 * 60, end: 21 * 60 }, { start: 9 * 60, end: 21 * 60 }];
   const weekday = plan.kind === "weekdays" ? plan : { start: 8 * 60, end: 16 * 60 };
 
@@ -74,9 +75,11 @@ function askPerson({ existing, group, others, anchor }) {
   const rotationBox = h("div", {},
     field("Prima zi lucrată", first, "Ciclul merge mai departe singur, lună după lună, de la această zi."),
     ...days.map((day, i) => h("div", { class: "form-row" }, h("b", { class: "form-day" }, `Ziua ${i + 1}`), field("De la", day.from), field("Până la", day.to))));
+  const manualBox = h("small", { class: "muted" }, "Pontajul lui rămâne la zero: nu se pune nimic singur, orele se scriu de mână în zilele în care a lucrat.");
   const showKind = () => {
     weekdayBox.hidden = kind.value !== "weekdays";
     rotationBox.hidden = kind.value !== "rotation";
+    manualBox.hidden = kind.value !== "manual";
   };
   showKind();
 
@@ -90,7 +93,9 @@ function askPerson({ existing, group, others, anchor }) {
     if (others.some((other) => nameKey(other) === nameKey(cleaned))) return fail("Există deja o persoană cu acest nume.");
     const time = (input) => parseHm(input.value);
     let next;
-    if (kind.value === "weekdays") {
+    if (kind.value === "manual") {
+      next = { kind: "manual" };
+    } else if (kind.value === "weekdays") {
       const [start, end] = [time(from), time(to)];
       if (!Number.isInteger(start) || !Number.isInteger(end)) return fail("Scrie orele ca 08:00 și 16:00.");
       next = { kind: "weekdays", start, end: endAfter(start, end) };
@@ -117,6 +122,7 @@ function askPerson({ existing, group, others, anchor }) {
       field("Program", kind),
       weekdayBox,
       rotationBox,
+      manualBox,
       error),
     buttons: [{ label: "Anulează", value: null }, { label: existing ? "Salvează" : "Adaugă", kind: "primary", action: read }],
   });
@@ -133,7 +139,8 @@ export function createRoster({ getSettings, saveSettings }) {
   let saveTimer = null;
 
   const fail = (err) => toast(String(err), { kind: "error", timeout: 0 });
-  const staff = () => getSettings().roster ?? [];
+  // Only real people: a stray entry in the list (anything that is not a person) must never reach the screen or the backend.
+  const staff = () => (getSettings().roster ?? []).filter((member) => member && typeof member === "object");
   const people = () => staff().filter((member) => member.group === state.group).sort((a, b) => a.name.localeCompare(b.name));
 
   // ---- saving ----

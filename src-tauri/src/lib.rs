@@ -24,11 +24,19 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> CmdResult<T> + Send + '
 
 #[tauri::command]
 fn load_settings(app: AppHandle) -> Settings {
-    settings_path(&app)
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|json| serde_json::from_str::<Settings>(&json).ok())
-        .map_or_else(Settings::default, Settings::migrated)
+    let saved = settings_path(&app).ok().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|json| serde_json::from_str::<Settings>(&json).ok());
+    let Some(saved) = saved else { return Settings::default() };
+    // A migration may change the plan of somebody (see `Settings::migrated`): the months already saved follow it, on the days nobody typed on.
+    let (before, version) = (saved.roster.clone(), saved.settings_version);
+    let settings = saved.migrated();
+    if settings.settings_version != version {
+        if let Ok(dir) = roster_dir(&app) {
+            let _ = roster::follow_plans(&dir, &before, &settings);
+        }
+        // Written at once, so the migration (and the months following it) happens only once.
+        let _ = save_settings(app, settings.clone());
+    }
+    settings
 }
 
 #[tauri::command]

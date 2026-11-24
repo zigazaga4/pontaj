@@ -7,7 +7,7 @@ import { h } from "./dom.js";
  * @param {Node|string|((close: (value?: any) => void) => Node)} options.body
  *        the content (a form, a list…); a function gets `close(value)` so that something inside can close the dialog
  * @param {{label:string, kind?:string, value?:any, action?:()=>any}[]} [options.buttons]
- *        `action()` runs when the button is pressed; returning `undefined` keeps the dialog open (invalid input),
+ *        a button without `value` closes with true; `value: null` closes with null (cancel). `action()` runs when the button is pressed; returning `undefined` keeps the dialog open (invalid input),
  *        anything else is the result.
  * @param {boolean} [options.wide]
  */
@@ -25,7 +25,8 @@ export function showDialog({ title, body, buttons = [{ label: "Închide", kind: 
       }
     };
     const press = (button) => {
-      if (!button.action) return close(button.value ?? true);
+      // A button with an explicit `value: null` (Anulează, Renunță) closes with null, not with true: a cancelled form is no answer.
+      if (!button.action) return close("value" in button ? button.value : true);
       const result = button.action();
       if (result !== undefined) close(result);
     };

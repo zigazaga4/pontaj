@@ -1,11 +1,12 @@
 //! User-tunable rules. Defaults reproduce how the payroll team builds the
 //! timesheet by hand from the tachograph report.
 
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::catb::CatbSettings;
 use crate::leave::LeavePlan;
-use crate::roster::StaffMember;
+use crate::roster::{Plan, StaffMember};
 use crate::time::parse_hm;
 use crate::timesheet::display_name;
 
@@ -23,7 +24,12 @@ pub enum NightSource {
 /// Bumped whenever a default changes in a way that must also reach settings saved by older versions.
 /// 2: night hours are 00:00–07:00, measured on the written intervals.
 /// 3: every hour of the night is written, with no minimum (the old default asked for 3 hours at least: [`OLD_NIGHT_THRESHOLD_MIN`]).
-pub const SETTINGS_VERSION: u32 = 3;
+/// 4: the people whose pontaj is written by hand ([`BY_HAND`]) have no plan any more, so their hours come out zero.
+pub const SETTINGS_VERSION: u32 = 4;
+
+/// People of the staff list whose pontaj is special: it is written by hand, so the plan gives them no hours (zero). Names are
+/// compared the way the pontaj writes them.
+const BY_HAND: [&str; 1] = ["ERTUTK RAMONA"];
 
 /// The minimum night work (3 hours) that was the default before version 3. Settings still holding exactly this are moved to
 /// "no minimum"; any other value was the office's own choice and stays.
@@ -32,6 +38,17 @@ const OLD_NIGHT_THRESHOLD_MIN: i32 = 180;
 /// Settings files written before the version existed count as version 0.
 fn legacy_version() -> u32 {
     0
+}
+
+/// A list read entry by entry: an entry that is not a valid `T` is left out, where it would make the whole settings unreadable (the
+/// office would lose its choices, or every command would be refused). Used for the lists the screen edits.
+fn lenient_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let entries = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(entries.into_iter().filter_map(|entry| serde_json::from_value(entry).ok()).collect())
 }
 
 /// How the start/end times of a day are written.
@@ -86,8 +103,10 @@ pub struct Settings {
     pub tir_drivers: Vec<String>,
     /// The office, garage and city staff, each with the plan their hours are inferred from (see [`crate::roster`]).
     /// A file saved before this existed starts with the list of [`crate::roster::seed`].
+    #[serde(deserialize_with = "lenient_list")]
     pub roster: Vec<StaffMember>,
     /// Leaves written down in advance, for Categoria B and for the office, garage and city staff (see [`crate::leave`]).
+    #[serde(deserialize_with = "lenient_list")]
     pub leaves: Vec<LeavePlan>,
 }
 
@@ -122,7 +141,7 @@ impl Default for Settings {
 
 impl Settings {
     /// Brings settings saved by an older version up to the current defaults.
-    /// Version 2 moved the night to 00:00–07:00 (from the written intervals); version 3 dropped the 3-hour minimum for the
+    /// Version 4 takes the plan from the people whose pontaj is written by hand. Version 2 moved the night to 00:00–07:00 (from the written intervals); version 3 dropped the 3-hour minimum for the
     /// night hours (a minimum the office chose itself stays); everything else the user set is kept.
     pub fn migrated(mut self) -> Self {
         let current = Settings::default();
@@ -133,6 +152,12 @@ impl Settings {
         }
         if self.settings_version < 3 && self.night_threshold_min == OLD_NIGHT_THRESHOLD_MIN {
             self.night_threshold_min = current.night_threshold_min;
+        }
+        if self.settings_version < 4 {
+            for member in self.roster.iter_mut().filter(|m| BY_HAND.contains(&display_name(&m.name, true).as_str())) {
+                member.plan = Plan::Manual;
+                member.note.clear();
+            }
         }
         self.settings_version = SETTINGS_VERSION;
         self
@@ -199,6 +224,36 @@ mod tests {
         let chosen = Settings { night_threshold_min: 180, ..Settings::default() };
         let json = serde_json::to_string(&chosen).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap().migrated().night_threshold_min, 180);
+    }
+
+    #[test]
+    fn the_pontaj_written_by_hand_has_no_plan_in_the_list_the_app_starts_with_and_in_files_saved_before() {
+        let by_hand = |s: &Settings| s.roster.iter().find(|m| display_name(&m.name, true) == "ERTUTK RAMONA").map(|m| (m.plan.clone(), m.note.clone())).unwrap();
+        assert_eq!(by_hand(&Settings::default()), (Plan::Manual, String::new()));
+        // A file saved by 0.7.5: the list has her on a weekday plan, with the note the seed had; the others keep their plans.
+        let mut old = Settings { settings_version: 3, ..Settings::default() };
+        let person = old.roster.iter_mut().find(|m| display_name(&m.name, true) == "ERTUTK RAMONA").unwrap();
+        person.plan = Plan::Weekdays { start: 480, end: 720 };
+        person.note = "Verific-o.".into();
+        let other = old.roster.iter().find(|m| display_name(&m.name, true) != "ERTUTK RAMONA").unwrap().plan.clone();
+        let migrated = old.migrated();
+        assert_eq!(by_hand(&migrated), (Plan::Manual, String::new()));
+        assert_eq!(migrated.roster.iter().find(|m| display_name(&m.name, true) != "ERTUTK RAMONA").unwrap().plan, other);
+        // Once on version 4 the office may give her a plan again and it stays.
+        let mut chosen = Settings::default();
+        chosen.roster.iter_mut().find(|m| display_name(&m.name, true) == "ERTUTK RAMONA").unwrap().plan = Plan::Weekdays { start: 480, end: 960 };
+        assert_eq!(by_hand(&chosen.migrated()).0, Plan::Weekdays { start: 480, end: 960 });
+    }
+
+    #[test]
+    fn an_entry_of_the_lists_that_is_not_a_person_or_a_leave_is_left_out_and_nothing_else_is_lost() {
+        // What a cancelled form once put in the list: the settings were refused and the whole app stopped working.
+        let json = r#"{ "companyName": "EXEMPLU SRL", "roster": [true, { "name": "POPESCU ION", "function": "Șofer", "group": "office", "plan": { "kind": "manual" } }, "x", null, { "name": "FĂRĂ PLAN" }],
+                        "leaves": [null, 5, { "id": "L1", "group": "office", "name": "POPESCU ION", "code": "CO", "from": "2026-12-14", "to": "2026-12-18" }] }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.company_name, "EXEMPLU SRL");
+        assert_eq!(s.roster.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["POPESCU ION"]);
+        assert_eq!(s.leaves.len(), 1);
     }
 
     #[test]
