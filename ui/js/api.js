@@ -41,6 +41,8 @@ export const api = {
   /** "Reglează după Excel": asks for a file, gives back { sheet, report } with the hours of the file (nothing saved), or null when no file was chosen. */
   catbReconcile: (sheet, settings) => invoke("catb_reconcile", { sheet, settings }),
   catbSave: (sheet) => invoke("catb_save", { sheet }),
+  /** A planned leave taken back: the days it marked in the saved months go back as they were (call before removing it from the settings). */
+  leavesStrip: (plan, settings) => invoke("leaves_strip", { plan, settings }),
   appVersion: () => invoke("app_version"),
   /** { version, notes } of a newer release, or null. Rejects when GitHub cannot be reached. */
   checkUpdate: () => invoke("check_update"),

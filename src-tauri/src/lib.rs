@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use pontaj_core::timesheet::Group;
-use pontaj_core::{catb, combined, history, pontaj_file, recompute, roster, Settings, Timesheet};
+use pontaj_core::leave::LeavePlan;
+use pontaj_core::{catb, combined, history, leave, pontaj_file, recompute, roster, Settings, Timesheet};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -252,6 +253,13 @@ async fn catb_save(app: AppHandle, sheet: catb::Sheet) -> CmdResult<()> {
     blocking(move || catb::store::save(&catb_dir(&app)?, &sheet).map_err(|e| e.to_string())).await
 }
 
+/// A planned leave taken back: the days it marked in the saved months (Categoria B, or the staff of its group) are put back as
+/// they were. The screen calls this before it removes the plan from the settings, then opens the month again.
+#[tauri::command]
+async fn leaves_strip(app: AppHandle, plan: LeavePlan, settings: Settings) -> CmdResult<()> {
+    blocking(move || leave::strip_saved(&plan, &roster_dir(&app)?, &catb_dir(&app)?, &settings).map_err(|e| e.to_string())).await
+}
+
 /// Opens a file with the system's default application (Excel, Numbers...).
 #[tauri::command]
 fn open_file(path: String) -> CmdResult<()> {
@@ -344,6 +352,7 @@ pub fn run() {
             catb_move_trip,
             catb_reconcile,
             catb_save,
+            leaves_strip,
             open_file,
             app_version,
             check_update,

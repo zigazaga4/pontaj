@@ -12,10 +12,11 @@ pub mod seed;
 
 use std::path::{Path, PathBuf};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::calendar;
+use crate::leave::{touches, LeavePlan};
 use crate::store;
 use crate::rules;
 use crate::settings::Settings;
@@ -104,8 +105,38 @@ pub fn employee(member: &StaffMember, year: i32, month: u32, plain_names: bool) 
         group: member.group,
         norm_hours: None,
         activities: Vec::new(),
+        applied_leaves: Vec::new(),
         days,
         totals: Totals::default(),
+    }
+}
+
+/// Puts the planned leaves ([`LeavePlan`]) that touch the month on the days the person would work: those days carry the code of the
+/// leave instead of the shift. Days off stay empty, and a day that already has a code keeps it. Each plan is applied once per
+/// person and month (the person remembers it in `applied_leaves`), so a day cleared by hand does not get its leave back.
+fn apply_leaves(employee: &mut Employee, member: &StaffMember, year: i32, month: u32, plans: &[LeavePlan]) {
+    for plan in plans.iter().filter(|p| p.group == member.group && p.has_known_code() && p.is_for(member.group, &member.name, None)) {
+        let days = plan.days_in(year, month);
+        if days.is_empty() || employee.applied_leaves.contains(&plan.id) {
+            continue;
+        }
+        for date in days.into_iter().filter(|date| member.plan.shift_on(*date).is_some()) {
+            let Some(day) = employee.days.get_mut(date.day0() as usize) else { continue };
+            if day.code.is_none() {
+                *day = DayEntry { day: day.day, code: Some(plan.code.clone()), ..Default::default() };
+            }
+        }
+        employee.applied_leaves.push(plan.id.clone());
+    }
+}
+
+/// [`apply_leaves`] for everybody of the sheet who is on the staff list.
+fn apply_plans(sheet: &mut Timesheet, staff: &[StaffMember], group: Group, plans: &[LeavePlan]) {
+    let (year, month) = (sheet.year, sheet.month);
+    for employee in &mut sheet.employees {
+        if let Some(member) = staff.iter().find(|m| m.group == group && key(&m.name) == key(&employee.name)) {
+            apply_leaves(employee, member, year, month, plans);
+        }
     }
 }
 
@@ -132,6 +163,7 @@ pub fn build_sheet(staff: &[StaffMember], group: Group, year: i32, month: u32, s
         notices: Vec::new(),
         sources: Vec::new(),
     };
+    apply_plans(&mut sheet, staff, group, &settings.leaves);
     rules::recompute(&mut sheet, settings);
     sheet
 }
@@ -145,8 +177,11 @@ pub fn sync(saved: Option<Timesheet>, staff: &[StaffMember], group: Group, year:
         let kept = saved.employees.iter().find(|old| key(&old.name) == key(&employee.name)).filter(|old| old.days.len() == employee.days.len());
         if let Some(old) = kept {
             employee.days = old.days.clone();
+            employee.applied_leaves = old.applied_leaves.clone();
         }
     }
+    // The plans the saved days have not taken yet (a leave written down after the month was last saved).
+    apply_plans(&mut sheet, staff, group, &settings.leaves);
     rules::recompute(&mut sheet, settings);
     sheet
 }
@@ -157,6 +192,9 @@ pub fn regenerate(sheet: &mut Timesheet, name: &str, staff: &[StaffMember], sett
     let fresh = employee(member, sheet.year, sheet.month, settings.plain_names);
     if let Some(current) = sheet.employees.iter_mut().find(|e| key(&e.name) == key(name)) {
         current.days = fresh.days;
+        // The leaves written down in the list of leaves stay: they are not something typed on the days.
+        current.applied_leaves.clear();
+        apply_leaves(current, member, sheet.year, sheet.month, &settings.leaves);
     }
     rules::recompute(sheet, settings);
 }
@@ -186,6 +224,34 @@ pub fn save(dir: &Path, group: Group, sheet: &Timesheet) -> Result<()> {
 pub fn open(dir: &Path, group: Group, year: i32, month: u32, settings: &Settings) -> Result<Timesheet> {
     let saved: Option<Timesheet> = store::load(&group_dir(dir, group), year, month)?;
     Ok(sync(saved, &settings.roster, group, year, month, settings))
+}
+
+/// Takes a planned leave back out of the saved months of its group: the days that still carry the plan’s code go back to the
+/// person’s plan. What the office changed on other days stays. Months never saved hold nothing of it (it is applied in memory
+/// when they are opened) and the saved ones are written only when they changed.
+pub fn strip_plan(dir: &Path, plan: &LeavePlan, settings: &Settings) -> Result<()> {
+    let folder = group_dir(dir, plan.group);
+    let Some(member) = settings.roster.iter().find(|m| m.group == plan.group && plan.is_for(m.group, &m.name, None)) else { return Ok(()) };
+    for (year, month) in store::list(&folder).into_iter().filter(|(year, month)| touches(plan, *year, *month)) {
+        let Some(mut sheet) = store::load::<Timesheet>(&folder, year, month)? else { continue };
+        let fresh = employee(member, year, month, settings.plain_names);
+        let Some(current) = sheet.employees.iter_mut().find(|e| key(&e.name) == key(&member.name)) else { continue };
+        if !current.applied_leaves.contains(&plan.id) {
+            continue;
+        }
+        for date in plan.days_in(year, month) {
+            let at = date.day0() as usize;
+            if current.days.get(at).is_some_and(|day| day.code.as_deref() == Some(plan.code.as_str())) {
+                if let Some(planned) = fresh.days.get(at) {
+                    current.days[at] = planned.clone();
+                }
+            }
+        }
+        current.applied_leaves.retain(|id| *id != plan.id);
+        rules::recompute(&mut sheet, settings);
+        save(dir, plan.group, &sheet)?;
+    }
+    Ok(())
 }
 
 /// Everybody of the office, the garage and the city for a month, for the Excel file.
@@ -291,6 +357,101 @@ mod tests {
         assert_eq!(edited.employees[0].days[1].hours, Some(3.0));
         regenerate(&mut edited, "ana ionescu", &staff, &settings);
         assert_eq!(edited.employees[0].days[1].hours, Some(8.0), "back to the plan");
+    }
+
+    fn leave(id: &str, name: &str, group: Group, code: &str, from: u32, to: u32) -> LeavePlan {
+        LeavePlan { id: id.into(), group, name: name.into(), driver_id: None, code: code.into(), from: date(2026, 12, from), to: date(2026, 12, to) }
+    }
+
+    fn codes(sheet: &Timesheet, name: &str) -> Vec<(u32, String)> {
+        let employee = sheet.employees.iter().find(|e| e.name == name).unwrap();
+        employee.days.iter().filter_map(|d| d.code.clone().map(|c| (d.day, c))).collect()
+    }
+
+    #[test]
+    fn a_planned_leave_takes_only_the_days_the_person_would_work() {
+        // 14 December 2026 is a Monday: Mon 14 – Sun 20.
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let settings = Settings { roster: staff.clone(), leaves: vec![leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 20)], ..Settings::default() };
+        let sheet = build_sheet(&staff, Group::Office, 2026, 12, &settings);
+        let days: Vec<u32> = codes(&sheet, "ANA IONESCU").into_iter().map(|(day, _)| day).collect();
+        assert_eq!(days, [14, 15, 16, 17, 18], "no leave on Saturday and Sunday: she does not work them");
+        let ana = &sheet.employees[0];
+        assert_eq!(ana.totals.code_hours[0], 40.0, "five days of leave are five norm days in the CO column");
+        assert_eq!((ana.days[13].hours, ana.days[13].intervals.len()), (None, 0), "the day has no hours and no times of its own");
+        assert_eq!(ana.days[20].hours, Some(8.0), "the week after is as the plan says");
+        assert_eq!(ana.applied_leaves, ["L1"]);
+        // A leave of another group, another person or a month that is not this one changes nothing.
+        let other = Settings { leaves: vec![leave("L2", "Ana Ionescu", Group::Garage, "CO", 14, 20), leave("L3", "Alt Om", Group::Office, "CO", 14, 20)], ..settings.clone() };
+        assert!(codes(&build_sheet(&staff, Group::Office, 2026, 12, &other), "ANA IONESCU").is_empty());
+        assert!(codes(&build_sheet(&staff, Group::Office, 2026, 11, &settings), "ANA IONESCU").is_empty());
+    }
+
+    #[test]
+    fn on_a_cycle_the_leave_takes_the_shifts_and_not_the_free_days() {
+        // Two shifts of 12 hours from 1 December, then two days off: on 1, 2, 5, 6, 9, 10, 13, 14…
+        let plan = Plan::Rotation { anchor: date(2026, 12, 1), on: vec![Interval { start: 540, end: 1260 }, Interval { start: 540, end: 1260 }], off: 2 };
+        let staff = vec![member("Dragan Mirel", Group::City, plan)];
+        let settings = Settings { roster: staff.clone(), leaves: vec![leave("L1", "Dragan Mirel", Group::City, "CM", 4, 10)], ..Settings::default() };
+        let sheet = build_sheet(&staff, Group::City, 2026, 12, &settings);
+        let days: Vec<u32> = codes(&sheet, "DRAGAN MIREL").into_iter().map(|(day, _)| day).collect();
+        assert_eq!(days, [5, 6, 9, 10]);
+    }
+
+    #[test]
+    fn a_plan_is_applied_once_so_a_day_cleared_by_hand_stays_cleared() {
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let settings = Settings { roster: staff.clone(), leaves: vec![leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 18)], ..Settings::default() };
+        let dir = std::env::temp_dir().join(format!("pontaj-roster-leave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut sheet = open(&dir, Group::Office, 2026, 12, &settings).unwrap();
+        assert_eq!(codes(&sheet, "ANA IONESCU").len(), 5, "applied when the month is opened, though nothing was saved yet");
+        // The office clears the 16th and types 4 hours on it; the month is saved.
+        sheet.employees[0].days[15].code = None;
+        sheet.employees[0].days[15].override_hours = Some(4.0);
+        rules::recompute(&mut sheet, &settings);
+        save(&dir, Group::Office, &sheet).unwrap();
+        let again = open(&dir, Group::Office, 2026, 12, &settings).unwrap();
+        let days: Vec<u32> = codes(&again, "ANA IONESCU").into_iter().map(|(day, _)| day).collect();
+        assert_eq!(days, [14, 15, 17, 18]);
+        assert_eq!(again.employees[0].days[15].hours, Some(4.0));
+        // A plan written down after the month was saved is applied when it is opened next.
+        let later = Settings { leaves: vec![leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 18), leave("L2", "Ana Ionescu", Group::Office, "CM", 21, 22)], ..settings.clone() };
+        let with_second = open(&dir, Group::Office, 2026, 12, &later).unwrap();
+        assert_eq!(codes(&with_second, "ANA IONESCU").iter().filter(|(_, c)| c == "CM").map(|(d, _)| *d).collect::<Vec<_>>(), [21, 22]);
+        assert_eq!(with_second.employees[0].days[15].hours, Some(4.0), "the first plan did not come back on the 16th");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_person_put_back_on_his_plan_keeps_his_planned_leaves() {
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let settings = Settings { roster: staff.clone(), leaves: vec![leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 18)], ..Settings::default() };
+        let mut sheet = build_sheet(&staff, Group::Office, 2026, 12, &settings);
+        sheet.employees[0].days[2].override_hours = Some(3.0);
+        regenerate(&mut sheet, "Ana Ionescu", &staff, &settings);
+        assert_eq!(sheet.employees[0].days[2].hours, Some(8.0), "the typed hours are gone");
+        assert_eq!(codes(&sheet, "ANA IONESCU").len(), 5, "the leave stays");
+    }
+
+    #[test]
+    fn taking_a_plan_back_gives_its_days_back_to_the_plan_of_the_person() {
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let plan = leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 18);
+        let settings = Settings { roster: staff.clone(), leaves: vec![plan.clone()], ..Settings::default() };
+        let dir = std::env::temp_dir().join(format!("pontaj-roster-strip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut sheet = open(&dir, Group::Office, 2026, 12, &settings).unwrap();
+        sheet.employees[0].days[15].code = Some("CM".into()); // the office changed the 16th to another leave
+        rules::recompute(&mut sheet, &settings);
+        save(&dir, Group::Office, &sheet).unwrap();
+        strip_plan(&dir, &plan, &settings).unwrap();
+        let without = Settings { leaves: Vec::new(), ..settings.clone() };
+        let back = open(&dir, Group::Office, 2026, 12, &without).unwrap();
+        assert_eq!(codes(&back, "ANA IONESCU"), [(16, "CM".to_string())], "only what the plan put there is gone");
+        assert_eq!(back.employees[0].days[13].hours, Some(8.0), "the 14th follows the plan again");
+        assert!(back.employees[0].applied_leaves.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

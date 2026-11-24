@@ -166,6 +166,23 @@ fn main() {
                 Err(e) => json!({ "error": e.to_string() }),
             }
         }
+        // The preview saves into the folder named by `CATB_DIR` too (a temp one in the tests), like the app does.
+        "catb_save" => {
+            let sheet: catb::Sheet = serde_json::from_value(get("sheet")).expect("sheet");
+            match catb::store::save(&PathBuf::from(std::env::var("CATB_DIR").unwrap_or_default()), &sheet) {
+                Ok(()) => json!(null),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        // A planned leave taken back: its days leave the saved months of `ROSTER_DIR` / `CATB_DIR`.
+        "leaves_strip" => {
+            let plan: pontaj_core::leave::LeavePlan = serde_json::from_value(get("plan")).expect("plan");
+            let catb_dir = PathBuf::from(std::env::var("CATB_DIR").unwrap_or_default());
+            match pontaj_core::leave::strip_saved(&plan, &roster_dir(), &catb_dir, &settings) {
+                Ok(()) => json!(null),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
         // "Reglează după Excel": the file the native dialog would pick is the one named by `RECONCILE_FILE`.
         "catb_reconcile" => {
             let sheet: catb::Sheet = serde_json::from_value(get("sheet")).expect("sheet");

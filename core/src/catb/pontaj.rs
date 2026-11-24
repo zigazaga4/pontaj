@@ -191,6 +191,7 @@ fn employee(driver: &Driver, sheet: &Sheet, settings: &Settings) -> Employee {
         group: Group::CatB,
         norm_hours: Some(sheet.cap_min / 60),
         activities: Vec::new(),
+        applied_leaves: Vec::new(),
         days,
         totals: Totals::default(),
     };

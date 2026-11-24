@@ -311,6 +311,19 @@ pub struct Totals {
     pub leave_days: BTreeMap<String, i32>,
 }
 
+/// A day of leave on which the driver has a trip: the leave was chosen (or planned in advance) and then the API brought a trip
+/// for the same day. The office says whether he worked that day (the leave goes, the trips count) or not (the trips are taken
+/// out of the pontaj, the leave counts). Derived by [`super::recompute`] from [`Driver::leaves`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LeaveConflict {
+    pub date: Option<NaiveDate>,
+    /// The kind of leave of the day ([`LEAVE_TYPES`]).
+    pub code: String,
+    /// Ids of the trips that take the day (those the office has not taken out).
+    pub trips: Vec<String>,
+}
+
 /// A way to bring a driver under the monthly ceiling: take the whole day `date` out of the pontaj. Only a suggestion: the
 /// office applies it or not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -383,6 +396,9 @@ pub struct Driver {
     /// Days the office marked as leave: date → code of the kind of leave ([`LEAVE_TYPES`]). Only a day without any trip
     /// ([`Driver::free_days`]) counts as leave; if a trip shows up on it later, the leave stays here but counts nowhere.
     pub leaves: BTreeMap<NaiveDate, String>,
+    /// Ids of the planned leaves ([`crate::leave::LeavePlan`]) already put in [`Driver::leaves`], so each plan is applied once:
+    /// a leave the office took off a day does not come back from the plan.
+    pub applied_leaves: Vec<String>,
     /// The time the office typed for the days brought up to a full day: date → [`FillEdit`].
     pub fills: BTreeMap<NaiveDate, FillEdit>,
     /// Days whose hours were fixed by hand, in minutes (date → minutes): the day counts exactly these, whatever its trips,
@@ -398,6 +414,8 @@ pub struct Driver {
     /// The days of the month on which the driver has no trip at all (weekends and holidays included): the days that can
     /// be marked as leave.
     pub free_days: Vec<NaiveDate>,
+    /// Leave days on which a trip arrived (see [`LeaveConflict`]); empty when every leave day is free.
+    pub leave_conflicts: Vec<LeaveConflict>,
     pub pauses: Vec<Pause>,
     pub days: Vec<DayRow>,
     /// The weekly checks (time on trips, days without work), one per block of 7 days.

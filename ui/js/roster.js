@@ -3,10 +3,11 @@
 // only shows them, so a day can be changed when something differs. The people and their plans live in the settings (`roster`);
 // the days the office changed are saved per group and month (see `roster_save`).
 import { api } from "./api.js";
-import { $, h, toast, busy } from "./dom.js";
+import { $, h, field, toast, busy } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { renderGrid, refreshGrid, renderDetails } from "./grid.js";
 import { chip } from "./catb_driver.js";
+import { askLeaves } from "./leaves.js";
 import { monthFields } from "./month_bar.js";
 import { hhmm, hoursText, MONTHS, parseHm } from "./time.js";
 
@@ -58,7 +59,6 @@ function askPerson({ existing, group, others, anchor }) {
   const weekday = plan.kind === "weekdays" ? plan : { start: 8 * 60, end: 16 * 60 };
 
   const text = (value, attrs = {}) => h("input", { type: "text", value, spellcheck: "false", ...attrs });
-  const field = (label, input, hint) => h("label", { class: "field" }, h("span", {}, label), input, hint ? h("small", {}, hint) : null);
   const name = text(person.name, { maxlength: 60 });
   const job = text(person.function, { maxlength: 60 });
   const where = h("select", {}, Object.values(GROUPS).map((g) => h("option", { value: g.id, selected: g.id === person.group }, g.label)));
@@ -223,11 +223,47 @@ export function createRoster({ getSettings, saveSettings }) {
     await queue;
   }
 
+  // ---- leaves written down in advance (in the settings, for every month) ----
+
+  const plansOfGroup = () => (getSettings().leaves ?? []).filter((plan) => plan.group === state.group);
+
+  /** Saves the new list of plans and opens the month again from disk: the plans put their days on it as it is opened. */
+  async function setLeaves(change) {
+    await queue;
+    await flush();
+    await saveSettings({ ...getSettings(), leaves: change(getSettings().leaves ?? []) });
+    state.sheet = await api.rosterOpen(state.group, state.year, state.month, getSettings());
+    renderAll();
+  }
+
+  const addLeave = (plan) => setLeaves((all) => [...all, plan]);
+
+  /** Takes the plan back out of the saved months first (they hold its days), then out of the list. */
+  async function removeLeave(plan) {
+    await queue;
+    await flush();
+    await api.leavesStrip(plan, getSettings());
+    await setLeaves((all) => all.filter((p) => p.id !== plan.id));
+  }
+
+  function openLeaves() {
+    return askLeaves({
+      title: `Concedii · ${GROUPS[state.group].label}`,
+      group: state.group,
+      people: people().map((member) => ({ name: member.name })),
+      getPlans: plansOfGroup,
+      add: addLeave,
+      remove: removeLeave,
+      note: "Concediul se pune pe zilele în care persoana ar lucra după program; zilele libere rămân libere. Poți scrie și concedii pentru luni care nu au început încă.",
+    });
+  }
+
   // ---- drawing ----
 
   function renderBar() {
     $("#roster-bar").replaceChildren(
       ...monthFields(state, openMonth, today),
+      h("button", { class: "btn", type: "button", title: "Scrie concedii pentru persoanele din această listă, și în avans, pentru luni care nu au început", onclick: openLeaves }, "🌴 Concedii"),
       h("span", { class: "muted" }, "Orele vin din program și intră direct în Excel. Scrie într-o zi doar dacă ceva diferă."));
   }
 

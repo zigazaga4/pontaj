@@ -53,6 +53,8 @@ pub fn monthly_cap_min(year: i32, month: u32, settings: &Settings) -> i32 {
 /// Recomputes one driver (what the screen does after each edit).
 pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &Settings) {
     let cfg = &settings.catb;
+    // Leaves written down in advance are put on the driver's days before anything is counted (once per plan).
+    super::leaves::apply(driver, year, month, &settings.leaves);
     for trip in &mut driver.trips {
         trip.eff = effective(trip, cfg);
     }
@@ -60,6 +62,7 @@ pub fn recompute_driver(driver: &mut Driver, year: i32, month: u32, settings: &S
     driver.trips.sort_by_key(|t| (t.eff.departure, t.id.clone()));
     driver.free_days = free_days(&driver.trips, year, month);
     migrate_pause_leaves(driver);
+    driver.leave_conflicts = super::leaves::conflicts(driver, year, month);
     driver.pauses = pauses(&driver.trips, &driver.pause_edits, settings);
     assign_work_days(driver);
     driver.days = days(driver, year, month, settings);
@@ -456,7 +459,7 @@ fn days(driver: &Driver, year: i32, month: u32, settings: &Settings) -> Vec<DayR
     list
 }
 
-fn is_leave_code(code: &str) -> bool {
+pub(super) fn is_leave_code(code: &str) -> bool {
     LEAVE_TYPES.iter().any(|(known, _)| *known == code)
 }
 
@@ -496,10 +499,20 @@ fn driver_alerts(driver: &Driver, cap_min: i32) -> Vec<Alert> {
             ),
         ));
     }
-    // A leave on a day that has a trip now (the API brought one after the office had chosen the leave) counts nowhere.
-    let blocked: Vec<String> = driver.leaves.keys().filter(|date| !driver.free_days.contains(date)).map(|date| date.format("%d.%m").to_string()).collect();
-    if !blocked.is_empty() {
-        alerts.push(Alert::new("leave_blocked", Level::Warn, format!("Ai ales concediu pe {}, dar în {} există acum o cursă, deci concediul nu se numără. Scoate concediul sau cursa.", blocked.join(", "), if blocked.len() == 1 { "ziua aceea" } else { "zilele acelea" })));
+    // A trip arrived (from the API, after the leave was chosen or planned) on a day of leave: until the office says whether he
+    // worked that day, the leave counts nowhere (see [`super::leaves`]).
+    let days: Vec<String> = driver.leave_conflicts.iter().filter_map(|c| c.date).map(|date| date.format("%d.%m").to_string()).collect();
+    if !days.is_empty() {
+        alerts.push(Alert::new(
+            "leave_trip",
+            Level::Warn,
+            format!(
+                "Vezi că am primit cursă la {} care avea concediu, pe {}. Alege pentru {} dacă a lucrat sau nu: dacă a lucrat, concediul se scoate și cursa se numără; dacă nu, cursa iese din pontaj și concediul rămâne.",
+                driver.name,
+                days.join(", "),
+                if days.len() == 1 { "ziua aceea" } else { "fiecare zi" }
+            ),
+        ));
     }
     alerts.extend(weeks::alerts(&driver.weeks));
     alerts
@@ -983,8 +996,9 @@ mod tests {
         leave_on(&mut d, &[8], "XX");
         run(&mut d);
         assert!(marked(&d).is_empty() && d.totals.leave_days.is_empty());
-        let blocked = d.alerts.iter().find(|a| a.code == "leave_blocked").expect("a leave on a day with a trip is reported");
+        let blocked = d.alerts.iter().find(|a| a.code == "leave_trip").expect("a leave on a day with a trip is reported");
         assert!(blocked.text.contains("05.10") && blocked.level == Level::Warn, "{blocked:?}");
+        assert_eq!(d.leave_conflicts.len(), 1, "one day to decide");
     }
 
     #[test]

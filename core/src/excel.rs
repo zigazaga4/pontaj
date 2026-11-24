@@ -722,6 +722,7 @@ mod tests {
             group: Group::default(),
             norm_hours: None,
             activities: Vec::new(),
+            applied_leaves: Vec::new(),
             days: vec![DayEntry::default(); 3],
             totals: Default::default(),
         };

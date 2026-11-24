@@ -20,6 +20,9 @@ export function h(tag, attrs = {}, ...children) {
 
 export const $ = (selector) => document.querySelector(selector);
 
+/** A labelled form field (the label, the input, and a small hint under it). */
+export const field = (label, input, hint) => h("label", { class: "field" }, h("span", {}, label), input, hint ? h("small", {}, hint) : null);
+
 export function toast(message, { kind = "info", action, timeout = 5000 } = {}) {
   const box = h("div", { class: `toast ${kind}` }, h("span", {}, message));
   if (action) box.append(h("button", { class: "btn small", onclick: () => { action.run(); box.remove(); } }, action.label));

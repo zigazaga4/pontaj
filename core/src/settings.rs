@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::catb::CatbSettings;
+use crate::leave::LeavePlan;
 use crate::roster::StaffMember;
 use crate::time::parse_hm;
 use crate::timesheet::display_name;
@@ -86,6 +87,8 @@ pub struct Settings {
     /// The office, garage and city staff, each with the plan their hours are inferred from (see [`crate::roster`]).
     /// A file saved before this existed starts with the list of [`crate::roster::seed`].
     pub roster: Vec<StaffMember>,
+    /// Leaves written down in advance, for Categoria B and for the office, garage and city staff (see [`crate::leave`]).
+    pub leaves: Vec<LeavePlan>,
 }
 
 impl Default for Settings {
@@ -112,6 +115,7 @@ impl Default for Settings {
             catb: CatbSettings::default(),
             tir_drivers: crate::roster::seed::tir_drivers(),
             roster: crate::roster::seed::staff(),
+            leaves: Vec::new(),
         }
     }
 }

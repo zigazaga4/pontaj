@@ -5,7 +5,8 @@ import { holdRow, rowIdOf } from "./anchor.js";
 import { createAutosave } from "./autosave.js";
 import { $, h, toast, busy } from "./dom.js";
 import { showDialog } from "./dialog.js";
-import { askNewTrip, chip, renderCatbDriver } from "./catb_driver.js";
+import { askNewTrip, chip, renderCatbDriver, resolveLeaveConflict } from "./catb_driver.js";
+import { askLeaveConflicts, askLeaves } from "./leaves.js";
 import { flaggedWeeks } from "./catb_weeks.js";
 import { askReconcile } from "./catb_reconcile.js";
 import { monthFields } from "./month_bar.js";
@@ -140,6 +141,86 @@ export function createCatb({ getSettings, saveSettings }) {
     setHiddenDrivers((list) => list.filter((x) => x.id !== id), id);
   }
 
+  // ---- leaves written down in advance ----
+
+  const plansCatb = () => (getSettings().leaves ?? []).filter((plan) => plan.group === "catB");
+
+  /**
+   * Saves the new list of plans (it lives in the settings, so every month obeys it) and brings the open month in line: Rust puts
+   * the plans on the days of the drivers it knows. Errors go back to whoever asked (the window of leaves shows them).
+   */
+  function setLeaves(change) {
+    const turn = queue.then(async () => {
+      await saveSettings({ ...getSettings(), leaves: change(getSettings().leaves ?? []) });
+      if (!state.sheet) return;
+      state.sheet = await api.catbRecalculate(state.sheet, getSettings());
+      if (!driver()) state.driverId = state.sheet.drivers[0]?.id ?? null;
+      markDirty();
+      renderAll();
+    });
+    queue = turn.catch(() => {});
+    return turn;
+  }
+
+  const addLeave = (plan) => setLeaves((all) => [...all, plan]);
+
+  /** The plan leaves the saved months first (they hold its days), then the list; the month is opened again from what is saved. */
+  function removeLeave(plan) {
+    const turn = queue.then(async () => {
+      await flush();
+      await api.leavesStrip(plan, getSettings());
+      await saveSettings({ ...getSettings(), leaves: (getSettings().leaves ?? []).filter((p) => p.id !== plan.id) });
+      if (!state.sheet) return;
+      state.sheet = (await api.catbOpen(state.year, state.month, getSettings())) ?? state.sheet;
+      if (!driver()) state.driverId = state.sheet.drivers[0]?.id ?? null;
+      renderAll();
+    });
+    queue = turn.catch(() => {});
+    return turn;
+  }
+
+  /** The window of the plans; when it closes, a driver who already has trips on the days just written is asked about. */
+  async function openLeaves() {
+    await askLeaves({
+      title: "Concedii · Categoria B",
+      group: "catB",
+      people: (state.sheet?.drivers ?? []).map((d) => ({ name: d.name, driverId: d.id })),
+      getPlans: plansCatb,
+      add: addLeave,
+      remove: removeLeave,
+      note: "Concediul se pune pe zilele lucrătoare (luni–vineri, fără sărbători) din fiecare lună în care șoferul are curse descărcate. Dacă API-ul aduce o cursă într-o zi de concediu, aplicația te avertizează și alegi dacă a lucrat sau nu.",
+    });
+    warnLeaveConflicts();
+  }
+
+  // ---- a trip arrived on a day of leave ----
+
+  /** The days already asked about in this session (a refresh must not ask again about the same day). */
+  const asked = new Set();
+  const withConflicts = () => (state.sheet?.drivers ?? []).filter((d) => d.leaveConflicts?.length);
+
+  /** The office decides a day of leave on which a trip arrived: he worked (the leave goes) or he did not (the trips go). */
+  function resolveLeave(driverId, conflict, worked) {
+    queue = queue
+      .then(async () => {
+        const target = state.sheet?.drivers.find((d) => d.id === driverId);
+        if (!target) return;
+        resolveLeaveConflict(target, conflict, worked);
+        accept(await api.catbRecalculateDriver(target, state.sheet.year, state.sheet.month, getSettings()));
+      })
+      .catch(fail);
+    return queue;
+  }
+
+  /** Tells the office about the days of leave with a trip it was not told about yet (once per day, unless a window is open). */
+  async function warnLeaveConflicts() {
+    if (!state.sheet || document.querySelector(".modal-back")) return;
+    const fresh = withConflicts().flatMap((d) => d.leaveConflicts.map((c) => `${d.id}|${c.date}`)).filter((key) => !asked.has(key));
+    if (!fresh.length) return;
+    fresh.forEach((key) => asked.add(key));
+    await askLeaveConflicts(withConflicts, (d, conflict, worked) => resolveLeave(d.id, conflict, worked));
+  }
+
   // ---- drawing ----
 
   function renderBar() {
@@ -147,6 +228,7 @@ export function createCatb({ getSettings, saveSettings }) {
     $("#catb-bar").replaceChildren(
       ...monthFields(state, openMonth, today),
       h("button", { class: "btn primary", title: "Aduce acum din API ultimele date ale lunii. Corecturile din API (mașină, oră, loc) înlocuiesc datele vechi; ce ai modificat tu rămâne neschimbat.", onclick: fetchMonth }, state.sheet ? "⟳ Actualizează din API" : "⬇ Descarcă din API"),
+      h("button", { class: "btn", title: "Scrie concedii în avans pentru șoferi (și pentru luni care nu au început). Dacă API-ul aduce o cursă într-o zi de concediu, ești avertizat.", onclick: openLeaves }, "🌴 Concedii"),
       state.sheet && h("button", { class: "btn", title: "Pentru cazul în care orele au fost schimbate direct în Excel: alegi fișierul Excel și orele din aplicație se aduc la ce scrie în el (vezi mai întâi ce se schimbă).", onclick: reconcileWithExcel }, "⇄ Reglează după Excel"),
       h("span", { class: "muted", title: "Se actualizează singură la câteva minute; ce ai modificat tu rămâne neschimbat." },
         state.sheet?.fetchedAt
@@ -416,6 +498,7 @@ export function createCatb({ getSettings, saveSettings }) {
       const what = done && describeSync(done);
       if (what) toast(`Actualizat din API: ${what}. Ce ai modificat tu a rămas neschimbat.${state.sheet.notices.length ? " Vezi observațiile de sub bară." : ""}`, { kind: "ok", timeout: 7000 });
       renderBar();
+      if (done) warnLeaveConflicts();
     } catch (err) {
       state.refreshError = String(err);
       nextRefreshAt = Date.now() + REFRESH_RETRY_MS;
@@ -448,6 +531,7 @@ export function createCatb({ getSettings, saveSettings }) {
         const what = describeSync(done);
         toast(`${what ? `Actualizat din API: ${what}.` : "Nimic nou în API."} Ce ai modificat tu a rămas neschimbat.${note}`, { kind: "ok", timeout: 6000 });
       }
+      warnLeaveConflicts();
     } catch (err) {
       fail(err);
     } finally {

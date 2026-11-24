@@ -103,6 +103,9 @@ pub struct Employee {
     /// The rows read from the report(s); editing them re-derives every day.
     #[serde(default)]
     pub activities: Vec<Segment>,
+    /// Ids of the planned leaves ([`crate::leave::LeavePlan`]) already put on this person's days, so each one is applied once.
+    #[serde(default)]
+    pub applied_leaves: Vec<String>,
     pub days: Vec<DayEntry>,
     pub totals: Totals,
 }
@@ -256,6 +259,7 @@ pub fn build(reports: Vec<DriverReport>, settings: &Settings) -> Option<Timeshee
                 group: Group::default(),
                 norm_hours: None,
                 activities: report.segments,
+                applied_leaves: Vec::new(),
                 days: (1..=n_days).map(|day| DayEntry { day, ..Default::default() }).collect(),
                 totals: Totals::default(),
             }

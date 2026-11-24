@@ -495,6 +495,23 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .leave-day.excluded { opacity: .6; }
 .leave-select { padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12.5px; color: var(--text); background: #fff; }
 .leave-select.manual { border-color: var(--manual); color: var(--manual); font-weight: 600; }
+/* A trip arrived on a day of leave: the card above the driver's days and the window that follows a download. */
+.leave-warning { padding: 10px 14px; border: 1px solid #f5d38a; border-radius: 10px; background: #fffaf0; color: #5c3d06; }
+.leave-warning h4 { margin: 0 0 2px; font-size: 14px; color: #92400e; }
+.leave-warning h5 { margin: 10px 0 4px; font-size: 13px; }
+.leave-warning p { margin: 2px 0 8px; font-size: 12px; }
+.leave-conflicts { display: flex; flex-direction: column; gap: 8px; }
+.leave-conflict { padding: 8px 10px; border: 1px solid #ecd9a8; border-radius: 8px; background: #fff; }
+.leave-conflict-head { display: flex; align-items: center; gap: 8px; }
+.leave-conflict-head b { text-transform: capitalize; }
+.leave-conflict ul { margin: 6px 0; padding-left: 18px; font-size: 12.5px; }
+.leave-choice { display: flex; flex-wrap: wrap; gap: 8px; }
+/* The window where leaves are written down in advance. */
+.leaves-form { margin-bottom: 8px; }
+.leaves-form .form-row .btn { margin-bottom: 10px; white-space: nowrap; }
+.leave-plans { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
+.leave-plan { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border: 1px solid #c5dccb; border-left: 3px solid #3f8f55; border-radius: 8px; background: #f6faf7; font-size: 13px; }
+.leave-plan.past { opacity: .6; }
 .pause-ctl { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .pause-fields { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
 .pause-ctl .ctl { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 11px; font-weight: 600; }

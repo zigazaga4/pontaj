@@ -5,6 +5,7 @@ pub mod catb;
 pub mod combined;
 pub mod excel;
 pub mod history;
+pub mod leave;
 pub mod pdf;
 pub mod pontaj_file;
 pub mod roster;

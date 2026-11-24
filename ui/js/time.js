@@ -84,6 +84,9 @@ export const isoDate = (iso) => (iso ? iso.slice(0, 10) : "");
 /** "05.10" of a date or date-time. */
 export const shortDate = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}` : "");
 
+/** "2026-12-14" → "14.12.2026". */
+export const longDate = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}` : "");
+
 /** The date `n` days after `date` ("2026-10-31" + 1 = "2026-11-01"). */
 export function addDays(date, n) {
   const d = new Date(`${date}T12:00:00Z`);

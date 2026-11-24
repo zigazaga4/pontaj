@@ -24,7 +24,7 @@ export const LEAVE_TYPES = [
   ["CC", "Concediu maternal"],
   ["CIM", "Contract individual de muncă"],
 ];
-const leaveName = (code) => LEAVE_TYPES.find(([c]) => c === code)?.[1] ?? code;
+export const leaveName = (code) => LEAVE_TYPES.find(([c]) => c === code)?.[1] ?? code;
 
 const STATION_NOT_COUNTED = "Staționarea nu intră în orele de lucru (nici în Excel): se arată doar ca informație și se plătește după regula ei (primele ore sunt incluse în preț).";
 
@@ -90,6 +90,23 @@ export function setLeave(driver, dates, code) {
   for (const date of dates) {
     if (code) driver.leaves[date] = code;
     else delete driver.leaves[date];
+  }
+}
+
+/**
+ * What the office decides about a day of leave on which a trip arrived (see `driver.leaveConflicts`): he worked that day (the
+ * leave goes, the trips count) or he did not (the trips leave the pontaj, as with ✕; the leave stays and counts).
+ */
+export function resolveLeaveConflict(driver, conflict, worked) {
+  if (worked) {
+    delete driver.leaves?.[conflict.date];
+    return;
+  }
+  for (const id of conflict.trips) {
+    const at = driver.trips.findIndex((trip) => trip.id === id);
+    if (at < 0) continue;
+    if (driver.trips[at].manual) driver.trips.splice(at, 1);
+    else driver.trips[at].edit.removed = true;
   }
 }
 
@@ -644,7 +661,9 @@ export function renderCatbDriver(container, ctx) {
 
   // The weeks live in the checks panel; their remarks (week_hours / week_rest) say the same as the weeks, so they are not listed twice.
   const weekRemark = (a) => a.code === "week_hours" || a.code === "week_rest";
-  const alerts = (driver.weeks?.length ? driver.alerts.filter((a) => !weekRemark(a)) : driver.alerts);
+  // The remark about a trip on a day of leave is the card above (it has the answers), so it is not listed again.
+  const listed = driver.alerts.filter((a) => a.code !== "leave_trip");
+  const alerts = (driver.weeks?.length ? listed.filter((a) => !weekRemark(a)) : listed);
   const weekFlags = flaggedWeeks(driver);
   const weeks = weeksBody(driver, { info: (date) => dayInfo(sheet, date), onToggle: (date) => edit((d) => toggleDay(d, date)) });
   const red = alerts.some((a) => a.level === "alert");
@@ -703,12 +722,43 @@ export function renderCatbDriver(container, ctx) {
   for (const run of freeRuns(driver.freeDays ?? [])) blocks.push({ date: run[0], draw: () => leaveRunRows(driver, sheet, run, edit) });
   blocks.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
+  // A trip arrived on a day of leave: the office says whether he worked (it is not hidden among the other remarks).
+  const onLeave = driver.leaveConflicts?.length
+    ? h("section", { class: "leave-warning" },
+        h("h4", {}, "⚠ Vezi că am primit cursă la persoana asta care avea concediu."),
+        h("p", { class: "muted" }, "Alege pentru fiecare zi dacă a lucrat sau nu. Până atunci concediul zilei nu se numără."),
+        leaveConflictRows(driver, (conflict, worked) => edit((d) => resolveLeaveConflict(d, conflict, worked))))
+    : null;
+
   container.replaceChildren(
     sticky,
     h("div", { class: "driver-body" },
+      onLeave,
       facts,
       review,
       blocks.length ? h("div", { class: "days" }, blocks.map((block) => block.draw())) : h("div", { class: "empty-note" }, "Șoferul nu are curse în luna aceasta.")));
+}
+
+/**
+ * The days of leave on which a trip arrived, each with its trips and the two answers: he worked that day, or he did not.
+ * `choose(conflict, worked)` does the rest (see [`resolveLeaveConflict`]).
+ */
+export function leaveConflictRows(driver, choose) {
+  const tripLine = (id) => {
+    const trip = driver.trips.find((t) => t.id === id);
+    if (!trip) return null;
+    const { departure, arrival, from, to } = trip.eff;
+    return h("li", {}, `${isoClock(departure)}${arrival ? `–${isoClock(arrival)}` : ""} · ${from} → ${to}`, trip.generated ? h("small", { class: "muted" }, " (adăugată de aplicație)") : null);
+  };
+  return h("div", { class: "leave-conflicts" }, (driver.leaveConflicts ?? []).map((conflict) =>
+    h("div", { class: "leave-conflict", "data-row": `leave-conflict:${conflict.date}` },
+      h("div", { class: "leave-conflict-head" },
+        h("b", {}, `${weekdayName(conflict.date)} ${shortDate(conflict.date)}`),
+        h("span", { class: "pill code" }, `${leaveName(conflict.code)} (${conflict.code})`)),
+      h("ul", {}, conflict.trips.map(tripLine)),
+      h("div", { class: "leave-choice" },
+        h("button", { class: "btn small", type: "button", title: "Concediul acestei zile se scoate și cursele se numără în pontaj.", onclick: () => choose(conflict, true) }, "A lucrat în ziua aceea"),
+        h("button", { class: "btn small", type: "button", title: "Cursele acestei zile ies din pontaj (le poți pune la loc cu ↺) și concediul rămâne.", onclick: () => choose(conflict, false) }, "N-a lucrat (rămâne concediu)")))));
 }
 
 /** Column captions of the trip rows, with the class of the cell they sit over (the rows use the same grid). */

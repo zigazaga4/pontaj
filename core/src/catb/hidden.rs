@@ -25,6 +25,7 @@ pub fn is_hidden(hidden: &[HiddenDriver], id: i64) -> bool {
 /// recomputed when he comes back).
 fn stripped(mut driver: Driver) -> Driver {
     driver.free_days.clear();
+    driver.leave_conflicts.clear();
     driver.pauses.clear();
     driver.days.clear();
     driver.totals = Default::default();
