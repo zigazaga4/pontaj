@@ -263,6 +263,12 @@ fn write_header(ws: &mut Worksheet, sheet: &Timesheet, st: &Styles, cols: &Cols,
     Ok(())
 }
 
+/// The formula of a day that has hours from the tachograph and a formula of Categoria B: `=6+N(IF(…))` (the formula of Categoria B gives
+/// an empty text on a day with no hours, and `N` of it is 0).
+fn with_tachograph(tachograph: f64, formula: &str) -> String {
+    format!("={tachograph}+N({})", formula.trim_start_matches('='))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_employee(
     ws: &mut Worksheet,
@@ -300,14 +306,22 @@ fn write_employee(
         let col = FIRST_DAY_COL + i as ColNum;
         let day = if info.is_off() { st.fill(WEEKEND_FILL) } else { st.base.clone() };
         let linked = hours_from.and_then(|f| f(nr - 1, info.day));
+        // Somebody on the tachograph (category D) and on Categoria B: the cell of a day with tachograph hours is yellow, the other
+        // days keep the colour of the day.
+        let tachograph = entry.tachograph_hours.filter(|hours| *hours > 0.0);
+        let hours_fmt = if tachograph.is_some() { st.fill(YELLOW) } else { day.clone() };
         match (&entry.code, entry.hours, linked) {
             (Some(code), _, _) => ws.write_string_with_format(row, col, code, &day.clone().set_bold().set_font_color(Color::RGB(CODE_FONT)))?,
             (None, hours, Some(text)) => {
+                let text = match tachograph {
+                    Some(own) => with_tachograph(own, &text),
+                    None => text,
+                };
                 // The writer turns an empty result into "0": a blank text keeps non-calculating viewers from showing zeros.
                 let result = Formula::new(text).set_result(hours.map_or_else(|| " ".to_string(), |h| h.to_string()));
-                ws.write_formula_with_format(row, col, result, &day)?
+                ws.write_formula_with_format(row, col, result, &hours_fmt)?
             }
-            (None, Some(h), None) => ws.write_number_with_format(row, col, h, &day)?,
+            (None, Some(h), None) => ws.write_number_with_format(row, col, h, &hours_fmt)?,
             (None, None, None) => ws.write_blank(row, col, &day)?,
         };
         match entry.night_hours {

@@ -209,6 +209,25 @@ pub(crate) fn recompute_day(entry: &mut DayEntry, s: &Settings) {
     entry.night_hours = entry.override_night.map_or(auto_night, |n| (n > 0.0).then_some(n));
 }
 
+/// A day of this many hours or more written for somebody of the tachograph is told to the office (a day that long is rare and
+/// usually a mistake of the report, or two days run together).
+pub const LONG_DAY_HOURS: f64 = 12.0;
+
+/// The days of a person of the tachograph with [`LONG_DAY_HOURS`] or more, as one line for the office; `None` when there is none.
+fn long_days_notice(employee: &Employee, first: NaiveDate) -> Option<String> {
+    let days: Vec<String> = employee
+        .days
+        .iter()
+        .enumerate()
+        .filter_map(|(at, entry)| {
+            let hours = entry.hours.filter(|hours| *hours >= LONG_DAY_HOURS)?;
+            let date = first + chrono::Duration::days(at as i64);
+            Some(format!("{} ({} ore)", date.format("%d.%m"), hours.to_string().replace('.', ",")))
+        })
+        .collect();
+    (!days.is_empty()).then(|| format!("{}: a lucrat {} ore sau mai mult într-o zi, pe {}. Verifică dacă este corect.", employee.name, LONG_DAY_HOURS, days.join(", ")))
+}
+
 /// Day the activity rows land on, shift by shift; shifts outside the month are reported.
 fn place_activities(employee: &mut Employee, first: NaiveDate, merge_gap_min: i32, notices: &mut Vec<String>) {
     for entry in &mut employee.days {
@@ -283,6 +302,9 @@ pub fn recompute(sheet: &mut Timesheet, s: &Settings) {
             recompute_day(entry, s);
         }
         employee.totals = compute_totals(employee, employee.norm_hours.unwrap_or(sheet.norm_hours), s.hours_per_day);
+        if employee.group.is_tachograph() {
+            sheet.notices.extend(long_days_notice(employee, first));
+        }
     }
 }
 
@@ -393,6 +415,25 @@ mod tests {
 
     fn day(sheet: &Timesheet, d: usize) -> &DayEntry {
         &sheet.employees[0].days[d - 1]
+    }
+
+    #[test]
+    fn a_day_of_12_hours_or_more_on_the_tachograph_is_told_to_the_office() {
+        let s = Settings::default();
+        // 12:00 of work on the 15th, 11:00 on the 16th, 12:30 on the 17th (a shift over midnight, the work stays on the 17th).
+        let mut sheet = sheet_with(vec![seg(15, "05:00", "18:00", "12:00", "0:00"), seg(16, "06:00", "18:00", "11:00", "0:00"), seg(17, "05:00", "18:30", "12:30", "0:00")], &s);
+        let notices: Vec<&String> = sheet.notices.iter().filter(|n| n.contains("ore sau mai mult")).collect();
+        assert_eq!(notices.len(), 1, "one line for the person: {:?}", sheet.notices);
+        assert!(notices[0].contains("15.09 (12 ore)") && notices[0].contains("17.09") && !notices[0].contains("16.09"), "{}", notices[0]);
+        // Hours typed by hand count like the others, and the line goes when the day is corrected.
+        sheet.employees[0].days[15].override_hours = Some(14.0);
+        recompute(&mut sheet, &s);
+        assert!(sheet.notices.iter().any(|n| n.contains("16.09 (14 ore)")), "{:?}", sheet.notices);
+        sheet.employees[0].days[14].override_hours = Some(8.0);
+        sheet.employees[0].days[15].override_hours = Some(8.0);
+        sheet.employees[0].days[16].override_hours = Some(8.0);
+        recompute(&mut sheet, &s);
+        assert!(!sheet.notices.iter().any(|n| n.contains("ore sau mai mult")), "{:?}", sheet.notices);
     }
 
     #[test]

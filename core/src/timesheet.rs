@@ -159,6 +159,10 @@ pub struct DayEntry {
     pub intervals: Vec<Interval>,
     /// Grid mode only: the intervals do not add up to the hours (hand-edited day).
     pub intervals_off: bool,
+    /// Only in the one Excel file, for somebody who worked on the tachograph (category D) and on Categoria B: the part of `hours`
+    /// that comes from the tachograph. Its cell is yellow; what Categoria B adds keeps the colour of the day. See [`crate::combined`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tachograph_hours: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
