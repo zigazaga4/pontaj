@@ -127,7 +127,7 @@ mod tests {
     use crate::timesheet::Group;
 
     fn person(name: &str) -> StaffMember {
-        StaffMember { name: name.into(), function: "Șofer".into(), group: Group::Office, plan: Plan::standard_weekdays(), note: String::new() }
+        StaffMember { name: name.into(), function: "Șofer".into(), group: Group::Office, plan: Plan::standard_weekdays(), note: String::new(), moves: Vec::new() }
     }
 
     fn write(timesheet: &crate::Timesheet, name: &str) -> std::path::PathBuf {

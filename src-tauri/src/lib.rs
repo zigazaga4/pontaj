@@ -163,6 +163,13 @@ fn roster_regenerate(mut timesheet: Timesheet, name: String, settings: Settings)
     timesheet
 }
 
+/// A person's shift cycle was moved (a move added or taken back, from the day of `moved`): the saved months bring the days nobody
+/// typed on, from that day on, in line with the new cycle. `before` is the person as he was, the settings hold him as he is now.
+#[tauri::command]
+async fn roster_move_cycle(app: AppHandle, before: roster::StaffMember, moved: roster::ShiftMove, settings: Settings) -> CmdResult<()> {
+    blocking(move || roster::move_cycle(&roster_dir(&app)?, &before, moved.from, &settings).map_err(|e| e.to_string())).await
+}
+
 // ---- Categoria B: drivers' trips from the ALT API ----
 
 fn catb_dir(app: &AppHandle) -> CmdResult<PathBuf> {
@@ -342,6 +349,7 @@ pub fn run() {
             roster_open,
             roster_save,
             roster_regenerate,
+            roster_move_cycle,
             catb_months,
             catb_open,
             catb_download,

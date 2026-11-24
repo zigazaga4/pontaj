@@ -23,7 +23,7 @@ fn preview_tachograph(year: i32, month: u32, settings: &Settings) -> Timesheet {
     let names = ["Andrei Nicolae", "Arif Redin", "Badaluta Marius Adrian", "Chenaru Florin"];
     let drivers: Vec<StaffMember> = names
         .iter()
-        .map(|name| StaffMember { name: (*name).into(), function: "Șofer de autoturisme".into(), group: Group::Office, plan: Plan::standard_weekdays(), note: String::new() })
+        .map(|name| StaffMember { name: (*name).into(), function: "Șofer de autoturisme".into(), group: Group::Office, plan: Plan::standard_weekdays(), note: String::new(), moves: Vec::new() })
         .collect();
     let mut sheet = roster::build_sheet(&drivers, Group::Office, year, month, settings);
     sheet.company = "AUTO LUX TRADING SRL".into();
@@ -170,6 +170,15 @@ fn main() {
         "catb_save" => {
             let sheet: catb::Sheet = serde_json::from_value(get("sheet")).expect("sheet");
             match catb::store::save(&PathBuf::from(std::env::var("CATB_DIR").unwrap_or_default()), &sheet) {
+                Ok(()) => json!(null),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        // A shift cycle moved: the saved months of `ROSTER_DIR` follow it on the days nobody typed on.
+        "roster_move_cycle" => {
+            let before: StaffMember = serde_json::from_value(get("before")).expect("before");
+            let moved: roster::ShiftMove = serde_json::from_value(get("moved")).expect("moved");
+            match roster::move_cycle(&roster_dir(), &before, moved.from, &settings) {
                 Ok(()) => json!(null),
                 Err(e) => json!({ "error": e.to_string() }),
             }

@@ -87,6 +87,12 @@ export const shortDate = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}
 /** "2026-12-14" → "14.12.2026". */
 export const longDate = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}` : "");
 
+/** Today's date as the "YYYY-MM-DD" of this computer's clock. */
+export function isoToday() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 /** The date `n` days after `date` ("2026-10-31" + 1 = "2026-11-01"). */
 export function addDays(date, n) {
   const d = new Date(`${date}T12:00:00Z`);

@@ -31,7 +31,7 @@ fn temp(name: &str) -> PathBuf {
 }
 
 fn staff(names: &[&str], group: Group, plan: Plan) -> Vec<StaffMember> {
-    names.iter().map(|name| StaffMember { name: (*name).into(), function: "Funcție".into(), group, plan: plan.clone(), note: String::new() }).collect()
+    names.iter().map(|name| StaffMember { name: (*name).into(), function: "Funcție".into(), group, plan: plan.clone(), note: String::new(), moves: Vec::new() }).collect()
 }
 
 fn settings() -> Settings {

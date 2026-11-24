@@ -9,6 +9,7 @@ import { renderGrid, refreshGrid, renderDetails } from "./grid.js";
 import { chip } from "./catb_driver.js";
 import { askLeaves } from "./leaves.js";
 import { monthFields } from "./month_bar.js";
+import { askShifts, canMoveShifts, moveText } from "./shifts.js";
 import { hhmm, hoursText, MONTHS, parseHm } from "./time.js";
 
 const SAVE_DELAY_MS = 1200;
@@ -52,7 +53,7 @@ const endAfter = (start, end) => (end <= start ? end + 1440 : end);
  * `others` are the names already in the list, `anchor` the day a new cycle starts on.
  */
 function askPerson({ existing, group, others, anchor }) {
-  const person = existing ?? { name: "", function: "", group, plan: defaultPlan(group, anchor), note: "" };
+  const person = existing ?? { name: "", function: "", group, plan: defaultPlan(group, anchor), note: "", moves: [] };
   const plan = person.plan;
   const kinds = { weekdays: "8 ore, luni–vineri", rotation: "12 ore, 2 zile lucrate și 2 libere" };
   const shifts = plan.kind === "rotation" ? plan.on : [{ start: 9 * 60, end: 21 * 60 }, { start: 9 * 60, end: 21 * 60 }];
@@ -103,7 +104,7 @@ function askPerson({ existing, group, others, anchor }) {
       }
       next = rotation(first.value, on);
     }
-    return { name: cleaned, function: job.value.trim(), group: where.value, plan: next, note: "" };
+    return { name: cleaned, function: job.value.trim(), group: where.value, plan: next, note: "", moves: person.moves ?? [] };
   };
 
   return showDialog({
@@ -223,6 +224,38 @@ export function createRoster({ getSettings, saveSettings }) {
     await queue;
   }
 
+  // ---- the shift cycle moved by some days from a day on (in the settings, on the person) ----
+
+  const personNamed = (name) => staff().find((m) => nameKey(m.name) === nameKey(name) && m.group === state.group);
+
+  /**
+   * Saves the person with the moves `change` makes, then brings the saved months in line: the days nobody typed on follow the new
+   * cycle from the day of `moved`. The open month is read again from disk.
+   */
+  async function setMoves(name, moved, change) {
+    await queue;
+    await flush();
+    const before = personNamed(name);
+    if (!before) return;
+    const after = { ...before, moves: change(before.moves ?? []) };
+    await saveSettings({ ...getSettings(), roster: staff().map((m) => (m === before ? after : m)) });
+    await api.rosterMoveCycle(before, moved, getSettings());
+    state.sheet = await api.rosterOpen(state.group, state.year, state.month, getSettings());
+    renderAll();
+  }
+
+  function openShifts(member) {
+    return askShifts({
+      title: `Mută tura · ${member.name}`,
+      getPerson: () => personNamed(member.name) ?? member,
+      add: (move) => setMoves(member.name, move, (all) => [...all, move]),
+      remove: (move) => setMoves(member.name, move, (all) => {
+        const at = all.findIndex((m) => m.from === move.from && m.days === move.days);
+        return all.filter((_, i) => i !== at);
+      }),
+    });
+  }
+
   // ---- leaves written down in advance (in the settings, for every month) ----
 
   const plansOfGroup = () => (getSettings().leaves ?? []).filter((plan) => plan.group === state.group);
@@ -290,11 +323,13 @@ export function createRoster({ getSettings, saveSettings }) {
       h("h3", {}, `${GROUPS[state.group].label} (${list.length})`),
       h("button", { class: "btn primary", type: "button", onclick: addPerson }, "＋ Adaugă persoană"),
       ...list.map((member) =>
-        h("div", { class: "driver-row has-reset" },
+        h("div", { class: `driver-row has-reset ${canMoveShifts(member) ? "has-shift" : ""}` },
           h("button", { class: "driver", title: "Schimbă programul sau numele", onclick: () => editPerson(member) },
             h("b", {}, member.name),
             h("small", {}, member.function ? `${member.function} · ` : "", planText(member.plan)),
-            member.note ? h("small", { class: "flag warn" }, `⚠ ${member.note}`) : null),
+            member.note ? h("small", { class: "flag warn" }, `⚠ ${member.note}`) : null,
+            canMoveShifts(member) && member.moves?.length ? h("small", { class: "shift-moves", title: member.moves.map(moveText).join("\n") }, `⇄ Tura mutată: ${member.moves.length === 1 ? "o dată" : `de ${member.moves.length} ori`}`) : null),
+          canMoveShifts(member) ? h("button", { class: "driver-shift", type: "button", title: `Mută tura lui ${member.name} cu una sau mai multe zile, de la o zi încolo; ce urmează se calculează singur`, "aria-label": `Mută tura lui ${member.name}`, onclick: () => openShifts(member) }, "⇄") : null,
           h("button", { class: "driver-reset", type: "button", title: `Pune zilele lui ${member.name} la loc, după program (șterge ce ai scris pe ele în luna asta)`, "aria-label": `Zilele lui ${member.name} după program`, onclick: () => resetPerson(member) }, "↺"),
           h("button", { class: "driver-remove", type: "button", title: `Scoate-l pe ${member.name} din listă (îl poți adăuga înapoi)`, "aria-label": `Scoate pe ${member.name} din listă`, onclick: () => removePerson(member) }, "×"))));
   }

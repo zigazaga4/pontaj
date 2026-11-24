@@ -4,12 +4,7 @@
 import { h, field } from "./dom.js";
 import { showDialog } from "./dialog.js";
 import { LEAVE_TYPES, leaveConflictRows, leaveName } from "./catb_driver.js";
-import { longDate } from "./time.js";
-
-const isoToday = () => {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-};
+import { isoToday, longDate } from "./time.js";
 
 const newId = () => `L${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 

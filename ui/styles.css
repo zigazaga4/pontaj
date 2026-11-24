@@ -305,11 +305,14 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .driver-list { display: flex; flex-direction: column; gap: 6px; }
 .driver-row, .saved-month { position: relative; }
 .driver-row .driver, .saved-month .driver { width: 100%; padding-right: 34px; }
-.driver-remove, .saved-remove, .driver-reset { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 17px; line-height: 20px; text-align: center; cursor: pointer; }
+.driver-remove, .saved-remove, .driver-reset, .driver-shift { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 17px; line-height: 20px; text-align: center; cursor: pointer; }
 .driver-remove:hover, .driver-remove:focus-visible, .saved-remove:hover, .saved-remove:focus-visible { background: #fdeeee; color: var(--danger); }
 .driver-reset { right: 30px; font-size: 15px; }
-.driver-reset:hover, .driver-reset:focus-visible { background: #eef2fb; color: var(--accent-dark); }
+.driver-shift { right: 54px; font-size: 15px; }
+.driver-reset:hover, .driver-reset:focus-visible, .driver-shift:hover, .driver-shift:focus-visible { background: #eef2fb; color: var(--accent-dark); }
 .driver-row.has-reset .driver { padding-right: 58px; }
+.driver-row.has-shift .driver { padding-right: 82px; }
+.shift-moves { color: var(--accent-dark); }
 .driver-row .driver small { display: block; }
 .driver-row.has-tir .driver { padding-right: 52px; }
 
@@ -512,6 +515,10 @@ td.sum.night, td.sum.notWorked, td.sum.absences, td.sum.overtime { background: #
 .leave-plans { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
 .leave-plan { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border: 1px solid #c5dccb; border-left: 3px solid #3f8f55; border-radius: 8px; background: #f6faf7; font-size: 13px; }
 .leave-plan.past { opacity: .6; }
+.leave-plan.shift-move { border-color: #c5d3ec; border-left-color: #3f6fc8; background: #f5f8fe; }
+.shift-preview { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; }
+.shift-line { color: var(--text); }
+.shifts-form .form-row .btn { margin-bottom: 10px; white-space: nowrap; }
 .pause-ctl { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .pause-fields { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
 .pause-ctl .ctl { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 11px; font-weight: 600; }

@@ -12,7 +12,7 @@ pub mod seed;
 
 use std::path::{Path, PathBuf};
 
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::calendar;
@@ -69,6 +69,22 @@ impl Plan {
     }
 }
 
+/// A move of a person's shift cycle: from `from` on, the cycle is moved by `days` (positive = the shifts come that many days later,
+/// negative = earlier). The moves of a person add up, each one from its own day, and the cycle goes on from there by itself, month
+/// after month. Only a cycle ([`Plan::Rotation`]) can be moved: the working week has no cycle to move.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ShiftMove {
+    pub from: NaiveDate,
+    pub days: i32,
+}
+
+impl Default for ShiftMove {
+    fn default() -> Self {
+        Self { from: NaiveDate::default(), days: 0 }
+    }
+}
+
 /// A person of the office, the garage or the city, with the plan the hours are inferred from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +98,24 @@ pub struct StaffMember {
     /// What the office should check about the plan (it could not be read fully from the file it came from). Empty = nothing.
     #[serde(default)]
     pub note: String,
+    /// The moves of the shift cycle (see [`ShiftMove`]); none for most people.
+    #[serde(default)]
+    pub moves: Vec<ShiftMove>,
+}
+
+impl StaffMember {
+    /// By how many days the cycle is moved on `date`: the moves that started on or before it, added up.
+    pub fn offset_on(&self, date: NaiveDate) -> i64 {
+        self.moves.iter().filter(|m| m.from <= date).map(|m| i64::from(m.days)).sum()
+    }
+
+    /// The times of the day's shift, or `None` when the person is off that day: the plan, with the moves of the cycle taken into account.
+    pub fn shift_on(&self, date: NaiveDate) -> Option<Interval> {
+        match self.plan {
+            Plan::Rotation { .. } => self.plan.shift_on(date - Duration::days(self.offset_on(date))),
+            Plan::Weekdays { .. } => self.plan.shift_on(date),
+        }
+    }
 }
 
 /// The key two names are the same person by: the way the pontaj writes it.
@@ -94,7 +128,7 @@ fn key(name: &str) -> String {
 pub fn employee(member: &StaffMember, year: i32, month: u32, plain_names: bool) -> Employee {
     let days = (1..=calendar::days_in_month(year, month))
         .map(|day| {
-            let shift = NaiveDate::from_ymd_opt(year, month, day).and_then(|date| member.plan.shift_on(date));
+            let shift = NaiveDate::from_ymd_opt(year, month, day).and_then(|date| member.shift_on(date));
             DayEntry { day, override_intervals: shift.map(|iv| vec![iv]), ..Default::default() }
         })
         .collect();
@@ -120,7 +154,7 @@ fn apply_leaves(employee: &mut Employee, member: &StaffMember, year: i32, month:
         if days.is_empty() || employee.applied_leaves.contains(&plan.id) {
             continue;
         }
-        for date in days.into_iter().filter(|date| member.plan.shift_on(*date).is_some()) {
+        for date in days.into_iter().filter(|date| member.shift_on(*date).is_some()) {
             let Some(day) = employee.days.get_mut(date.day0() as usize) else { continue };
             if day.code.is_none() {
                 *day = DayEntry { day: day.day, code: Some(plan.code.clone()), ..Default::default() };
@@ -254,6 +288,48 @@ pub fn strip_plan(dir: &Path, plan: &LeavePlan, settings: &Settings) -> Result<(
     Ok(())
 }
 
+/// What a person's day would be in a saved month if the office had never typed on it: the plan of the person, with the planned
+/// leaves the month already took (`applied`) put on the days he works.
+fn untouched(member: &StaffMember, year: i32, month: u32, applied: &[String], settings: &Settings) -> Employee {
+    let mut fresh = employee(member, year, month, settings.plain_names);
+    let taken: Vec<LeavePlan> = settings.leaves.iter().filter(|plan| applied.contains(&plan.id)).cloned().collect();
+    apply_leaves(&mut fresh, member, year, month, &taken);
+    fresh
+}
+
+/// Do two days hold the same typing (hours, times, code)? What the program works out from them does not count.
+fn same_typing(a: &DayEntry, b: &DayEntry) -> bool {
+    a.override_hours == b.override_hours && a.override_night == b.override_night && a.override_intervals == b.override_intervals && a.code == b.code
+}
+
+/// The shift cycle of a person was moved from `from` on (a move was added or taken back): the saved months bring their days from
+/// that day on in line with the new cycle. `before` is the person as the saved days were made, the settings hold him as he is
+/// now. Only the days nobody typed on follow the new cycle; a day the office changed stays as it is. Months that were never saved
+/// need nothing (they are made from the person's plan when opened), and a saved month is written only when a day changed.
+pub fn move_cycle(dir: &Path, before: &StaffMember, from: NaiveDate, settings: &Settings) -> Result<()> {
+    let folder = group_dir(dir, before.group);
+    let Some(after) = settings.roster.iter().find(|m| m.group == before.group && key(&m.name) == key(&before.name)) else { return Ok(()) };
+    for (year, month) in store::list(&folder).into_iter().filter(|month| *month >= (from.year(), from.month())) {
+        let Some(mut sheet) = store::load::<Timesheet>(&folder, year, month)? else { continue };
+        let Some(current) = sheet.employees.iter_mut().find(|e| key(&e.name) == key(&after.name)) else { continue };
+        let (was, now) = (untouched(before, year, month, &current.applied_leaves, settings), untouched(after, year, month, &current.applied_leaves, settings));
+        let mut changed = false;
+        for (at, day) in current.days.iter_mut().enumerate() {
+            let on = NaiveDate::from_ymd_opt(year, month, day.day);
+            let (Some(old), Some(new)) = (was.days.get(at), now.days.get(at)) else { continue };
+            if on.is_some_and(|date| date >= from) && same_typing(day, old) && !same_typing(old, new) {
+                *day = new.clone();
+                changed = true;
+            }
+        }
+        if changed {
+            rules::recompute(&mut sheet, settings);
+            save(dir, before.group, &sheet)?;
+        }
+    }
+    Ok(())
+}
+
 /// Everybody of the office, the garage and the city for a month, for the Excel file.
 pub fn open_employees(dir: &Path, year: i32, month: u32, settings: &Settings) -> Result<Vec<Employee>> {
     let mut all = Vec::new();
@@ -272,7 +348,7 @@ mod tests {
     }
 
     fn member(name: &str, group: Group, plan: Plan) -> StaffMember {
-        StaffMember { name: name.into(), function: "Secretara".into(), group, plan, note: String::new() }
+        StaffMember { name: name.into(), function: "Secretara".into(), group, plan, note: String::new(), moves: Vec::new() }
     }
 
     fn hours(sheet: &Timesheet, name: &str) -> Vec<Option<f64>> {
@@ -451,6 +527,106 @@ mod tests {
         assert_eq!(codes(&back, "ANA IONESCU"), [(16, "CM".to_string())], "only what the plan put there is gone");
         assert_eq!(back.employees[0].days[13].hours, Some(8.0), "the 14th follows the plan again");
         assert!(back.employees[0].applied_leaves.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Two shifts on, two days off, from 1 December 2026: on 1, 2, 5, 6, 9, 10, 13, 14, 17, 18, 21, 22…
+    fn cycle() -> Plan {
+        Plan::Rotation { anchor: date(2026, 12, 1), on: vec![Interval { start: 540, end: 1260 }, Interval { start: 540, end: 1260 }], off: 2 }
+    }
+
+    fn mover(moves: &[(u32, i32)]) -> StaffMember {
+        StaffMember { moves: moves.iter().map(|(day, days)| ShiftMove { from: date(2026, 12, *day), days: *days }).collect(), ..member("Dragan Mirel", Group::City, cycle()) }
+    }
+
+    fn on_days(sheet: &Timesheet) -> Vec<u32> {
+        sheet.employees.iter().find(|e| e.name == "DRAGAN MIREL").unwrap().days.iter().filter(|d| d.hours.is_some()).map(|d| d.day).collect()
+    }
+
+    fn december(staff: &StaffMember) -> Vec<u32> {
+        on_days(&build_sheet(std::slice::from_ref(staff), Group::City, 2026, 12, &Settings::default()))
+    }
+
+    #[test]
+    fn a_move_shifts_the_cycle_from_its_day_on_and_the_cycle_goes_on_by_itself() {
+        assert_eq!(december(&mover(&[]))[..8], [1, 2, 5, 6, 9, 10, 13, 14]);
+        // From the 10th everything is one day later: the 10th shows what the 9th had, the 11th what the 10th had…
+        assert_eq!(december(&mover(&[(10, 1)]))[..8], [1, 2, 5, 6, 9, 10, 11, 14], "before the 10th as planned, after it the cycle is one day on");
+        assert_eq!(december(&mover(&[(10, -1)]))[..8], [1, 2, 5, 6, 9, 12, 13, 16], "one day earlier");
+        // The moves of a person add up, each one from its own day.
+        assert_eq!(mover(&[(10, 1), (20, 1)]).offset_on(date(2026, 12, 25)), 2);
+        assert_eq!(mover(&[(10, 1), (20, -3)]).offset_on(date(2026, 12, 15)), 1);
+        assert_eq!(mover(&[(10, 1), (20, -3)]).offset_on(date(2026, 12, 20)), -2);
+        assert_eq!(mover(&[(10, 2)]).offset_on(date(2026, 12, 9)), 0, "nothing changes before the day of the move");
+        // The next month goes on from the moved cycle by itself, with nobody typing anything.
+        let january = build_sheet(&[mover(&[(10, 1)])], Group::City, 2027, 1, &Settings::default());
+        assert_eq!(on_days(&january)[..6], [3, 4, 7, 8, 11, 12], "unmoved it is 2, 3, 6, 7, 10, 11: one day later");
+    }
+
+    #[test]
+    fn a_move_changes_nothing_for_somebody_on_the_working_week() {
+        let mut ana = member("Ana Ionescu", Group::Office, Plan::standard_weekdays());
+        ana.moves = vec![ShiftMove { from: date(2026, 12, 7), days: 2 }];
+        let settings = Settings::default();
+        let moved = build_sheet(std::slice::from_ref(&ana), Group::Office, 2026, 12, &settings);
+        let plain = build_sheet(&[member("Ana Ionescu", Group::Office, Plan::standard_weekdays())], Group::Office, 2026, 12, &settings);
+        assert_eq!(hours(&moved, "ANA IONESCU"), hours(&plain, "ANA IONESCU"));
+    }
+
+    #[test]
+    fn a_person_file_without_moves_is_read_and_the_moves_are_kept() {
+        // A list saved by an older version has no `moves` on its people.
+        let mut file = serde_json::to_value(member("Dragan Mirel", Group::City, cycle())).unwrap();
+        assert!(file.as_object_mut().unwrap().remove("moves").is_some());
+        let old: StaffMember = serde_json::from_value(file).unwrap();
+        assert!(old.moves.is_empty());
+        let with = mover(&[(10, 1)]);
+        let back: StaffMember = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
+    }
+
+    #[test]
+    fn a_saved_month_follows_the_moved_cycle_on_the_days_nobody_typed_on() {
+        let dir = std::env::temp_dir().join(format!("pontaj-roster-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let before = mover(&[]);
+        let settings = Settings { roster: vec![before.clone()], ..Settings::default() };
+        // December and January are saved; the office typed 4 hours on the 14th (a shift day).
+        let mut dec = open(&dir, Group::City, 2026, 12, &settings).unwrap();
+        dec.employees[0].days[13].override_hours = Some(4.0);
+        rules::recompute(&mut dec, &settings);
+        save(&dir, Group::City, &dec).unwrap();
+        save(&dir, Group::City, &open(&dir, Group::City, 2027, 1, &settings).unwrap()).unwrap();
+        // The cycle is moved one day later from the 10th.
+        let after = mover(&[(10, 1)]);
+        let moved = Settings { roster: vec![after.clone()], ..settings.clone() };
+        move_cycle(&dir, &before, date(2026, 12, 10), &moved).unwrap();
+        let dec = open(&dir, Group::City, 2026, 12, &moved).unwrap();
+        assert_eq!(on_days(&dec), [1, 2, 5, 6, 9, 10, 11, 14, 15, 18, 19, 22, 23, 26, 27, 30, 31], "before the 10th as it was, after it the new cycle");
+        assert_eq!(dec.employees[0].days[13].hours, Some(4.0), "the 14th the office typed on stays as typed");
+        assert_eq!(dec.employees[0].days[12].hours, None, "the 13th is no shift now");
+        assert_eq!(on_days(&open(&dir, Group::City, 2027, 1, &moved).unwrap())[..6], [3, 4, 7, 8, 11, 12], "the next saved month too");
+        // Taking the move back puts the cycle as it was (the typed day stays).
+        move_cycle(&dir, &after, date(2026, 12, 10), &settings).unwrap();
+        let back = open(&dir, Group::City, 2026, 12, &settings).unwrap();
+        assert_eq!(on_days(&back)[..9], [1, 2, 5, 6, 9, 10, 13, 14, 17]);
+        assert_eq!(back.employees[0].days[13].hours, Some(4.0));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_planned_leave_follows_the_moved_cycle_in_a_saved_month() {
+        let dir = std::env::temp_dir().join(format!("pontaj-roster-move-leave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let before = mover(&[]);
+        let settings = Settings { roster: vec![before.clone()], leaves: vec![leave("L1", "Dragan Mirel", Group::City, "CM", 12, 17)], ..Settings::default() };
+        save(&dir, Group::City, &open(&dir, Group::City, 2026, 12, &settings).unwrap()).unwrap();
+        assert_eq!(codes(&open(&dir, Group::City, 2026, 12, &settings).unwrap(), "DRAGAN MIREL").iter().map(|(d, _)| *d).collect::<Vec<_>>(), [13, 14, 17]);
+        let moved = Settings { roster: vec![mover(&[(10, 1)])], ..settings.clone() };
+        move_cycle(&dir, &before, date(2026, 12, 10), &moved).unwrap();
+        let sheet = open(&dir, Group::City, 2026, 12, &moved).unwrap();
+        assert_eq!(codes(&sheet, "DRAGAN MIREL").iter().map(|(d, _)| *d).collect::<Vec<_>>(), [14, 15], "the leave takes the shifts of the new cycle");
+        assert_eq!(on_days(&sheet)[..8], [1, 2, 5, 6, 9, 10, 11, 18], "the days of leave are no worked hours");
         std::fs::remove_dir_all(&dir).ok();
     }
 

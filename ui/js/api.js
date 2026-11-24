@@ -23,6 +23,8 @@ export const api = {
   rosterSave: (group, sheet) => invoke("roster_save", { group, sheet }),
   /** One person's days put back as his plan says; resolves with the recomputed sheet. */
   rosterRegenerate: (timesheet, name, settings) => invoke("roster_regenerate", { timesheet, name, settings }),
+  /** A person's shift cycle was moved from `moved.from`: the saved months follow it on the days nobody typed on. `before` = the person as he was; the settings hold him as he is now. */
+  rosterMoveCycle: (before, moved, settings) => invoke("roster_move_cycle", { before, moved, settings }),
   openFile: (path) => invoke("open_file", { path }),
   // Categoria B: the months are saved on this computer, so reopening one needs no download.
   catbMonths: () => invoke("catb_months"),
