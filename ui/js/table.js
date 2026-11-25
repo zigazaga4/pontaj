@@ -5,6 +5,17 @@ import { parseHours } from "./time.js";
 
 export const KNOWN_CODES = ["CO", "CM", "CP", "BP", "AM", "CIM", "CC", "CFP", "OLP", "N", "ZLP"];
 
+// The kinds of leave (code of the timesheet, name). The other codes are absences; OLP is the computed remainder.
+export const LEAVE_TYPES = [
+  ["CO", "Concediu de odihnă"],
+  ["CM", "Concediu medical"],
+  ["CP", "Concediu parental"],
+  ["CFP", "Concediu fără plată"],
+  ["CC", "Concediu maternal"],
+  ["CIM", "Contract individual de muncă"],
+];
+export const LEAVE_CODES = LEAVE_TYPES.map(([code]) => code);
+
 /** Turns what the user typed in an hours cell into an edit: { overrideHours, code }. */
 export function parseCellInput(text) {
   const hours = parseHours(text);

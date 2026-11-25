@@ -1,7 +1,7 @@
 // Editable monthly grid: one hours row + one night row per driver.
 import { h } from "./dom.js";
 import { DAY, clock, duration, hhmm, hoursText, parseHm, parseHours } from "./time.js";
-import { KNOWN_CODES, hoursCellEdit, isCompleteCell, whileTyping } from "./table.js";
+import { KNOWN_CODES, LEAVE_CODES, LEAVE_TYPES, hoursCellEdit, isCompleteCell, whileTyping } from "./table.js";
 import { tirToggle } from "./tir.js";
 
 // Total columns, pinned to the right edge of the grid.
@@ -9,7 +9,8 @@ const SUMS = [
   { key: "worked", label: "Lucrate" },
   { key: "night", label: "Noapte" },
   { key: "notWorked", label: "Nelucr." },
-  { key: "absences", label: "Absențe" },
+  { key: "leave", label: "Concediu", hint: "Toate tipurile de concediu (CO, CM, CP, CFP, CC, CIM), în ore" },
+  { key: "absences", label: "Absențe", hint: "Celelalte absențe (BP, AM, N, ZLP), în ore; concediul este în coloana lui" },
   { key: "overtime", label: "Supl." },
 ];
 const SUM_WIDTH = 50;
@@ -114,7 +115,7 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onN
     h("th", { class: "sticky-2" }, heading),
     days.map((d) => h("th", { class: `day ${d.weekend || d.holiday ? "off" : ""} ${d.holiday ? "holiday" : ""}`, title: d.holiday ?? "" },
       h("div", {}, d.day), h("small", {}, d.weekday))),
-    SUMS.map((s, i) => h("th", { class: "sum", style: sumStyle(i) }, s.label)),
+    SUMS.map((s, i) => h("th", { class: "sum", style: sumStyle(i), title: s.hint ?? "" }, s.label)),
   );
 
   const body = h("tbody");
@@ -198,7 +199,7 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onN
     });
 
     SUMS.forEach(({ key }, i) => {
-      hoursRow.append(h("td", { class: `sum ${key}`, rowspan: rows, style: sumStyle(i), dataset: { sum: key, se: ei } }, totalValue(emp, key)));
+      hoursRow.append(h("td", { class: `sum ${key}`, rowspan: rows, style: sumStyle(i), title: sumTitle(emp, key), dataset: { sum: key, se: ei } }, totalValue(emp, key)));
     });
     body.append(hoursRow, nightRow, ...timeRows);
   });
@@ -206,14 +207,26 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onN
   container.replaceChildren(h("table", { class: "grid", dataset: { people: sheet.employees.length } }, h("thead", {}, head), body));
 }
 
+/** The hours of every code of the person that is a leave. */
+const leaveHours = (emp) => LEAVE_TYPES.map(([code, name]) => [code, name, emp.totals.codeHours[KNOWN_CODES.indexOf(code)] ?? 0]).filter(([, , hours]) => hours);
+
 function totalValue(emp, key) {
   const t = emp.totals;
+  if (key === "leave") {
+    const leave = leaveHours(emp).reduce((sum, [, , hours]) => sum + hours, 0);
+    return leave ? hoursText(leave) : "";
+  }
   if (key === "absences") {
-    // OLP is the computed remainder, not an absence typed in the grid.
-    const absences = t.codeHours.reduce((sum, v, i) => (KNOWN_CODES[i] === "OLP" ? sum : sum + v), 0);
+    // Leave has its own column and OLP is the computed remainder: neither is an absence typed in the grid.
+    const absences = t.codeHours.reduce((sum, v, i) => (KNOWN_CODES[i] === "OLP" || LEAVE_CODES.includes(KNOWN_CODES[i]) ? sum : sum + v), 0);
     return absences ? hoursText(absences) : "";
   }
   return t[key] ? hoursText(t[key]) : "";
+}
+
+/** What the cell of a total says when the mouse rests on it: for the leave, how much of each kind. */
+function sumTitle(emp, key) {
+  return key === "leave" ? leaveHours(emp).map(([code, name, hours]) => `${name} (${code}): ${hoursText(hours)}`).join("\n") : "";
 }
 
 /** Refreshes values/classes in place (keeps focus and scroll position). */
@@ -230,7 +243,9 @@ export function refreshGrid(container, sheet) {
     if (timed && Number.isNaN(parseHm(input.value))) input.classList.add("invalid");
   });
   container.querySelectorAll("td.sum[data-sum]").forEach((td) => {
-    td.textContent = totalValue(sheet.employees[td.dataset.se], td.dataset.sum);
+    const emp = sheet.employees[td.dataset.se];
+    td.textContent = totalValue(emp, td.dataset.sum);
+    td.title = sumTitle(emp, td.dataset.sum);
   });
 }
 
@@ -282,7 +297,11 @@ export function renderDetails(target, sheet, ei, di) {
   } else {
     parts.push(h("span", { class: "muted" }, "Fără activitate în PDF"));
   }
-  if (entry.code) parts.push(h("span", { class: "pill code" }, `Absență: ${entry.code}`));
+  if (entry.code) {
+    const kind = LEAVE_CODES.includes(entry.code) ? "Concediu" : "Absență";
+    parts.push(h("span", { class: "pill code" }, `${kind}: ${entry.code}`));
+    if (entry.leaveOnFreeDay) parts.push(h("span", { class: "muted" }, "Zi liberă oricum: concediul apare în celulă, dar orele nu intră în total"));
+  }
   if (entry.hours != null) {
     const ivs = entry.intervals.map((i) => `${clock(i.start)}–${clock(i.end)}`).join(" · ");
     parts.push(h("span", {}, `Pontaj: ${hoursText(entry.hours)} ore${entry.overrideHours != null ? " (manual)" : ""} → ${ivs}`));

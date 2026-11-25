@@ -188,7 +188,7 @@ export function createCatb({ getSettings, saveSettings }) {
       getPlans: plansCatb,
       add: addLeave,
       remove: removeLeave,
-      note: "Concediul se pune pe zilele lucrătoare (luni–vineri, fără sărbători) din fiecare lună în care șoferul are curse descărcate. Dacă API-ul aduce o cursă într-o zi de concediu, aplicația te avertizează și alegi dacă a lucrat sau nu.",
+      note: "Concediul se pune pe zilele lucrătoare (luni–vineri, fără sărbători; cu „Și pe zilele libere” bifat, și sâmbăta, duminica și sărbătorile) din fiecare lună în care șoferul are curse descărcate. Dacă API-ul aduce o cursă într-o zi de concediu, aplicația te avertizează și alegi dacă a lucrat sau nu.",
     });
     warnLeaveConflicts();
   }

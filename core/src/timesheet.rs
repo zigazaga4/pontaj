@@ -27,6 +27,12 @@ pub const CODES: [(&str, &str); 11] = [
 ];
 pub const OLP: &str = "OLP";
 
+/// Is the code a leave (CO, CM, CP, CFP, CC, CIM: the kinds a planned leave can be) and not another absence? A leave has its own
+/// column and takes no part in the overtime.
+pub fn is_leave(code: &str) -> bool {
+    crate::catb::LEAVE_TYPES.iter().any(|(known, _)| *known == code)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Timesheet {
@@ -149,6 +155,11 @@ pub struct DayEntry {
     pub override_night: Option<f64>,
     pub override_intervals: Option<Vec<Interval>>,
     pub code: Option<String>,
+    /// The code is a planned leave put on a day the person is free anyway (weekend, holiday, day off of the cycle): the cell shows the
+    /// code, but the day is not in the norm, so its hours do not go into the hours of the code, into the absences or into the overtime.
+    /// Gone with the code.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub leave_on_free_day: bool,
     /// Remarks written beside some of the day's start/end times (a note on that cell in the Excel): for instance that time
     /// was added to the first departure. Only the mode that has something to say sets them.
     pub time_notes: Vec<TimeNote>,

@@ -112,6 +112,15 @@ impl StaffMember {
         self.moves.iter().filter(|m| m.from <= date).map(|m| i64::from(m.days)).sum()
     }
 
+    /// Is the day in the norm of the person (a day he works, or for somebody who types everything by hand a working day of the
+    /// calendar)? A leave on any other day is a leave on a free day.
+    pub fn works_on(&self, date: NaiveDate) -> bool {
+        match self.plan {
+            Plan::Manual => !calendar::is_weekend(date) && calendar::holiday_name(date).is_none(),
+            Plan::Weekdays { .. } | Plan::Rotation { .. } => self.shift_on(date).is_some(),
+        }
+    }
+
     /// The times of the day's shift, or `None` when the person is off that day: the plan, with the moves of the cycle taken into account.
     pub fn shift_on(&self, date: NaiveDate) -> Option<Interval> {
         match self.plan {
@@ -149,18 +158,29 @@ pub fn employee(member: &StaffMember, year: i32, month: u32, plain_names: bool) 
 }
 
 /// Puts the planned leaves ([`LeavePlan`]) that touch the month on the days the person would work: those days carry the code of the
-/// leave instead of the shift. Days off stay empty, and a day that already has a code keeps it. Each plan is applied once per
+/// leave instead of the shift. Days off stay empty (unless the plan is for the free days too, see [`LeavePlan::on_free_days`]), and a day that already has a code keeps it. Each plan is applied once per
 /// person and month (the person remembers it in `applied_leaves`), so a day cleared by hand does not get its leave back.
 fn apply_leaves(employee: &mut Employee, member: &StaffMember, year: i32, month: u32, plans: &[LeavePlan]) {
     for plan in plans.iter().filter(|p| p.group == member.group && p.has_known_code() && p.is_for(member.group, &member.name, None)) {
         let days = plan.days_in(year, month);
-        if days.is_empty() || employee.applied_leaves.contains(&plan.id) {
+        if days.is_empty() {
             continue;
         }
-        for date in days.into_iter().filter(|date| member.shift_on(*date).is_some()) {
+        if employee.applied_leaves.contains(&plan.id) {
+            // A leave taken by an older version lost the times of the shift it replaced: they come back, so the day counts its hours.
+            for date in days {
+                let Some(day) = employee.days.get_mut(date.day0() as usize) else { continue };
+                if day.code.as_deref() == Some(plan.code.as_str()) && day.override_intervals.is_none() && !day.leave_on_free_day {
+                    day.override_intervals = member.shift_on(date).map(|shift| vec![shift]);
+                }
+            }
+            continue;
+        }
+        for date in days.into_iter().filter(|date| plan.on_free_days || member.works_on(*date)) {
             let Some(day) = employee.days.get_mut(date.day0() as usize) else { continue };
             if day.code.is_none() {
-                *day = DayEntry { day: day.day, code: Some(plan.code.clone()), ..Default::default() };
+                // The leave keeps the times of the shift it takes the place of: they say how many hours the day of leave counts.
+                *day = DayEntry { day: day.day, code: Some(plan.code.clone()), override_intervals: day.override_intervals.take(), leave_on_free_day: !member.works_on(date), ..Default::default() };
             }
         }
         employee.applied_leaves.push(plan.id.clone());
@@ -451,7 +471,7 @@ mod tests {
     }
 
     fn leave(id: &str, name: &str, group: Group, code: &str, from: u32, to: u32) -> LeavePlan {
-        LeavePlan { id: id.into(), group, name: name.into(), driver_id: None, code: code.into(), from: date(2026, 12, from), to: date(2026, 12, to) }
+        LeavePlan { id: id.into(), group, name: name.into(), driver_id: None, code: code.into(), from: date(2026, 12, from), to: date(2026, 12, to), on_free_days: false }
     }
 
     fn codes(sheet: &Timesheet, name: &str) -> Vec<(u32, String)> {
@@ -643,6 +663,174 @@ mod tests {
         assert_eq!(codes(&sheet, "DRAGAN MIREL").iter().map(|(d, _)| *d).collect::<Vec<_>>(), [14, 15], "the leave takes the shifts of the new cycle");
         assert_eq!(on_days(&sheet)[..8], [1, 2, 5, 6, 9, 10, 11, 18], "the days of leave are no worked hours");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn on_free(plan: LeavePlan) -> LeavePlan {
+        LeavePlan { on_free_days: true, ..plan }
+    }
+
+    fn free_flags(sheet: &Timesheet, name: &str) -> Vec<u32> {
+        sheet.employees.iter().find(|e| e.name == name).unwrap().days.iter().filter(|d| d.leave_on_free_day).map(|d| d.day).collect()
+    }
+
+    #[test]
+    fn a_leave_for_the_free_days_too_takes_the_weekend_and_marks_those_days() {
+        // 14 December 2026 is a Monday: Mon 14 – Sun 20.
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let settings = Settings { roster: staff.clone(), leaves: vec![on_free(leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 20))], ..Settings::default() };
+        let sheet = build_sheet(&staff, Group::Office, 2026, 12, &settings);
+        let days: Vec<u32> = codes(&sheet, "ANA IONESCU").into_iter().map(|(day, _)| day).collect();
+        assert_eq!(days, [14, 15, 16, 17, 18, 19, 20], "Saturday and Sunday carry the leave too");
+        assert_eq!(free_flags(&sheet, "ANA IONESCU"), [19, 20], "only the days she is free anyway");
+        let ana = &sheet.employees[0];
+        assert_eq!(ana.totals.code_hours[0], 40.0, "the five working days are in the CO column; the weekend is not in the norm");
+        assert_eq!(ana.totals.overtime, 0.0);
+        // The same leave without the option stays on the working days.
+        let plain = Settings { leaves: vec![leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 20)], ..settings.clone() };
+        assert_eq!(codes(&build_sheet(&staff, Group::Office, 2026, 12, &plain), "ANA IONESCU").len(), 5);
+    }
+
+    #[test]
+    fn a_whole_month_of_leave_gives_the_norm_and_no_overtime() {
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let settings = Settings { roster: staff.clone(), leaves: vec![on_free(leave("L1", "Ana Ionescu", Group::Office, "CM", 1, 31))], ..Settings::default() };
+        let sheet = build_sheet(&staff, Group::Office, 2026, 12, &settings);
+        let ana = &sheet.employees[0];
+        assert_eq!(codes(&sheet, "ANA IONESCU").len(), 31, "every day of the month shows the leave");
+        assert_eq!(ana.totals.code_hours[1], f64::from(sheet.norm_hours), "the CM column holds the norm of the month, not 31 days");
+        assert_eq!((ana.totals.overtime, ana.totals.worked), (0.0, 0.0));
+    }
+
+    #[test]
+    fn on_a_cycle_a_leave_for_the_free_days_takes_the_days_off_too() {
+        // On 1, 2, 5, 6, 9, 10, 13, 14…: the days off are 3, 4, 7, 8, 11, 12.
+        let plan = Plan::Rotation { anchor: date(2026, 12, 1), on: vec![Interval { start: 540, end: 1260 }, Interval { start: 540, end: 1260 }], off: 2 };
+        let staff = vec![member("Dragan Mirel", Group::City, plan)];
+        let settings = Settings { roster: staff.clone(), leaves: vec![on_free(leave("L1", "Dragan Mirel", Group::City, "CM", 4, 10))], ..Settings::default() };
+        let sheet = build_sheet(&staff, Group::City, 2026, 12, &settings);
+        let days: Vec<u32> = codes(&sheet, "DRAGAN MIREL").into_iter().map(|(day, _)| day).collect();
+        assert_eq!(days, [4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(free_flags(&sheet, "DRAGAN MIREL"), [4, 7, 8]);
+        assert_eq!(sheet.employees[0].totals.code_hours[1], 48.0, "the four shifts of the leave count 12 hours each in the CM column");
+    }
+
+    #[test]
+    fn a_leave_counts_the_hours_of_the_shift_it_took_the_place_of() {
+        // A cycle of 12-hour shifts, a person of four hours a day and a person of eight.
+        let cycle = Plan::Rotation { anchor: date(2026, 12, 1), on: vec![Interval { start: 540, end: 1260 }, Interval { start: 540, end: 1260 }], off: 2 };
+        let staff = vec![
+            member("Dragan Mirel", Group::City, cycle),
+            member("Ana Ionescu", Group::City, Plan::Weekdays { start: 480, end: 720 }),
+            member("Dan Popa", Group::City, Plan::standard_weekdays()),
+        ];
+        let leaves = vec![
+            leave("L1", "Dragan Mirel", Group::City, "CO", 9, 14),
+            leave("L2", "Ana Ionescu", Group::City, "CO", 14, 18),
+            leave("L3", "Dan Popa", Group::City, "CO", 14, 18),
+        ];
+        let settings = Settings { roster: staff.clone(), leaves, ..Settings::default() };
+        let sheet = build_sheet(&staff, Group::City, 2026, 12, &settings);
+        let totals = |name: &str| sheet.employees.iter().find(|e| e.name == name).unwrap().totals.clone();
+        assert_eq!(totals("DRAGAN MIREL").code_hours[0], 48.0, "four shifts of 12 hours");
+        assert_eq!(totals("ANA IONESCU").code_hours[0], 20.0, "five days of 4 hours");
+        assert_eq!(totals("DAN POPA").code_hours[0], 40.0, "five days of 8 hours");
+        // The plan does not change with the leave: the hours worked and the hours of leave give what the person would have worked.
+        let dragan = totals("DRAGAN MIREL");
+        assert_eq!(dragan.worked + dragan.code_hours[0], 192.0);
+    }
+
+    #[test]
+    fn a_leave_taken_by_an_older_version_gets_the_times_of_its_shift_back_when_the_month_is_opened() {
+        let dir = std::env::temp_dir().join(format!("pontaj-roster-old-leave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cycle = Plan::Rotation { anchor: date(2026, 12, 1), on: vec![Interval { start: 540, end: 1260 }, Interval { start: 540, end: 1260 }], off: 2 };
+        let settings = Settings { roster: vec![member("Dragan Mirel", Group::City, cycle)], leaves: vec![leave("L1", "Dragan Mirel", Group::City, "CM", 9, 14)], ..Settings::default() };
+        let mut sheet = open(&dir, Group::City, 2026, 12, &settings).unwrap();
+        // The month as the older version saved it: the days of leave without the times of their shift.
+        for day in sheet.employees[0].days.iter_mut().filter(|d| d.code.is_some()) {
+            day.override_intervals = None;
+        }
+        rules::recompute(&mut sheet, &settings);
+        assert_eq!(sheet.employees[0].totals.code_hours[1], 32.0, "counted as norm days");
+        save(&dir, Group::City, &sheet).unwrap();
+        let again = open(&dir, Group::City, 2026, 12, &settings).unwrap();
+        assert_eq!(again.employees[0].totals.code_hours[1], 48.0, "now as shifts of 12 hours");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_whole_month_of_leave_on_a_cycle_is_the_hours_of_every_shift_and_no_ore_libere() {
+        let cycle = Plan::Rotation { anchor: date(2026, 12, 1), on: vec![Interval { start: 540, end: 1260 }, Interval { start: 540, end: 1260 }], off: 2 };
+        let staff = vec![member("Dragan Mirel", Group::City, cycle)];
+        let settings = Settings { roster: staff.clone(), leaves: vec![leave("L1", "Dragan Mirel", Group::City, "CO", 1, 31)], ..Settings::default() };
+        let t = build_sheet(&staff, Group::City, 2026, 12, &settings).employees[0].totals.clone();
+        assert_eq!((t.worked, t.code_hours[0], t.overtime), (0.0, 192.0, 0.0), "sixteen shifts of 12 hours, no overtime from them");
+        assert_eq!(t.code_hours[timesheet::CODES.iter().position(|(c, _)| *c == timesheet::OLP).unwrap()], 0.0, "nothing is left over as OLP");
+    }
+
+    #[test]
+    fn a_leave_is_not_an_overtime_and_not_an_absence() {
+        // Somebody on 12-hour shifts worked 144 hours: under the norm of 168, so no overtime, whatever the leave adds.
+        let cycle = Plan::Rotation { anchor: date(2026, 12, 1), on: vec![Interval { start: 540, end: 1260 }, Interval { start: 540, end: 1260 }], off: 2 };
+        let staff = vec![member("Dragan Mirel", Group::City, cycle)];
+        let settings = Settings { roster: staff.clone(), leaves: vec![leave("L1", "Dragan Mirel", Group::City, "CM", 9, 14)], ..Settings::default() };
+        let t = build_sheet(&staff, Group::City, 2026, 12, &settings).employees[0].totals.clone();
+        assert_eq!((t.worked, t.overtime), (144.0, 0.0));
+        // An absence that is not a leave (N) still counts toward the norm, as before.
+        let mut sheet = build_sheet(&staff, Group::City, 2026, 12, &Settings { roster: staff.clone(), ..Settings::default() });
+        assert_eq!(sheet.employees[0].totals.overtime, 24.0, "without any leave the shifts of the plan are 24 hours over the norm");
+        sheet.employees[0].days[0].code = Some("N".into());
+        rules::recompute(&mut sheet, &settings);
+        assert_eq!(sheet.employees[0].totals.overtime, 24.0, "the N day counts its 12 hours of shift toward the norm, as before: 180 + 12 - 168");
+    }
+
+    #[test]
+    fn the_mark_of_a_free_day_goes_when_the_code_goes() {
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let settings = Settings { roster: staff.clone(), leaves: vec![on_free(leave("L1", "Ana Ionescu", Group::Office, "CO", 19, 20))], ..Settings::default() };
+        let mut sheet = build_sheet(&staff, Group::Office, 2026, 12, &settings);
+        assert_eq!(free_flags(&sheet, "ANA IONESCU"), [19, 20]);
+        sheet.employees[0].days[18].code = None;
+        sheet.employees[0].days[19].code = Some("cm".into());
+        rules::recompute(&mut sheet, &settings);
+        assert_eq!(free_flags(&sheet, "ANA IONESCU"), [20], "the cleared day is free of the mark; the day changed to another leave keeps it");
+        assert_eq!((sheet.employees[0].totals.code_hours[0], sheet.employees[0].totals.code_hours[1]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn taking_a_leave_for_the_free_days_back_gives_the_plan_of_every_day_back() {
+        let dir = std::env::temp_dir().join(format!("pontaj-roster-free-leave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let plan = on_free(leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 20));
+        let settings = Settings { roster: staff, leaves: vec![plan.clone()], ..Settings::default() };
+        save(&dir, Group::Office, &open(&dir, Group::Office, 2026, 12, &settings).unwrap()).unwrap();
+        strip_plan(&dir, &plan, &Settings { leaves: Vec::new(), ..settings.clone() }).unwrap();
+        let sheet = open(&dir, Group::Office, 2026, 12, &Settings { leaves: Vec::new(), ..settings }).unwrap();
+        assert!(codes(&sheet, "ANA IONESCU").is_empty() && free_flags(&sheet, "ANA IONESCU").is_empty());
+        assert_eq!(sheet.employees[0].days[13].hours, Some(8.0), "Monday is her shift again");
+        assert_eq!(sheet.employees[0].days[18].hours, None, "Saturday is free again");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_excel_leaves_the_free_days_out_of_the_hours_of_the_code() {
+        use calamine::{open_workbook, Data, Reader, Xlsx};
+        let staff = vec![member("Ana Ionescu", Group::Office, Plan::standard_weekdays())];
+        let settings = Settings { roster: staff.clone(), leaves: vec![on_free(leave("L1", "Ana Ionescu", Group::Office, "CO", 14, 20))], ..Settings::default() };
+        let sheet = build_sheet(&staff, Group::Office, 2026, 12, &settings);
+        let parts = crate::combined::Parts { year: 2026, month: 12, tachograph: None, catb: None, staff: sheet.employees };
+        let path = std::env::temp_dir().join(format!("pontaj-roster-free-leave-{}.xlsx", std::process::id()));
+        crate::combined::write_xlsx(&parts, &settings, &path).unwrap();
+        let mut book: Xlsx<_> = open_workbook(&path).unwrap();
+        let first = book.sheet_names()[0].clone();
+        let formulas = book.worksheet_formula(&first).unwrap();
+        let values = book.worksheet_range(&first).unwrap();
+        let start = formulas.start().expect("formulas");
+        let (r, c, formula) = formulas.cells().find(|(_, _, f)| f.contains("COUNTIF") && f.contains("\"CO\"")).expect("the CO formula");
+        assert_eq!(formula.matches("-8*COUNTIF(").count(), 2, "the two weekend cells are taken out: {formula}");
+        assert_eq!(values.get_value((start.0 + r as u32, start.1 + c as u32)), Some(&Data::Float(40.0)));
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

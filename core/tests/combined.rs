@@ -144,3 +144,56 @@ fn without_a_tachograph_or_categoria_b_the_staff_is_still_a_file() {
     assert_eq!(people(&workbook.sheets[0]).len(), 1);
     std::fs::remove_file(&path).ok();
 }
+
+/// A leave on somebody of the staff: the code columns and the overtime of the file are formulas, and what they compute is what the
+/// screen shows (the hours of a shift of 12 hours, a leave on the days off, the overtime that leaves out the leaves).
+#[test]
+fn the_formulas_of_the_leaves_give_what_the_screen_shows() {
+    use pontaj_core::leave::LeavePlan;
+    let date = |day: u32| chrono::NaiveDate::from_ymd_opt(YEAR, MONTH, day).unwrap();
+    let leave = |name: &str, group: Group, code: &str, from: u32, to: u32, on_free_days: bool| LeavePlan {
+        id: format!("{name}-{code}"),
+        group,
+        name: name.into(),
+        driver_id: None,
+        code: code.into(),
+        from: date(from),
+        to: date(to),
+        on_free_days,
+    };
+    let office = staff(&["Birou Ana"], Group::Office, Plan::standard_weekdays());
+    let city = staff_city();
+    let mut settings = settings();
+    settings.roster = [office.clone(), city.clone()].concat();
+    // 9 – 15 November 2026 is Monday – Sunday: a leave over the weekend too; the cycle person takes a leave over shifts of 12 hours.
+    settings.leaves = vec![leave("Birou Ana", Group::Office, "CO", 9, 15, true), leave("Citadin Dan", Group::City, "CM", 3, 8, false)];
+    let mut employees = roster::build_sheet(&office, Group::Office, YEAR, MONTH, &settings).employees;
+    employees.extend(roster::build_sheet(&city, Group::City, YEAR, MONTH, &settings).employees);
+
+    let ana = employees.iter().find(|e| e.name == "BIROU ANA").unwrap().totals.clone();
+    let dan = employees.iter().find(|e| e.name == "CITADIN DAN").unwrap().totals.clone();
+    assert_eq!(ana.code_hours[0], 40.0, "CO: the five working days; Saturday and Sunday show the code but are not counted");
+    assert!(dan.code_hours[1] >= 24.0 && dan.code_hours[1] % 12.0 == 0.0, "CM counts shifts of 12 hours: {}", dan.code_hours[1]);
+    assert_eq!((ana.overtime, dan.overtime), (0.0, 0.0), "a leave is not an overtime");
+
+    let parts = Parts { year: YEAR, month: MONTH, tachograph: None, catb: None, staff: employees };
+    let path = temp("leaves");
+    combined::write_xlsx(&parts, &settings, &path).expect("the file is written");
+    let workbook = Workbook::read(&path);
+    let engine = Engine::new(&workbook);
+    let first_total = FIRST_DAY_COL + 30;
+    let overtime = first_total + 3 + 11;
+    let mut compared = 0;
+    for (row, name) in people(&workbook.sheets[0]) {
+        for col in first_total..=overtime {
+            if col == first_total + 1 {
+                continue; // the night hours sit on the next row
+            }
+            let (computed, written) = (engine.value(0, row, col), workbook.sheets[0].value(row, col));
+            assert_eq!(computed.num().unwrap_or(0.0), written.num().unwrap_or(0.0), "{name}, column {col}: the formula gives {} and the file shows {}", computed.show(), written.show());
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 2 * 14);
+    std::fs::remove_file(&path).ok();
+}

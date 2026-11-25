@@ -22,7 +22,7 @@ use chrono::NaiveDate;
 use crate::pdf::Segment;
 use crate::settings::{IntervalMode, NightSource, Settings};
 use crate::time::{floor_to_slot, round_hours, round_to_half, round_to_slot, DAY};
-use crate::timesheet::{DayEntry, Employee, Group, Interval, Timesheet, Totals, CODES, OLP};
+use crate::timesheet::{is_leave, DayEntry, Employee, Group, Interval, Timesheet, Totals, CODES, OLP};
 
 #[derive(Debug, Clone)]
 pub struct Shift {
@@ -166,6 +166,7 @@ fn day_intervals(entry: &DayEntry, hours: f64, s: &Settings) -> Vec<Interval> {
 pub(crate) fn recompute_day(entry: &mut DayEntry, s: &Settings) {
     entry.card_intervals = card_intervals(&entry.segments, s.merge_gap_min, usize::MAX);
     entry.code = entry.code.as_deref().and_then(normalize_code);
+    entry.leave_on_free_day &= entry.code.is_some();
     entry.override_intervals = entry.override_intervals.take().filter(|v| !v.is_empty());
     entry.intervals_off = false;
     // Hours typed by hand are whole or half hours, whatever the caller sent.
@@ -258,6 +259,19 @@ fn place_activities(employee: &mut Employee, first: NaiveDate, merge_gap_min: i3
     }
 }
 
+/// The hours a day with a code (a leave, an absence) counts in the hours of its code: the shift the day had (a planned leave keeps the
+/// times of the shift it took the place of, so a leave of somebody on 12-hour shifts counts 12 per day), else a norm day; nothing for a
+/// leave on a day the person is free anyway ([`DayEntry::leave_on_free_day`]).
+pub(crate) fn code_day_hours(day: &DayEntry, hours_per_day: i32) -> f64 {
+    if day.leave_on_free_day {
+        return 0.0;
+    }
+    match day.override_intervals.as_deref() {
+        Some(shift) if !shift.is_empty() => round_to_half(f64::from(shift.iter().map(|i| i.end - i.start).sum::<i32>()) / 60.0),
+        _ => f64::from(hours_per_day),
+    }
+}
+
 /// Mirrors the formulas written in the Excel file.
 pub(crate) fn compute_totals(employee: &Employee, norm: i32, hours_per_day: i32) -> Totals {
     // `+ 0.0`: summing nothing gives -0.0, which would show up as "-0" in the sheet and the workbook.
@@ -272,14 +286,16 @@ pub(crate) fn compute_totals(employee: &Employee, norm: i32, hours_per_day: i32)
             if *code == OLP {
                 return 0.0;
             }
-            employee.days.iter().filter(|d| d.code.as_deref() == Some(code)).count() as f64 * f64::from(hours_per_day)
+            employee.days.iter().filter(|d| d.code.as_deref() == Some(code)).map(|d| code_day_hours(d, hours_per_day)).sum::<f64>()
         })
         .collect();
     let absences: f64 = code_hours.iter().sum();
+    // A leave is only a leave: it has its column and is neither an absence nor a reason for overtime.
+    let other_absences: f64 = CODES.iter().zip(&code_hours).filter(|((code, _), _)| !is_leave(code)).map(|(_, hours)| hours).sum();
     if let Some(i) = CODES.iter().position(|(c, _)| *c == OLP) {
         code_hours[i] = (not_worked - absences).max(0.0);
     }
-    Totals { worked, card_min, night, not_worked, code_hours, overtime: (worked + absences - norm).max(0.0) }
+    Totals { worked, card_min, night, not_worked, code_hours, overtime: (worked + other_absences - norm).max(0.0) }
 }
 
 /// Re-applies the rules after a settings change or a manual edit (of the

@@ -3,7 +3,7 @@
 // controller can put the cursor back where it was.
 import { h } from "./dom.js";
 import { showDialog } from "./dialog.js";
-import { boundInput } from "./table.js";
+import { LEAVE_TYPES, boundInput } from "./table.js";
 import { flaggedWeeks, weeksBody } from "./catb_weeks.js";
 import { duration, formatWhen, hhmm, hoursText, isoAt, isoClock, isoDate, lei, parseHm, parseHours, shortDate, signed, spanText, weekdayName } from "./time.js";
 
@@ -15,15 +15,8 @@ const PAUSE_CHOICES = [
   ["rest", "Pauză"],
 ];
 const PAUSE_BADGES = { normal: "Staționare", rest: "Pauză", overlap: "Suprapunere" };
-// The kinds of leave a day without any trip can be (code of the timesheet, name).
-export const LEAVE_TYPES = [
-  ["CO", "Concediu de odihnă"],
-  ["CM", "Concediu medical"],
-  ["CP", "Concediu parental"],
-  ["CFP", "Concediu fără plată"],
-  ["CC", "Concediu maternal"],
-  ["CIM", "Contract individual de muncă"],
-];
+// The kinds of leave a day without any trip can be: see LEAVE_TYPES in table.js (code of the timesheet, name).
+export { LEAVE_TYPES };
 export const leaveName = (code) => LEAVE_TYPES.find(([c]) => c === code)?.[1] ?? code;
 
 const STATION_NOT_COUNTED = "Staționarea nu intră în orele de lucru (nici în Excel): se arată doar ca informație și se plătește după regula ei (primele ore sunt incluse în preț).";

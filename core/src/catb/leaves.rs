@@ -15,7 +15,8 @@ use crate::leave::{touches, LeavePlan};
 use crate::timesheet::Group;
 use crate::Result;
 
-/// Puts the planned leaves that touch the month on the working days (Monday–Friday, no legal holiday) of the driver they are for.
+/// Puts the planned leaves that touch the month on the working days (Monday–Friday, no legal holiday) of the driver they are for,
+/// and on the weekends and holidays too when the plan is for the free days as well ([`LeavePlan::on_free_days`]).
 /// Each plan is applied once per driver and month: a day that already has a leave keeps it, and one the office cleared later
 /// is not marked again.
 pub(super) fn apply(driver: &mut Driver, year: i32, month: u32, plans: &[LeavePlan]) {
@@ -24,7 +25,7 @@ pub(super) fn apply(driver: &mut Driver, year: i32, month: u32, plans: &[LeavePl
         if days.is_empty() || driver.applied_leaves.contains(&plan.id) {
             continue;
         }
-        for day in days.into_iter().filter(|d| !calendar::is_weekend(*d) && calendar::holiday_name(*d).is_none()) {
+        for day in days.into_iter().filter(|d| plan.on_free_days || (!calendar::is_weekend(*d) && calendar::holiday_name(*d).is_none())) {
             driver.leaves.entry(day).or_insert_with(|| plan.code.clone());
         }
         driver.applied_leaves.push(plan.id.clone());
@@ -101,7 +102,7 @@ mod tests {
     }
 
     fn plan(id: &str, from: u32, to: u32, code: &str) -> LeavePlan {
-        LeavePlan { id: id.into(), group: Group::CatB, name: "Popescu Ion".into(), driver_id: Some(7), code: code.into(), from: date(from), to: date(to) }
+        LeavePlan { id: id.into(), group: Group::CatB, name: "Popescu Ion".into(), driver_id: Some(7), code: code.into(), from: date(from), to: date(to), on_free_days: false }
     }
 
     fn december(plans: Vec<LeavePlan>, trips: Vec<Trip>) -> (Sheet, Settings) {
@@ -126,6 +127,19 @@ mod tests {
         assert_eq!(d.totals.leave_days.get("CO"), Some(&5));
         assert_eq!(d.applied_leaves, ["L1"]);
         assert!(d.leave_conflicts.is_empty() && d.alerts.iter().all(|a| a.code != "leave_trip"));
+    }
+
+    #[test]
+    fn a_plan_for_the_free_days_too_marks_weekends_and_holidays_and_counts_them() {
+        // 14 December 2026 is a Monday.
+        let free = |plan: LeavePlan| LeavePlan { on_free_days: true, ..plan };
+        let (sheet, _) = december(vec![free(plan("L1", 14, 20, "CM"))], vec![]);
+        let d = &sheet.drivers[0];
+        assert_eq!(marked(d), [14, 15, 16, 17, 18, 19, 20], "Saturday and Sunday too");
+        assert_eq!(d.totals.leave_days.get("CM"), Some(&7));
+        // 25 and 26 December are holidays; 27 is a Sunday.
+        let (sheet, _) = december(vec![free(plan("L2", 24, 28, "CO"))], vec![]);
+        assert_eq!(marked(&sheet.drivers[0]), [24, 25, 26, 27, 28], "the holidays too");
     }
 
     #[test]

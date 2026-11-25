@@ -280,7 +280,7 @@ function renderView() {
   } else {
     const wrap = h("div", { class: "grid-wrap", id: "grid-wrap" });
     const details = h("div", { class: "details", id: "details" },
-      h("span", { class: "muted" }, "Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP, ZLP…) pentru absențe sau lasă gol ca să revii la calculul automat."));
+      h("span", { class: "muted" }, "Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP, ZLP…) pentru concediu sau absențe sau lasă gol ca să revii la calculul automat."));
     holder.replaceChildren(wrap, details);
     renderGrid(wrap, state.sheet, {
       visible: inKind,

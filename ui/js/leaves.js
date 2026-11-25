@@ -6,6 +6,8 @@ import { showDialog } from "./dialog.js";
 import { LEAVE_TYPES, leaveConflictRows, leaveName } from "./catb_driver.js";
 import { isoToday, longDate } from "./time.js";
 
+const FREE_DAYS_HINT = "Bifat, concediul se trece și pe zilele în care persoana oricum nu lucrează. Nebifat, se trece doar pe zilele în care ar lucra. La birou, garaj și oraș, orele unei zile libere nu intră în total (nu sunt în normă), dar codul se vede în celulă și în Excel.";
+
 const newId = () => `L${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** "3 zile" / "o zi" for the calendar days of a plan, both ends included. */
@@ -45,6 +47,7 @@ export function askLeaves({ title, group, people, getPlans, add, remove, note })
         const kind = h("select", {}, LEAVE_TYPES.map(([code, name]) => h("option", { value: code }, `${name} (${code})`)));
         const from = h("input", { type: "date", value: isoToday() });
         const to = h("input", { type: "date", value: isoToday() });
+        const onFree = h("input", { type: "checkbox" });
         // The last day follows the first one until it is chosen on its own, and never stays before it.
         from.addEventListener("change", () => { if (!to.value || to.value < from.value) to.value = from.value; });
         const submit = () => {
@@ -52,12 +55,13 @@ export function askLeaves({ title, group, people, getPlans, add, remove, note })
           if (!from.value || !to.value) return void error.replaceChildren("Alege prima și ultima zi de concediu.");
           if (to.value < from.value) return void error.replaceChildren("Ultima zi nu poate fi înainte de prima.");
           const person = people[Number(who.value)];
-          redo(() => add({ id: newId(), group, name: person.name, driverId: person.driverId ?? null, code: kind.value, from: from.value, to: to.value }));
+          redo(() => add({ id: newId(), group, name: person.name, driverId: person.driverId ?? null, code: kind.value, from: from.value, to: to.value, onFreeDays: onFree.checked }));
         };
         return h("div", { class: "leaves-form" },
           h("div", { class: "form-row" }, field("Persoana", who), field("Felul concediului", kind)),
           h("div", { class: "form-row" }, field("De la", from), field("Până la (inclusiv)", to),
             h("button", { class: "btn primary", type: "button", onclick: submit }, "＋ Adaugă concediul")),
+          h("label", { class: "check-line", title: FREE_DAYS_HINT }, onFree, "Și pe zilele libere (sâmbătă, duminică, sărbători, zilele libere ale turei)"),
           note ? h("small", { class: "muted" }, note) : null);
       }
 
@@ -69,7 +73,7 @@ export function askLeaves({ title, group, people, getPlans, add, remove, note })
           h("li", { class: `leave-plan ${plan.to < today ? "past" : ""}` },
             h("span", {},
               h("b", {}, plan.name), " · ",
-              `${leaveName(plan.code)} (${plan.code}) · ${plan.from === plan.to ? longDate(plan.from) : `${longDate(plan.from)} – ${longDate(plan.to)}`} · ${planLength(plan)}`),
+              `${leaveName(plan.code)} (${plan.code}) · ${plan.from === plan.to ? longDate(plan.from) : `${longDate(plan.from)} – ${longDate(plan.to)}`} · ${planLength(plan)}${plan.onFreeDays ? " · și pe zilele libere" : ""}`),
             h("button", { class: "btn small ghost", type: "button", title: "Scoate concediul: zilele lui revin cum erau", onclick: () => redo(() => remove(plan)) }, "✕ Șterge"))));
       }
 

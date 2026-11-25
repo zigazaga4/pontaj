@@ -2726,7 +2726,7 @@ checksum = "60f6ce597ecdcc9a098e7fddacb1065093a3d66446fa16c675e7e71d1b5c28e6"
 
 [[package]]
 name = "pontaj"
-version = "0.7.7"
+version = "0.7.8"
 dependencies = [
  "pontaj-core",
  "serde",

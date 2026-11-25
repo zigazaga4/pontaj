@@ -12,7 +12,8 @@ use rust_xlsxwriter::{Color, ColNum, Format, FormatAlign, FormatBorder, Formula,
 use crate::calendar::month_name;
 use crate::settings::{IntervalMode, NightSource, Settings};
 use crate::time::{fmt_clock, fmt_duration, DAY};
-use crate::timesheet::{DayEntry, Employee, Group, Interval, Timesheet, CODES, OLP};
+use crate::rules::code_day_hours;
+use crate::timesheet::{is_leave, DayEntry, Employee, Group, Interval, Timesheet, CODES, OLP};
 use crate::{Error, Result};
 
 /// Row of the first header line (Excel row 9); the days numbers are on the next one.
@@ -363,19 +364,37 @@ fn write_employee(
         range(row, cols.code(olp_idx + 1), cols.code(CODES.len() - 1))
     );
 
+    // The overtime does not take the leaves (CO, CM…): they have their columns and stay out of it.
+    let other_codes: Vec<String> = CODES.iter().enumerate().filter(|(i, (code, _))| *i != olp_idx && !is_leave(code)).map(|(i, _)| cell(row, cols.code(i))).collect();
+    let other_absences = format!("SUM({})", other_codes.join(","));
+
     let norm = emp.norm_hours.unwrap_or(sheet.norm_hours);
     let mut formulas: Vec<(ColNum, String, f64)> = vec![
         (cols.worked, format!("=SUM({hours_range})"), t.worked),
         (cols.night, format!("=SUM({night_range})"), t.night),
         (cols.not_worked, format!("=MAX(0,{norm}-{worked_ref})"), t.not_worked),
-        (cols.overtime, format!("=MAX(0,{worked_ref}+{absences}-{norm})"), t.overtime),
+        (cols.overtime, format!("=MAX(0,{worked_ref}+{other_absences}-{norm})"), t.overtime),
     ];
     for (i, (code, _)) in CODES.iter().enumerate() {
         let value = t.code_hours.get(i).copied().unwrap_or(0.0);
         let formula = if i == olp_idx {
             format!("=MAX(0,{not_worked_ref}-{absences})")
         } else {
-            format!("=COUNTIF({hours_range},\"{code}\")*{}", settings.hours_per_day)
+            // Every day with the code counts a norm day, except the days that count differently: a leave that took the place of a shift of
+            // another length (+4 for a 12-hour shift) and a leave on a day the person is free anyway (nothing, so -8). Those cells are added up
+            // on their own.
+            let per_day = f64::from(settings.hours_per_day);
+            let other: String = emp
+                .days
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| d.code.as_deref() == Some(code))
+                .filter_map(|(i, d)| {
+                    let delta = code_day_hours(d, settings.hours_per_day) - per_day;
+                    (delta != 0.0).then(|| format!("{delta:+}*COUNTIF({},\"{code}\")", cell(row, FIRST_DAY_COL + i as ColNum)))
+                })
+                .collect();
+            format!("=COUNTIF({hours_range},\"{code}\")*{}{other}", settings.hours_per_day)
         };
         formulas.push((cols.code(i), formula, value));
     }

@@ -294,7 +294,7 @@ export function createRoster({ getSettings, saveSettings }) {
       getPlans: plansOfGroup,
       add: addLeave,
       remove: removeLeave,
-      note: "Concediul se pune pe zilele în care persoana ar lucra după program; zilele libere rămân libere. Poți scrie și concedii pentru luni care nu au început încă.",
+      note: "Concediul se pune pe zilele în care persoana ar lucra după program; zilele libere rămân libere, dacă nu bifezi „Și pe zilele libere”. Poți scrie și concedii pentru luni care nu au început încă.",
     });
   }
 
@@ -353,7 +353,7 @@ export function createRoster({ getSettings, saveSettings }) {
     }
     const wrap = h("div", { class: "grid-wrap", id: "roster-grid" });
     const details = h("div", { class: "details", id: "roster-details" },
-      h("span", { class: "muted" }, "Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP…) pentru absențe sau lasă gol pentru o zi liberă. Sub ore sunt ora începerii și ora terminării, ca în Excel: scrie-le (08:00) ca să schimbi tura unei zile. ↺ de lângă nume pune zilele la loc, după program."));
+      h("span", { class: "muted" }, "Selectează o zi pentru detalii. Scrie un număr pentru ore, un cod (CO, CM, CFP…) pentru concediu sau absențe sau lasă gol pentru o zi liberă. Sub ore sunt ora începerii și ora terminării, ca în Excel: scrie-le (08:00) ca să schimbi tura unei zile. ↺ de lângă nume pune zilele la loc, după program."));
     view.replaceChildren(wrap, details);
     renderGrid(wrap, state.sheet, {
       heading: "Angajat",

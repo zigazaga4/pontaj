@@ -37,11 +37,14 @@ pub struct LeavePlan {
     /// First and last day of the leave, both included.
     pub from: NaiveDate,
     pub to: NaiveDate,
+    /// Also put the leave on the days the person is free anyway (Saturday, Sunday, legal holidays, the free days of a cycle).
+    /// Off, the leave takes only the days he would work.
+    pub on_free_days: bool,
 }
 
 impl Default for LeavePlan {
     fn default() -> Self {
-        Self { id: String::new(), group: Group::CatB, name: String::new(), driver_id: None, code: "CO".into(), from: NaiveDate::default(), to: NaiveDate::default() }
+        Self { id: String::new(), group: Group::CatB, name: String::new(), driver_id: None, code: "CO".into(), from: NaiveDate::default(), to: NaiveDate::default(), on_free_days: false }
     }
 }
 
@@ -129,6 +132,9 @@ mod tests {
         assert_eq!(settings.leaves.len(), 1);
         assert_eq!((settings.leaves[0].group, settings.leaves[0].driver_id, settings.leaves[0].code.as_str()), (Group::CatB, Some(7), "CM"));
         assert!(settings.leaves[0].has_known_code());
+        assert!(!settings.leaves[0].on_free_days, "a plan written before the option existed takes the working days only");
+        let wide: LeavePlan = serde_json::from_str(r#"{ "id": "L2", "onFreeDays": true }"#).unwrap();
+        assert!(wide.on_free_days);
         let old: Settings = serde_json::from_str(r#"{ "companyName": "EXEMPLU SRL" }"#).unwrap();
         assert!(old.leaves.is_empty());
         let back: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
