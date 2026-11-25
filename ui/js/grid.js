@@ -8,7 +8,6 @@ import { tirToggle } from "./tir.js";
 const SUMS = [
   { key: "worked", label: "Lucrate" },
   { key: "night", label: "Noapte" },
-  { key: "notWorked", label: "Nelucr." },
   { key: "leave", label: "Concediu", hint: "Toate tipurile de concediu (CO, CM, CP, CFP, CC, CIM), în ore" },
   { key: "absences", label: "Absențe", hint: "Celelalte absențe (BP, AM, N, ZLP), în ore; concediul este în coloana lui" },
   { key: "overtime", label: "Supl." },

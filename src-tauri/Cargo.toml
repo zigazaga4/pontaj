@@ -1,6 +1,6 @@
 [package]
 name = "pontaj"
-version = "0.7.8"
+version = "0.7.9"
 description = "Pontaj automat din rapoarte de tahograf"
 edition = "2021"
 
