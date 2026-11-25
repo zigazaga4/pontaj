@@ -294,7 +294,7 @@ export function createRoster({ getSettings, saveSettings }) {
       getPlans: plansOfGroup,
       add: addLeave,
       remove: removeLeave,
-      note: "Concediul se pune pe zilele în care persoana ar lucra după program; zilele libere rămân libere, dacă nu bifezi „Și pe zilele libere”. Poți scrie și concedii pentru luni care nu au început încă.",
+      note: "Concediul se pune pe toate zilele alese, și pe cele libere (sâmbătă, duminică, sărbători, zilele libere ale turei); debifează „Și pe zilele libere” ca să se pună doar pe zilele în care persoana ar lucra. Poți scrie și concedii pentru luni care nu au început încă.",
     });
   }
 

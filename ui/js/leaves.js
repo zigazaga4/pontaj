@@ -6,7 +6,7 @@ import { showDialog } from "./dialog.js";
 import { LEAVE_TYPES, leaveConflictRows, leaveName } from "./catb_driver.js";
 import { isoToday, longDate } from "./time.js";
 
-const FREE_DAYS_HINT = "Bifat, concediul se trece și pe zilele în care persoana oricum nu lucrează. Nebifat, se trece doar pe zilele în care ar lucra. La birou, garaj și oraș, orele unei zile libere nu intră în total (nu sunt în normă), dar codul se vede în celulă și în Excel.";
+const FREE_DAYS_HINT = "Bifat, concediul se trece pe toate zilele alese, și pe cele în care persoana oricum nu lucrează. Nebifat, se trece doar pe zilele în care ar lucra. La birou, garaj și oraș, orele unei zile libere nu intră în total (nu sunt în normă), dar codul se vede în celulă și în Excel.";
 
 const newId = () => `L${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
@@ -47,7 +47,8 @@ export function askLeaves({ title, group, people, getPlans, add, remove, note })
         const kind = h("select", {}, LEAVE_TYPES.map(([code, name]) => h("option", { value: code }, `${name} (${code})`)));
         const from = h("input", { type: "date", value: isoToday() });
         const to = h("input", { type: "date", value: isoToday() });
-        const onFree = h("input", { type: "checkbox" });
+        // On by default: a leave written on a Sunday or a holiday must show, not vanish. Off, it takes only the days the person works.
+        const onFree = h("input", { type: "checkbox", checked: true });
         // The last day follows the first one until it is chosen on its own, and never stays before it.
         from.addEventListener("change", () => { if (!to.value || to.value < from.value) to.value = from.value; });
         const submit = () => {
