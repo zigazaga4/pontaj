@@ -351,7 +351,9 @@ td.sum.night, td.sum.leave, td.sum.absences, td.sum.overtime { background: #fafb
 .hidden-drivers { margin-top: 8px; border: 1px dashed var(--border); border-radius: 9px; padding: 6px 10px; font-size: 12px; }
 .hidden-drivers summary { cursor: pointer; color: var(--muted); font-weight: 600; }
 .hidden-drivers p { margin: 6px 0; }
-.hidden-driver { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
+.hidden-driver { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
+.hidden-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.driver-row .put-back { margin: 4px 0 2px 10px; }
 .hidden-driver span { overflow-wrap: anywhere; }
 .hidden-driver small.employment { display: block; }
 .driver-row .driver small.employment { color: var(--accent-dark); }

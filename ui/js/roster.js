@@ -59,6 +59,15 @@ function employedIn(member, year, month) {
   return (!member.startsOn || member.startsOn <= last) && (!member.stopsOn || member.stopsOn > first);
 }
 
+/**
+ * Has the month the person stops working in already passed (by the calendar)? Then he is gone from the lists: his past months keep him
+ * (he worked in them), but he is no longer offered among the people who do not work, and the dismissal can no longer be taken back.
+ */
+const goneForGood = (member) => Boolean(member.stopsOn) && member.stopsOn.slice(0, 7) < isoDay(new Date()).slice(0, 7);
+
+/** Dismissed, and the month he stops in has not passed yet: the dismissal can still be taken back. */
+const canBePutBack = (member) => Boolean(member.stopsOn) && !goneForGood(member);
+
 /** What the dates of a person say, for the list of people. */
 const employmentText = (member) =>
   [member.startsOn ? `lucrează din ${dateText(member.startsOn)}` : "", member.stopsOn ? `nu mai lucrează din ${dateText(member.stopsOn)}` : ""].filter(Boolean).join(" · ");
@@ -169,7 +178,7 @@ function askDismissal({ member, day }) {
   return showDialog({
     title: `Dezangajare · ${member.name}`,
     body: h("div", {},
-      field("Nu mai lucrează din", date, "În ziua aleasă și după ea nu mai are ore și nu mai apare în pontaj; ultima zi lucrată este cea dinainte. Lunile dinainte rămân cum sunt."),
+      field("Nu mai lucrează din", date, "În ziua aleasă și după ea nu mai are ore și nu mai apare în pontaj; ultima zi lucrată este cea dinainte. Lunile dinainte rămân cum sunt. Până trece luna în care pleacă îl poți pune la loc; după aceea dispare din liste."),
       error),
     buttons: [
       { label: "Anulează", value: null },
@@ -288,14 +297,30 @@ export function createRoster({ getSettings, saveSettings }) {
     const answer = await askDismissal({ member, day: isoDay(today) });
     if (!answer) return;
     if (answer === "delete") return removePerson(member);
-    const replace = (next) => staff().map((m) => (m.group === member.group && nameKey(m.name) === nameKey(member.name) ? next : m));
-    await setStaff(replace({ ...member, stopsOn: answer })).catch(fail);
+    await setStaff(swap(member, { ...member, stopsOn: answer })).catch(fail);
     toast(`${member.name} nu mai lucrează din ${dateText(answer)}.`, {
       kind: "ok",
       timeout: 12000,
-      action: { label: "Anulează", run: () => setStaff(replace(member)).catch(fail) },
+      action: { label: "Anulează", run: () => setStaff(swap(member, member)).catch(fail) },
     });
   }
+
+  /** The list of people with `member` replaced by `next` (found by name, so it also works on the entry the settings now hold). */
+  const swap = (member, next) => staff().map((m) => (m.group === member.group && nameKey(m.name) === nameKey(member.name) ? next : m));
+
+  /** The dismissal is taken back: no day of leaving any more, he works again. Possible until the month he stops in has passed. */
+  async function putBack(member) {
+    const next = { ...member };
+    delete next.stopsOn;
+    await setStaff(swap(member, next)).catch(fail);
+    toast(`${member.name} a fost pus la loc: lucrează din nou.`, { kind: "ok", timeout: 6000 });
+  }
+
+  /** The permanent way back of a dismissal (the button of the toast goes away after a few seconds); nothing once the month has passed. */
+  const putBackButton = (member, extra = "") =>
+    canBePutBack(member)
+      ? h("button", { class: `btn small ${extra}`.trim(), type: "button", title: `${member.name} lucrează din nou, fără ziua de plecare`, onclick: () => putBack(member) }, "↶ Anulează dezangajarea")
+      : null;
 
   /** One person's days put back as the plan says, dropping what was typed on them. */
   async function resetPerson(member) {
@@ -405,7 +430,8 @@ export function createRoster({ getSettings, saveSettings }) {
 
   function renderPeople() {
     const list = working();
-    const away = people().filter((member) => !list.includes(member));
+    // Somebody whose month of leaving has passed is not listed any more.
+    const away = people().filter((member) => !list.includes(member) && !goneForGood(member));
     $("#roster-people").replaceChildren(
       h("h3", {}, `${GROUPS[state.group].label} (${list.length})`),
       h("button", { class: "btn primary", type: "button", onclick: addPerson }, "＋ Adaugă persoană"),
@@ -417,6 +443,7 @@ export function createRoster({ getSettings, saveSettings }) {
             employmentText(member) ? h("small", { class: "employment" }, employmentText(member)) : null,
             member.note ? h("small", { class: "flag warn" }, `⚠ ${member.note}`) : null,
             canMoveShifts(member) && member.moves?.length ? h("small", { class: "shift-moves", title: member.moves.map(moveText).join("\n") }, `⇄ Tura mutată: ${member.moves.length === 1 ? "o dată" : `de ${member.moves.length} ori`}`) : null),
+          putBackButton(member, "put-back"),
           canMoveShifts(member) ? h("button", { class: "driver-shift", type: "button", title: `Mută tura lui ${member.name} cu una sau mai multe zile, de la o zi încolo; ce urmează se calculează singur`, "aria-label": `Mută tura lui ${member.name}`, onclick: () => openShifts(member) }, "⇄") : null,
           h("button", { class: "driver-reset", type: "button", title: `Pune zilele lui ${member.name} la loc, după program (șterge ce ai scris pe ele în luna asta)`, "aria-label": `Zilele lui ${member.name} după program`, onclick: () => resetPerson(member) }, "↺"),
           h("button", { class: "driver-remove", type: "button", title: `Dezangajează-l pe ${member.name}: alegi ziua din care nu mai lucrează`, "aria-label": `Dezangajează pe ${member.name}`, onclick: () => dismissPerson(member) }, "×"))),
@@ -427,10 +454,12 @@ export function createRoster({ getSettings, saveSettings }) {
   function renderAway(away) {
     return h("details", { class: "hidden-drivers" },
       h("summary", {}, `Nu lucrează în ${MONTHS[state.month - 1].toLowerCase()} (${away.length})`),
-      h("p", { class: "muted" }, "Nu sunt în pontajul acestei luni. Apar în lunile în care lucrează."),
+      h("p", { class: "muted" }, "Nu sunt în pontajul acestei luni; apar în lunile în care lucrează. Cine a plecat dispare de aici după ce trece luna în care pleacă; până atunci îl poți pune la loc."),
       ...away.map((member) => h("div", { class: "hidden-driver" },
         h("span", {}, member.name, h("small", { class: "employment" }, employmentText(member))),
-        h("button", { class: "btn small", type: "button", title: "Schimbă datele de angajare", onclick: () => editPerson(member) }, "Datele"))));
+        h("span", { class: "hidden-actions" },
+          putBackButton(member),
+          h("button", { class: "btn small", type: "button", title: "Schimbă datele de angajare", onclick: () => editPerson(member) }, "Datele")))));
   }
 
   function renderView() {
