@@ -104,9 +104,40 @@ pub struct StaffMember {
     /// The moves of the shift cycle (see [`ShiftMove`]); none for most people.
     #[serde(default)]
     pub moves: Vec<ShiftMove>,
+    /// The first day the person works (a new hire). `None` = he has always worked. Before this day he is not in the pontaj.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_on: Option<NaiveDate>,
+    /// The first day the person no longer works (dismissed): the day before is his last one. `None` = he still works. From this day
+    /// on he is not in the pontaj; the months before it stay as they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stops_on: Option<NaiveDate>,
 }
 
 impl StaffMember {
+    /// Is the person employed on `date` (hired on or before it and not dismissed yet)?
+    pub fn employed_on(&self, date: NaiveDate) -> bool {
+        self.starts_on.is_none_or(|from| date >= from) && self.stops_on.is_none_or(|to| date < to)
+    }
+
+    /// Is the person employed on at least one day of the month? Only those are in the pontaj of the month.
+    pub fn employed_in(&self, year: i32, month: u32) -> bool {
+        (1..=calendar::days_in_month(year, month)).filter_map(|day| NaiveDate::from_ymd_opt(year, month, day)).any(|date| self.employed_on(date))
+    }
+
+    /// The norm of the month for this person when he is employed only a part of it: the working days of the calendar he is employed on
+    /// × the hours of a day. `None` when he is there the whole month (the norm of the month is his).
+    pub fn part_time_norm(&self, year: i32, month: u32, hours_per_day: i32) -> Option<i32> {
+        let working = |employed_only: bool| {
+            (1..=calendar::days_in_month(year, month))
+                .filter_map(|day| NaiveDate::from_ymd_opt(year, month, day))
+                .filter(|date| !calendar::is_weekend(*date) && calendar::holiday_name(*date).is_none())
+                .filter(|date| !employed_only || self.employed_on(*date))
+                .count() as i32
+        };
+        let (all, own) = (working(false), working(true));
+        (own != all).then_some(own * hours_per_day)
+    }
+
     /// By how many days the cycle is moved on `date`: the moves that started on or before it, added up.
     pub fn offset_on(&self, date: NaiveDate) -> i64 {
         self.moves.iter().filter(|m| m.from <= date).map(|m| i64::from(m.days)).sum()
@@ -115,6 +146,9 @@ impl StaffMember {
     /// Is the day in the norm of the person (a day he works, or for somebody who types everything by hand a working day of the
     /// calendar)? A leave on any other day is a leave on a free day.
     pub fn works_on(&self, date: NaiveDate) -> bool {
+        if !self.employed_on(date) {
+            return false;
+        }
         match self.plan {
             Plan::Manual => !calendar::is_weekend(date) && calendar::holiday_name(date).is_none(),
             Plan::Weekdays { .. } | Plan::Rotation { .. } => self.shift_on(date).is_some(),
@@ -123,6 +157,9 @@ impl StaffMember {
 
     /// The times of the day's shift, or `None` when the person is off that day: the plan, with the moves of the cycle taken into account.
     pub fn shift_on(&self, date: NaiveDate) -> Option<Interval> {
+        if !self.employed_on(date) {
+            return None;
+        }
         match self.plan {
             Plan::Rotation { .. } => self.plan.shift_on(date - Duration::days(self.offset_on(date))),
             Plan::Weekdays { .. } | Plan::Manual => self.plan.shift_on(date),
@@ -140,8 +177,9 @@ fn key(name: &str) -> String {
 pub fn employee(member: &StaffMember, year: i32, month: u32, plain_names: bool) -> Employee {
     let days = (1..=calendar::days_in_month(year, month))
         .map(|day| {
-            let shift = NaiveDate::from_ymd_opt(year, month, day).and_then(|date| member.shift_on(date));
-            DayEntry { day, override_intervals: shift.map(|iv| vec![iv]), ..Default::default() }
+            let date = NaiveDate::from_ymd_opt(year, month, day);
+            let shift = date.and_then(|date| member.shift_on(date));
+            DayEntry { day, override_intervals: shift.map(|iv| vec![iv]), not_employed: date.is_some_and(|date| !member.employed_on(date)), ..Default::default() }
         })
         .collect();
     Employee {
@@ -176,7 +214,7 @@ fn apply_leaves(employee: &mut Employee, member: &StaffMember, year: i32, month:
             }
             continue;
         }
-        for date in days.into_iter().filter(|date| plan.on_free_days || member.works_on(*date)) {
+        for date in days.into_iter().filter(|date| member.employed_on(*date) && (plan.on_free_days || member.works_on(*date))) {
             let Some(day) = employee.days.get_mut(date.day0() as usize) else { continue };
             if day.code.is_none() {
                 // The leave keeps the times of the shift it takes the place of: they say how many hours the day of leave counts.
@@ -200,8 +238,10 @@ fn apply_plans(sheet: &mut Timesheet, staff: &[StaffMember], group: Group, plans
 /// The month of one group straight from the plans: no saved edits. Employees come in alphabetical order, like the payroll file.
 pub fn build_sheet(staff: &[StaffMember], group: Group, year: i32, month: u32, settings: &Settings) -> Timesheet {
     let mut employees: Vec<Employee> = Vec::new();
-    for member in staff.iter().filter(|m| m.group == group) {
-        let fresh = employee(member, year, month, settings.plain_names);
+    // Only the people employed on some day of the month are in it: the months before a hire and after a dismissal do not have them.
+    for member in staff.iter().filter(|m| m.group == group && m.employed_in(year, month)) {
+        let mut fresh = employee(member, year, month, settings.plain_names);
+        fresh.norm_hours = member.part_time_norm(year, month, settings.hours_per_day);
         if !employees.iter().any(|e| key(&e.name) == key(&fresh.name)) {
             employees.push(fresh);
         }
@@ -233,7 +273,13 @@ pub fn sync(saved: Option<Timesheet>, staff: &[StaffMember], group: Group, year:
     for employee in &mut sheet.employees {
         let kept = saved.employees.iter().find(|old| key(&old.name) == key(&employee.name)).filter(|old| old.days.len() == employee.days.len());
         if let Some(old) = kept {
-            employee.days = old.days.clone();
+            // The days the office left stay, except the days the person is not employed on (they are empty) and the days he just became
+            // employed on (they take his plan).
+            for (day, saved_day) in employee.days.iter_mut().zip(&old.days) {
+                if !day.not_employed && !saved_day.not_employed {
+                    *day = saved_day.clone();
+                }
+            }
             employee.applied_leaves = old.applied_leaves.clone();
         }
     }
@@ -249,6 +295,7 @@ pub fn regenerate(sheet: &mut Timesheet, name: &str, staff: &[StaffMember], sett
     let fresh = employee(member, sheet.year, sheet.month, settings.plain_names);
     if let Some(current) = sheet.employees.iter_mut().find(|e| key(&e.name) == key(name)) {
         current.days = fresh.days;
+        current.norm_hours = member.part_time_norm(sheet.year, sheet.month, settings.hours_per_day);
         // The leaves written down in the list of leaves stay: they are not something typed on the days.
         current.applied_leaves.clear();
         apply_leaves(current, member, sheet.year, sheet.month, &settings.leaves);
@@ -383,7 +430,7 @@ mod tests {
     }
 
     fn member(name: &str, group: Group, plan: Plan) -> StaffMember {
-        StaffMember { name: name.into(), function: "Secretara".into(), group, plan, note: String::new(), moves: Vec::new() }
+        StaffMember { name: name.into(), function: "Secretara".into(), group, plan, note: String::new(), moves: Vec::new(), starts_on: None, stops_on: None }
     }
 
     fn hours(sheet: &Timesheet, name: &str) -> Vec<Option<f64>> {
@@ -872,6 +919,122 @@ mod tests {
         follow_plans(&dir, &now.roster, &now).unwrap();
         assert_eq!(std::fs::metadata(dir.join("birou").join("2026-11.json")).unwrap().modified().unwrap(), stamp);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn employed(name: &str, starts_on: Option<NaiveDate>, stops_on: Option<NaiveDate>) -> StaffMember {
+        StaffMember { starts_on, stops_on, ..member(name, Group::Office, Plan::standard_weekdays()) }
+    }
+
+    fn not_employed_days(sheet: &Timesheet, name: &str) -> Vec<u32> {
+        sheet.employees.iter().find(|e| e.name == name).unwrap().days.iter().filter(|d| d.not_employed).map(|d| d.day).collect()
+    }
+
+    fn names(sheet: &Timesheet) -> Vec<&str> {
+        sheet.employees.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_person_hired_in_the_middle_of_the_month_has_nothing_before_and_the_norm_of_the_rest() {
+        // 1 November 2026 is a Sunday; 16 is a Monday. 16–20 and 23–27 are working days, 30 November is a holiday.
+        let staff = [employed("Nou Ion", Some(date(2026, 11, 16)), None)];
+        let sheet = build_sheet(&staff, Group::Office, 2026, 11, &Settings::default());
+        let nou = &sheet.employees[0];
+        assert_eq!(not_employed_days(&sheet, "NOU ION"), (1..=15).collect::<Vec<_>>());
+        assert!(nou.days[..15].iter().all(|d| d.hours.is_none() && d.code.is_none() && d.override_intervals.is_none()));
+        assert_eq!(nou.days[15].hours, Some(8.0), "16 November is his first day");
+        assert_eq!(nou.norm_hours, Some(80), "ten working days he is employed on, 8 hours each");
+        assert_eq!((nou.totals.worked, nou.totals.not_worked, nou.totals.overtime), (80.0, 0.0, 0.0));
+        // Somebody there the whole month has the norm of the month.
+        let all = build_sheet(&[employed("Vechi Ion", None, None)], Group::Office, 2026, 11, &Settings::default());
+        assert_eq!((all.employees[0].norm_hours, not_employed_days(&all, "VECHI ION")), (None, Vec::new()));
+    }
+
+    #[test]
+    fn a_person_dismissed_in_the_middle_of_the_month_works_until_the_day_before() {
+        // He stops on Tuesday the 10th: he worked 2–6 and the 9th, six days.
+        let staff = [employed("Plecat Ion", None, Some(date(2026, 11, 10)))];
+        let sheet = build_sheet(&staff, Group::Office, 2026, 11, &Settings::default());
+        let plecat = &sheet.employees[0];
+        assert_eq!(not_employed_days(&sheet, "PLECAT ION"), (10..=30).collect::<Vec<_>>());
+        assert_eq!((plecat.days[8].hours, plecat.days[9].hours), (Some(8.0), None), "the 9th is his last day, the 10th is not worked");
+        assert_eq!(plecat.norm_hours, Some(48));
+        assert_eq!((plecat.totals.worked, plecat.totals.not_worked), (48.0, 0.0), "no hours missing: the days after the dismissal are not in his norm");
+    }
+
+    #[test]
+    fn a_person_is_in_the_months_he_is_employed_in_and_in_no_other() {
+        let staff = [
+            employed("Nou", Some(date(2026, 12, 1)), None),
+            employed("Plecat", None, Some(date(2026, 11, 1))),
+            employed("O zi", Some(date(2026, 11, 30)), Some(date(2026, 12, 1))),
+            employed("Mereu", None, None),
+        ];
+        let settings = Settings::default();
+        let in_month = |year, month| build_sheet(&staff, Group::Office, year, month, &settings);
+        assert_eq!(names(&in_month(2026, 10)), ["MEREU", "PLECAT"], "the month before the dismissal still has the person");
+        assert_eq!(names(&in_month(2026, 11)), ["MEREU", "O ZI"], "the dismissal day is the first day he is not there: 1 November is not his");
+        assert_eq!(names(&in_month(2026, 12)), ["MEREU", "NOU"]);
+        assert_eq!(names(&in_month(2025, 1)), ["MEREU", "PLECAT"], "before the hire the person is not there; before the dismissal he is");
+    }
+
+    #[test]
+    fn what_the_office_typed_on_days_he_is_not_employed_on_is_dropped_and_the_days_he_gets_back_follow_the_plan() {
+        let settings = Settings::default();
+        let working = [member("Ana Pop", Group::Office, Plan::standard_weekdays())];
+        let mut saved = build_sheet(&working, Group::Office, 2026, 11, &settings);
+        saved.employees[0].days[9].override_hours = Some(6.0); // the 10th
+        saved.employees[0].days[11].override_hours = Some(5.0); // the 12th
+        rules::recompute(&mut saved, &settings);
+        // She is dismissed from the 11th: the 10th stays as typed, the 12th is empty.
+        let left = [StaffMember { stops_on: Some(date(2026, 11, 11)), ..working[0].clone() }];
+        let sheet = sync(Some(saved), &left, Group::Office, 2026, 11, &settings);
+        let days = &sheet.employees[0].days;
+        assert_eq!((days[9].hours, days[10].hours, days[11].hours), (Some(6.0), None, None));
+        assert!(days[10].not_employed && days[11].not_employed && !days[9].not_employed);
+        // The dismissal is taken back: the days come back from her plan (what was typed on them is gone with the dismissal).
+        let back = sync(Some(sheet), &working, Group::Office, 2026, 11, &settings);
+        let days = &back.employees[0].days;
+        assert_eq!((days[9].hours, days[10].hours, days[11].hours), (Some(6.0), Some(8.0), Some(8.0)));
+        assert!(days.iter().all(|d| !d.not_employed));
+        assert_eq!(back.employees[0].norm_hours, None);
+    }
+
+    #[test]
+    fn nothing_can_be_written_on_a_day_the_person_is_not_employed_on() {
+        let settings = Settings::default();
+        let staff = [employed("Nou Ion", Some(date(2026, 11, 16)), None)];
+        let mut sheet = build_sheet(&staff, Group::Office, 2026, 11, &settings);
+        sheet.employees[0].days[2].override_hours = Some(8.0);
+        sheet.employees[0].days[3].code = Some("CO".into());
+        rules::recompute(&mut sheet, &settings);
+        let days = &sheet.employees[0].days;
+        assert_eq!((days[2].hours, days[2].override_hours, days[3].code.clone()), (None, None, None));
+        assert!(days[2].not_employed && days[3].not_employed);
+        assert_eq!(sheet.employees[0].totals.worked, 80.0);
+    }
+
+    #[test]
+    fn a_leave_stays_inside_the_time_the_person_is_employed_even_for_the_free_days_too() {
+        // 14 December 2026 is a Monday; he works from the 14th to the 17th (the 18th is the first day he is not there).
+        let staff = [employed("Ana Ionescu", Some(date(2026, 12, 14)), Some(date(2026, 12, 18)))];
+        let settings = Settings { roster: staff.to_vec(), leaves: vec![on_free(leave("L1", "Ana Ionescu", Group::Office, "CO", 1, 31))], ..Settings::default() };
+        let sheet = build_sheet(&staff, Group::Office, 2026, 12, &settings);
+        let days: Vec<u32> = codes(&sheet, "ANA IONESCU").into_iter().map(|(day, _)| day).collect();
+        assert_eq!(days, [14, 15, 16, 17]);
+        assert_eq!(sheet.employees[0].totals.code_hours[0], 32.0, "four days of leave, and the norm is his four days");
+        assert_eq!(sheet.employees[0].norm_hours, Some(32));
+    }
+
+    #[test]
+    fn the_dates_of_a_person_are_read_and_written_and_a_person_without_dates_has_none_in_the_file() {
+        let old: StaffMember = serde_json::from_str(r#"{"name":"A B","function":"","group":"office","plan":{"kind":"manual"}}"#).unwrap();
+        assert_eq!((old.starts_on, old.stops_on), (None, None));
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("startsOn") && !json.contains("stopsOn"), "{json}");
+        let dated: StaffMember = serde_json::from_str(r#"{"name":"A B","function":"","group":"office","plan":{"kind":"manual"},"startsOn":"2026-12-01","stopsOn":"2027-02-01"}"#).unwrap();
+        assert_eq!((dated.starts_on, dated.stops_on), (Some(date(2026, 12, 1)), Some(date(2027, 2, 1))));
+        assert!(dated.employed_on(date(2026, 12, 1)) && dated.employed_on(date(2027, 1, 31)));
+        assert!(!dated.employed_on(date(2026, 11, 30)) && !dated.employed_on(date(2027, 2, 1)));
     }
 
     #[test]

@@ -21,10 +21,17 @@ function cellText(entry) {
 
 const nightText = (entry) => (entry.nightHours != null ? hoursText(entry.nightHours) : "");
 
+/** The day is not worked by this person: he is not hired yet or already dismissed (the cell is grey and cannot be written on). */
+const away = (entry) => (entry.notEmployed ? "away" : "");
+
+/** The class of the table cell around an input: grey for a day he is not employed on, else the colour of a weekend or a holiday. */
+const dayClass = (info, entry) => (entry.notEmployed ? "away" : info.weekend || info.holiday ? "off" : "");
+
 function cellClass(info, entry) {
   const auto = entry.workedMin > 0;
   return [
     "cell",
+    away(entry),
     info.weekend || info.holiday ? "off" : "",
     entry.code ? (KNOWN_CODES.includes(entry.code) ? "code" : "code unknown") : "",
     entry.overrideHours != null ? "manual" : "",
@@ -32,7 +39,7 @@ function cellClass(info, entry) {
   ].filter(Boolean).join(" ");
 }
 
-const nightClass = (entry) => `cell night-in ${entry.overrideNight != null ? "manual" : ""}`.trim();
+const nightClass = (entry) => `cell night-in ${entry.overrideNight != null ? "manual" : ""} ${away(entry)}`.replace(/\s+/g, " ").trim();
 
 // The times of the day, as in the Excel file: under the hours a row with the start and a row with the end of each interval.
 const TIME_LABELS = { s: "Ora începerii", e: "Ora terminării" };
@@ -43,7 +50,7 @@ function timeText(entry, slot, side) {
   return interval ? hhmm(side === "s" ? interval.start : interval.end) : "";
 }
 
-const timeClass = (entry) => `cell time ${entry.intervalsOff ? "warn" : ""}`.trim();
+const timeClass = (entry) => `cell time ${entry.intervalsOff ? "warn" : ""} ${away(entry)}`.replace(/\s+/g, " ").trim();
 
 /**
  * The edit for the start and the end typed for interval `slot` of a day: the intervals of the day with that one replaced, the hours
@@ -150,12 +157,13 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onN
         dataset: { k: "h", e: ei, d: di, sent: cellText(entry) },
         maxlength: 5,
         spellcheck: "false",
+        readonly: entry.notEmployed,
         onfocus: (e) => { e.target.select(); onSelect(ei, di); },
         onchange: (e) => sendOnce(e.target, (text) => onEdit(ei, di, hoursCellEdit(text))),
         onkeydown: (e) => navigate(e, container, ei, di),
       });
       whileTyping(input, () => sendOnce(input, (text) => onEdit(ei, di, hoursCellEdit(text))), { complete: isCompleteCell });
-      hoursRow.append(h("td", { class: info.weekend || info.holiday ? "off" : "" }, input));
+      hoursRow.append(h("td", { class: dayClass(info, entry) }, input));
 
       // Night hours of the day: typed here they replace the calculated ones; empty = automatic.
       const sendNight = (text) => {
@@ -169,13 +177,14 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onN
         dataset: { k: "n", e: ei, d: di, sent: nightText(entry) },
         maxlength: 5,
         spellcheck: "false",
+        readonly: entry.notEmployed,
         title: "Ore de noapte; scrise aici înlocuiesc calculul, gol = automat",
         onfocus: (e) => e.target.select(),
         onchange: (e) => sendOnce(e.target, sendNight),
         onkeydown: (e) => navigate(e, container, ei, di),
       });
       whileTyping(input2, () => sendOnce(input2, sendNight), { complete: (text) => parseHours(text) != null });
-      nightRow.append(h("td", { class: `night ${info.weekend || info.holiday ? "off" : ""}` }, input2));
+      nightRow.append(h("td", { class: `night ${dayClass(info, entry)}`.trim() }, input2));
 
       // The start and the end of each interval of the day; the pair is sent whole once both are written.
       timeRows.forEach((row, k) => {
@@ -188,12 +197,13 @@ export function renderGrid(container, sheet, { onEdit, onSelect, onFunction, onN
           maxlength: 5,
           spellcheck: "false",
           placeholder: "––:––",
+          readonly: entry.notEmployed,
           title: `${TIME_LABELS[side]}; scrie ora (08:00) și ziua urmează orele, sau lasă ambele goale pentru o zi liberă`,
           onfocus: (e) => { e.target.select(); onSelect(ei, di); },
           onchange: (e) => sendOnce(e.target, () => sendTimes(container, ei, di, slot, onEdit)),
           onkeydown: (e) => navigateTimes(e, container, di),
         });
-        row.append(h("td", { class: info.weekend || info.holiday ? "off" : "" }, input3));
+        row.append(h("td", { class: dayClass(info, entry) }, input3));
       });
     });
 
@@ -287,6 +297,11 @@ export function renderDetails(target, sheet, ei, di) {
   const date = `${info.weekday} ${String(info.day).padStart(2, "0")}.${String(sheet.month).padStart(2, "0")}.${sheet.year}`;
   const parts = [h("b", {}, `${emp.name} · ${date}`)];
   if (info.holiday) parts.push(h("span", { class: "pill holiday" }, info.holiday));
+  if (entry.notEmployed) {
+    parts.push(h("span", { class: "pill away" }, "Nu lucrează în această zi"), h("span", { class: "muted" }, "Înainte de data de la care lucrează sau de la data dezangajării: ziua rămâne goală și nu intră în normă. Datele se schimbă din lista de persoane."));
+    target.replaceChildren(...parts);
+    return;
+  }
 
   if (emp.group !== "tachograph" && emp.group !== "tir") {
     // Office, garage and city: the hours come from the plan of the person, not from a tachograph report.

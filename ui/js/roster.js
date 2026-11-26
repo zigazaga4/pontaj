@@ -46,12 +46,29 @@ function planText(plan) {
 /** The way two names are told apart: capitals, no diacritics, single spaces (as the backend writes them). */
 const nameKey = (name) => name.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ").trim();
 
+/** "2026-11-16" → "16.11.2026". */
+const dateText = (iso) => iso.split("-").reverse().join(".");
+
+/**
+ * Is the person employed on some day of the month? `startsOn` is the first day he works and `stopsOn` the first day he no longer
+ * works (both optional, ISO dates, which compare as text). Only those people are in the pontaj of the month.
+ */
+function employedIn(member, year, month) {
+  const first = isoDay(new Date(year, month - 1, 1));
+  const last = isoDay(new Date(year, month, 0));
+  return (!member.startsOn || member.startsOn <= last) && (!member.stopsOn || member.stopsOn > first);
+}
+
+/** What the dates of a person say, for the list of people. */
+const employmentText = (member) =>
+  [member.startsOn ? `lucrează din ${dateText(member.startsOn)}` : "", member.stopsOn ? `nu mai lucrează din ${dateText(member.stopsOn)}` : ""].filter(Boolean).join(" · ");
+
 /** An end time at or before the start is the next day's (a shift over midnight). */
 const endAfter = (start, end) => (end <= start ? end + 1440 : end);
 
 /**
  * The form of one person. `existing` is null for a new one. Resolves with the person (as the settings keep him) or null.
- * `others` are the names already in the list, `anchor` the day a new cycle starts on.
+ * `others` are the names already in the list, `anchor` the day a new cycle starts on (for a new person also the day he starts working).
  */
 function askPerson({ existing, group, others, anchor }) {
   const person = existing ?? { name: "", function: "", group, plan: defaultPlan(group, anchor), note: "", moves: [] };
@@ -68,6 +85,15 @@ function askPerson({ existing, group, others, anchor }) {
   const from = text(hhmm(weekday.start), { size: 6 });
   const to = text(hhmm(weekday.end), { size: 6 });
   const first = h("input", { type: "date", value: plan.kind === "rotation" ? plan.anchor : anchor });
+  // The dates he is employed between: a new person must have the day he starts, somebody already in the list may have none (always).
+  const starts = h("input", { type: "date", value: person.startsOn ?? (existing ? "" : anchor) });
+  const stops = h("input", { type: "date", value: person.stopsOn ?? "" });
+  // The first day of a new cycle follows the day he starts, until it is written by hand.
+  let anchorWritten = false;
+  first.addEventListener("input", () => (anchorWritten = true));
+  starts.addEventListener("change", () => {
+    if (!existing && !anchorWritten && starts.value) first.value = starts.value;
+  });
   const days = shifts.slice(0, 2).map((shift) => ({ from: text(hhmm(shift.start), { size: 6 }), to: text(hhmm(shift.end), { size: 6 }) }));
   const error = h("p", { class: "form-error", role: "alert" });
 
@@ -91,6 +117,9 @@ function askPerson({ existing, group, others, anchor }) {
     const cleaned = name.value.replace(/\s+/g, " ").trim().toUpperCase();
     if (!cleaned) return fail("Scrie numele.");
     if (others.some((other) => nameKey(other) === nameKey(cleaned))) return fail("Există deja o persoană cu acest nume.");
+    const [startsOn, stopsOn] = [starts.value, stops.value];
+    if (!existing && !startsOn) return fail("Alege ziua de la care lucrează.");
+    if (startsOn && stopsOn && stopsOn <= startsOn) return fail("„Nu mai lucrează din” trebuie să fie după „Lucrează de la”.");
     const time = (input) => parseHm(input.value);
     let next;
     if (kind.value === "manual") {
@@ -109,22 +138,52 @@ function askPerson({ existing, group, others, anchor }) {
       }
       next = rotation(first.value, on);
     }
-    return { name: cleaned, function: job.value.trim(), group: where.value, plan: next, note: "", moves: person.moves ?? [] };
+    return { name: cleaned, function: job.value.trim(), group: where.value, plan: next, note: "", moves: person.moves ?? [], ...(startsOn ? { startsOn } : {}), ...(stopsOn ? { stopsOn } : {}) };
   };
 
   return showDialog({
-    title: existing ? `Programul lui ${existing.name}` : "Persoană nouă",
+    title: existing ? `Modifică · ${existing.name}` : "Persoană nouă",
     body: h("div", {},
       person.note ? h("p", { class: "form-note" }, `⚠ ${person.note}`) : null,
       field("Nume", name, "Cum apare în pontaj, de exemplu POPESCU ION."),
       field("Funcția", job),
       field("Grupa", where),
+      field("Lucrează de la", starts, existing ? "Prima zi lucrată. Gol = a lucrat dintotdeauna. Înainte de această zi nu apare în pontaj." : "Prima zi lucrată. Înainte de ea nu apare în pontaj; din această zi are programul de mai jos."),
+      existing ? field("Nu mai lucrează din", stops, "Prima zi în care nu mai lucrează (ultima zi lucrată este cea dinainte). Gol = lucrează în continuare. De la această zi nu mai apare în pontaj.") : null,
       field("Program", kind),
       weekdayBox,
       rotationBox,
       manualBox,
       error),
     buttons: [{ label: "Anulează", value: null }, { label: existing ? "Salvează" : "Adaugă", kind: "primary", action: read }],
+  });
+}
+
+/**
+ * The dismissal of a person: the first day he no longer works. Resolves with that day (an ISO date), "delete" (take him out of every
+ * month, for somebody added by mistake) or null.
+ */
+function askDismissal({ member, day }) {
+  const date = h("input", { type: "date", value: member.stopsOn ?? day });
+  const error = h("p", { class: "form-error", role: "alert" });
+  return showDialog({
+    title: `Dezangajare · ${member.name}`,
+    body: h("div", {},
+      field("Nu mai lucrează din", date, "În ziua aleasă și după ea nu mai are ore și nu mai apare în pontaj; ultima zi lucrată este cea dinainte. Lunile dinainte rămân cum sunt."),
+      error),
+    buttons: [
+      { label: "Anulează", value: null },
+      { label: "Șterge din toate lunile", value: "delete" },
+      {
+        label: "Dezangajează",
+        kind: "primary",
+        action: () => {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date.value)) return void (error.textContent = "Alege ziua din care nu mai lucrează.");
+          if (member.startsOn && date.value <= member.startsOn) return void (error.textContent = `A început să lucreze pe ${dateText(member.startsOn)}: alege o zi după aceea.`);
+          return date.value;
+        },
+      },
+    ],
   });
 }
 
@@ -142,6 +201,8 @@ export function createRoster({ getSettings, saveSettings }) {
   // Only real people: a stray entry in the list (anything that is not a person) must never reach the screen or the backend.
   const staff = () => (getSettings().roster ?? []).filter((member) => member && typeof member === "object");
   const people = () => staff().filter((member) => member.group === state.group).sort((a, b) => a.name.localeCompare(b.name));
+  /** The people of the group who are employed on some day of the open month (the others are not in its pontaj). */
+  const working = () => people().filter((member) => employedIn(member, state.year, state.month));
 
   // ---- saving ----
 
@@ -195,8 +256,11 @@ export function createRoster({ getSettings, saveSettings }) {
     renderAll();
   }
 
+  /** The day a new person starts on unless the office says otherwise: today when the month on the screen is this month, else its first day. */
+  const defaultStart = () => (state.year === today.getFullYear() && state.month === today.getMonth() + 1 ? isoDay(today) : isoDay(new Date(state.year, state.month - 1, 1)));
+
   async function addPerson() {
-    const person = await askPerson({ existing: null, group: state.group, others: staff().map((m) => m.name), anchor: isoDay(new Date(state.year, state.month - 1, 1)) });
+    const person = await askPerson({ existing: null, group: state.group, others: staff().map((m) => m.name), anchor: defaultStart() });
     if (person) await setStaff([...staff(), person], person.name).catch(fail);
   }
 
@@ -208,13 +272,28 @@ export function createRoster({ getSettings, saveSettings }) {
     await setStaff(staff().map((m) => (m === member ? person : m)), changed ? person.name : null).catch(fail);
   }
 
+  /** Takes the person out of the list altogether: he is gone from every month (only for somebody added by mistake). */
   async function removePerson(member) {
     const at = staff().indexOf(member);
     await setStaff(staff().filter((m) => m !== member)).catch(fail);
-    toast(`${member.name} a fost scos din lista de personal.`, {
+    toast(`${member.name} a fost șters din lista de personal, din toate lunile.`, {
       kind: "ok",
       timeout: 12000,
       action: { label: "Anulează", run: () => setStaff([...staff().slice(0, at), member, ...staff().slice(at)]).catch(fail) },
+    });
+  }
+
+  /** The person stops working on the day the office picks: the months before stay as they were, from that day on he is not in the pontaj. */
+  async function dismissPerson(member) {
+    const answer = await askDismissal({ member, day: isoDay(today) });
+    if (!answer) return;
+    if (answer === "delete") return removePerson(member);
+    const replace = (next) => staff().map((m) => (m.group === member.group && nameKey(m.name) === nameKey(member.name) ? next : m));
+    await setStaff(replace({ ...member, stopsOn: answer })).catch(fail);
+    toast(`${member.name} nu mai lucrează din ${dateText(answer)}.`, {
+      kind: "ok",
+      timeout: 12000,
+      action: { label: "Anulează", run: () => setStaff(replace(member)).catch(fail) },
     });
   }
 
@@ -325,20 +404,33 @@ export function createRoster({ getSettings, saveSettings }) {
   }
 
   function renderPeople() {
-    const list = people();
+    const list = working();
+    const away = people().filter((member) => !list.includes(member));
     $("#roster-people").replaceChildren(
       h("h3", {}, `${GROUPS[state.group].label} (${list.length})`),
       h("button", { class: "btn primary", type: "button", onclick: addPerson }, "＋ Adaugă persoană"),
       ...list.map((member) =>
         h("div", { class: `driver-row has-reset ${canMoveShifts(member) ? "has-shift" : ""}` },
-          h("button", { class: "driver", title: "Schimbă programul sau numele", onclick: () => editPerson(member) },
+          h("button", { class: "driver", title: "Schimbă programul, numele sau datele de angajare", onclick: () => editPerson(member) },
             h("b", {}, member.name),
             h("small", {}, member.function ? `${member.function} · ` : "", planText(member.plan)),
+            employmentText(member) ? h("small", { class: "employment" }, employmentText(member)) : null,
             member.note ? h("small", { class: "flag warn" }, `⚠ ${member.note}`) : null,
             canMoveShifts(member) && member.moves?.length ? h("small", { class: "shift-moves", title: member.moves.map(moveText).join("\n") }, `⇄ Tura mutată: ${member.moves.length === 1 ? "o dată" : `de ${member.moves.length} ori`}`) : null),
           canMoveShifts(member) ? h("button", { class: "driver-shift", type: "button", title: `Mută tura lui ${member.name} cu una sau mai multe zile, de la o zi încolo; ce urmează se calculează singur`, "aria-label": `Mută tura lui ${member.name}`, onclick: () => openShifts(member) }, "⇄") : null,
           h("button", { class: "driver-reset", type: "button", title: `Pune zilele lui ${member.name} la loc, după program (șterge ce ai scris pe ele în luna asta)`, "aria-label": `Zilele lui ${member.name} după program`, onclick: () => resetPerson(member) }, "↺"),
-          h("button", { class: "driver-remove", type: "button", title: `Scoate-l pe ${member.name} din listă (îl poți adăuga înapoi)`, "aria-label": `Scoate pe ${member.name} din listă`, onclick: () => removePerson(member) }, "×"))));
+          h("button", { class: "driver-remove", type: "button", title: `Dezangajează-l pe ${member.name}: alegi ziua din care nu mai lucrează`, "aria-label": `Dezangajează pe ${member.name}`, onclick: () => dismissPerson(member) }, "×"))),
+      away.length ? renderAway(away) : null);
+  }
+
+  /** The people of the group who do not work in the open month (not hired yet, or already dismissed), each with the way to change his dates. */
+  function renderAway(away) {
+    return h("details", { class: "hidden-drivers" },
+      h("summary", {}, `Nu lucrează în ${MONTHS[state.month - 1].toLowerCase()} (${away.length})`),
+      h("p", { class: "muted" }, "Nu sunt în pontajul acestei luni. Apar în lunile în care lucrează."),
+      ...away.map((member) => h("div", { class: "hidden-driver" },
+        h("span", {}, member.name, h("small", { class: "employment" }, employmentText(member))),
+        h("button", { class: "btn small", type: "button", title: "Schimbă datele de angajare", onclick: () => editPerson(member) }, "Datele"))));
   }
 
   function renderView() {
@@ -348,7 +440,8 @@ export function createRoster({ getSettings, saveSettings }) {
       return;
     }
     if (!state.sheet.employees.length) {
-      view.replaceChildren(h("div", { class: "empty-note" }, h("p", {}, `Nu este nimeni în lista „${GROUPS[state.group].label}”.`), h("button", { class: "btn primary", onclick: addPerson }, "＋ Adaugă persoană")));
+      const nobody = people().length ? `Nu lucrează nimeni din „${GROUPS[state.group].label}” în ${MONTHS[state.month - 1].toLowerCase()} ${state.year}.` : `Nu este nimeni în lista „${GROUPS[state.group].label}”.`;
+      view.replaceChildren(h("div", { class: "empty-note" }, h("p", {}, nobody), h("button", { class: "btn primary", onclick: addPerson }, "＋ Adaugă persoană")));
       return;
     }
     const wrap = h("div", { class: "grid-wrap", id: "roster-grid" });

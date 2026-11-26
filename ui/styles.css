@@ -7,6 +7,7 @@
   --accent: #2563eb;
   --accent-dark: #1d4ed8;
   --off: #eef0f4;
+  --away: #c5cad6;
   --holiday: #fde7d8;
   --code: #dcf3e2;
   --code-text: #166534;
@@ -109,6 +110,9 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
 .hours-row td { border-top: 2px solid #cfd6e4; }
 .grid td.off { background: var(--off); }
+/* A day the person is not employed on (not hired yet, or already dismissed): grey, empty, not to be written on. */
+.grid td.away, input.cell.away { background: var(--away); }
+input.cell.away { cursor: not-allowed; box-shadow: none; }
 input.cell {
   width: 30px; height: 26px; border: none; background: transparent; text-align: center;
   font: inherit; font-weight: 700; font-size: 13px; color: var(--text); padding: 0;
@@ -141,6 +145,7 @@ td.sum.night, td.sum.leave, td.sum.absences, td.sum.overtime { background: #fafb
 .details { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; min-height: 40px; padding: 8px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .pill { padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
 .pill.holiday { background: var(--holiday); }
+.pill.away { background: var(--away); color: #3a4256; }
 .pill.code { background: var(--code); color: var(--code-text); }
 
 /* ---------- Settings panel ---------- */
@@ -348,6 +353,8 @@ td.sum.night, td.sum.leave, td.sum.absences, td.sum.overtime { background: #fafb
 .hidden-drivers p { margin: 6px 0; }
 .hidden-driver { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
 .hidden-driver span { overflow-wrap: anywhere; }
+.hidden-driver small.employment { display: block; }
+.driver-row .driver small.employment { color: var(--accent-dark); }
 .driver.over { border-left: 3px solid var(--danger); }
 .flag.bad { color: var(--danger); font-weight: 700; }
 .flag.warn { color: #b45309; font-weight: 600; }

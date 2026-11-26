@@ -160,6 +160,10 @@ pub struct DayEntry {
     /// Gone with the code.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub leave_on_free_day: bool,
+    /// The person is not employed on this day (not hired yet, or already dismissed): the day stays empty and cannot be written on, and
+    /// it is outside the norm of the month. Set by [`crate::roster`] from the dates on the staff list.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub not_employed: bool,
     /// Remarks written beside some of the day's start/end times (a note on that cell in the Excel): for instance that time
     /// was added to the first departure. Only the mode that has something to say sets them.
     pub time_notes: Vec<TimeNote>,

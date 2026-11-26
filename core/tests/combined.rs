@@ -31,7 +31,7 @@ fn temp(name: &str) -> PathBuf {
 }
 
 fn staff(names: &[&str], group: Group, plan: Plan) -> Vec<StaffMember> {
-    names.iter().map(|name| StaffMember { name: (*name).into(), function: "Funcție".into(), group, plan: plan.clone(), note: String::new(), moves: Vec::new() }).collect()
+    names.iter().map(|name| StaffMember { name: (*name).into(), function: "Funcție".into(), group, plan: plan.clone(), note: String::new(), moves: Vec::new(), starts_on: None, stops_on: None }).collect()
 }
 
 fn settings() -> Settings {
@@ -193,6 +193,46 @@ fn the_formulas_of_the_leaves_give_what_the_screen_shows() {
             assert_eq!(computed.num().unwrap_or(0.0), written.num().unwrap_or(0.0), "{name}, column {col}: the formula gives {} and the file shows {}", computed.show(), written.show());
             compared += 1;
         }
+    }
+    assert_eq!(compared, 2 * 14);
+    std::fs::remove_file(&path).ok();
+}
+
+/// Somebody hired on the 16th and somebody dismissed from the 10th: the file has their norm (a number of their own, not the month's),
+/// the formulas still give what the screen shows, and the days they are not employed on are grey and empty.
+#[test]
+fn the_norm_of_somebody_hired_or_dismissed_in_the_month_is_in_the_file() {
+    let date = |day: u32| chrono::NaiveDate::from_ymd_opt(YEAR, MONTH, day).unwrap();
+    let mut staff_list = staff(&["Angajat Nou", "Plecat Ion"], Group::Office, Plan::standard_weekdays());
+    staff_list[0].starts_on = Some(date(16));
+    staff_list[1].stops_on = Some(date(10));
+    let mut settings = settings();
+    settings.roster = staff_list.clone();
+    let employees = roster::build_sheet(&staff_list, Group::Office, YEAR, MONTH, &settings).employees;
+    let by_name = |name: &str| employees.iter().find(|e| e.name == name).unwrap();
+    assert_eq!((by_name("ANGAJAT NOU").norm_hours, by_name("PLECAT ION").norm_hours), (Some(80), Some(48)));
+    assert_eq!((by_name("ANGAJAT NOU").totals.worked, by_name("PLECAT ION").totals.worked), (80.0, 48.0));
+
+    let parts = Parts { year: YEAR, month: MONTH, tachograph: None, catb: None, staff: employees.clone() };
+    let path = temp("hired");
+    combined::write_xlsx(&parts, &settings, &path).expect("the file is written");
+    let workbook = Workbook::read(&path);
+    let engine = Engine::new(&workbook);
+    let first_total = FIRST_DAY_COL + 30;
+    let mut compared = 0;
+    for (row, name) in people(&workbook.sheets[0]) {
+        for col in first_total..=first_total + 3 + 11 {
+            if col == first_total + 1 {
+                continue; // the night hours sit on the next row
+            }
+            let (computed, written) = (engine.value(0, row, col), workbook.sheets[0].value(row, col));
+            assert_eq!(computed.num().unwrap_or(0.0), written.num().unwrap_or(0.0), "{name}, column {col}: the formula gives {} and the file shows {}", computed.show(), written.show());
+            compared += 1;
+        }
+        // No hours on the days before the hire and after the dismissal.
+        let hours: Vec<f64> = (0..30).map(|day| workbook.sheets[0].value(row, FIRST_DAY_COL + day).num().unwrap_or(0.0)).collect();
+        let worked_days = hours.iter().filter(|h| **h > 0.0).count();
+        assert_eq!(worked_days, if name == "ANGAJAT NOU" { 10 } else { 6 }, "{name}");
     }
     assert_eq!(compared, 2 * 14);
     std::fs::remove_file(&path).ok();

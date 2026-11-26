@@ -23,7 +23,7 @@ fn preview_tachograph(year: i32, month: u32, settings: &Settings) -> Timesheet {
     let names = ["Andrei Nicolae", "Arif Redin", "Badaluta Marius Adrian", "Chenaru Florin"];
     let drivers: Vec<StaffMember> = names
         .iter()
-        .map(|name| StaffMember { name: (*name).into(), function: "Șofer de autoturisme".into(), group: Group::Office, plan: Plan::standard_weekdays(), note: String::new(), moves: Vec::new() })
+        .map(|name| StaffMember { name: (*name).into(), function: "Șofer de autoturisme".into(), group: Group::Office, plan: Plan::standard_weekdays(), note: String::new(), moves: Vec::new(), starts_on: None, stops_on: None })
         .collect();
     let mut sheet = roster::build_sheet(&drivers, Group::Office, year, month, settings);
     sheet.company = "AUTO LUX TRADING SRL".into();

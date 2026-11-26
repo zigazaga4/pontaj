@@ -164,6 +164,11 @@ fn day_intervals(entry: &DayEntry, hours: f64, s: &Settings) -> Vec<Interval> {
 }
 
 pub(crate) fn recompute_day(entry: &mut DayEntry, s: &Settings) {
+    // A day the person is not employed on is empty, whatever was written on it.
+    if entry.not_employed {
+        *entry = DayEntry { day: entry.day, not_employed: true, ..Default::default() };
+        return;
+    }
     entry.card_intervals = card_intervals(&entry.segments, s.merge_gap_min, usize::MAX);
     entry.code = entry.code.as_deref().and_then(normalize_code);
     entry.leave_on_free_day &= entry.code.is_some();

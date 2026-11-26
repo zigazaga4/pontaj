@@ -32,6 +32,8 @@ pub(crate) const HOLIDAY_FILL: u32 = 0xFCE4D6;
 pub(crate) const TOTAL_FILL: u32 = 0xFFF2CC;
 /// The green of weekends, holidays and the month header in the payroll file (theme accent 3, 40% lighter).
 const WEEKEND_FILL: u32 = 0xC3D69B;
+/// The days a person is not employed on (not hired yet, or dismissed): grey, empty.
+const NOT_EMPLOYED_FILL: u32 = 0xA6A6A6;
 /// What is calculated, and the names of the tachograph drivers.
 const YELLOW: u32 = 0xFFFF00;
 /// The names of everybody whose hours are not on a tachograph (Categoria B, office, garage, city).
@@ -305,7 +307,13 @@ fn write_employee(
 
     for (i, (info, entry)) in sheet.days.iter().zip(&emp.days).enumerate() {
         let col = FIRST_DAY_COL + i as ColNum;
-        let day = if info.is_off() { st.fill(WEEKEND_FILL) } else { st.base.clone() };
+        let day = if entry.not_employed {
+            st.fill(NOT_EMPLOYED_FILL)
+        } else if info.is_off() {
+            st.fill(WEEKEND_FILL)
+        } else {
+            st.base.clone()
+        };
         let linked = hours_from.and_then(|f| f(nr - 1, info.day));
         // Somebody on the tachograph (category D) and on Categoria B: the cell of a day with tachograph hours is yellow, the other
         // days keep the colour of the day.
