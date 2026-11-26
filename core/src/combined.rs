@@ -178,7 +178,7 @@ mod tests {
     fn people(names: &[&str], group: Group, year: i32, month: u32, settings: &Settings) -> Timesheet {
         let staff: Vec<StaffMember> = names
             .iter()
-            .map(|name| StaffMember { name: (*name).into(), function: "Șofer".into(), group, plan: Plan::standard_weekdays(), note: String::new(), moves: Vec::new(), starts_on: None, stops_on: None })
+            .map(|name| StaffMember { name: (*name).into(), function: "Șofer".into(), group, plan: Plan::standard_weekdays(), note: String::new(), moves: Vec::new(), changes: Vec::new(), starts_on: None, stops_on: None })
             .collect();
         roster::build_sheet(&staff, group, year, month, settings)
     }

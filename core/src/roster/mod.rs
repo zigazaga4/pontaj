@@ -88,6 +88,33 @@ impl Default for ShiftMove {
     }
 }
 
+/// A period in which a person works other hours than his plan: on every day of the period (`from` and `to` included) that his plan has him
+/// work, the shift starts at `start` and ends at `end` (minutes; an `end` above 24:00 is after midnight). The days he is free anyway stay free.
+/// With `alternate` only every second week has the other hours: the first week (the 7 days from `from`), the third… and the weeks between
+/// keep the hours of the plan ("one week from one hour, one week from the first hour"). If periods overlap, the one added last decides.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HoursChange {
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    pub start: i32,
+    pub end: i32,
+    pub alternate: bool,
+}
+
+impl Default for HoursChange {
+    fn default() -> Self {
+        Self { from: NaiveDate::default(), to: NaiveDate::default(), start: 0, end: 0, alternate: false }
+    }
+}
+
+impl HoursChange {
+    /// Are the other hours the ones of `date`? (Inside the period, and with `alternate` in the weeks 1, 3, 5… counted from `from`.)
+    pub fn applies_on(&self, date: NaiveDate) -> bool {
+        date >= self.from && date <= self.to && (!self.alternate || (date - self.from).num_days() / 7 % 2 == 0)
+    }
+}
+
 /// A person of the office, the garage or the city, with the plan the hours are inferred from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,6 +131,9 @@ pub struct StaffMember {
     /// The moves of the shift cycle (see [`ShiftMove`]); none for most people.
     #[serde(default)]
     pub moves: Vec<ShiftMove>,
+    /// The periods in which the person works other hours than his plan (see [`HoursChange`]); none for most people.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<HoursChange>,
     /// The first day the person works (a new hire). `None` = he has always worked. Before this day he is not in the pontaj.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starts_on: Option<NaiveDate>,
@@ -155,15 +185,17 @@ impl StaffMember {
         }
     }
 
-    /// The times of the day's shift, or `None` when the person is off that day: the plan, with the moves of the cycle taken into account.
+    /// The times of the day's shift, or `None` when the person is off that day: the plan, with the moves of the cycle and the periods of other hours taken into account.
     pub fn shift_on(&self, date: NaiveDate) -> Option<Interval> {
         if !self.employed_on(date) {
             return None;
         }
-        match self.plan {
+        let planned = match self.plan {
             Plan::Rotation { .. } => self.plan.shift_on(date - Duration::days(self.offset_on(date))),
             Plan::Weekdays { .. } | Plan::Manual => self.plan.shift_on(date),
-        }
+        };
+        // A day he works in a period with other hours has those hours; a day he is free stays free.
+        planned.map(|shift| self.changes.iter().rev().find(|change| change.applies_on(date)).map_or(shift, |change| Interval { start: change.start, end: change.end }))
     }
 }
 
@@ -404,7 +436,7 @@ pub fn move_cycle(dir: &Path, before: &StaffMember, from: NaiveDate, settings: &
 /// on, like for a moved cycle ([`move_cycle`]). `before` is the list as it was, the settings hold the list as it is now.
 pub fn follow_plans(dir: &Path, before: &[StaffMember], settings: &Settings) -> Result<()> {
     for old in before {
-        let changed = settings.roster.iter().any(|now| now.group == old.group && key(&now.name) == key(&old.name) && (now.plan != old.plan || now.moves != old.moves));
+        let changed = settings.roster.iter().any(|now| now.group == old.group && key(&now.name) == key(&old.name) && (now.plan != old.plan || now.moves != old.moves || now.changes != old.changes));
         if changed {
             move_cycle(dir, old, NaiveDate::MIN, settings)?;
         }
@@ -430,7 +462,7 @@ mod tests {
     }
 
     fn member(name: &str, group: Group, plan: Plan) -> StaffMember {
-        StaffMember { name: name.into(), function: "Secretara".into(), group, plan, note: String::new(), moves: Vec::new(), starts_on: None, stops_on: None }
+        StaffMember { name: name.into(), function: "Secretara".into(), group, plan, note: String::new(), moves: Vec::new(), changes: Vec::new(), starts_on: None, stops_on: None }
     }
 
     fn hours(sheet: &Timesheet, name: &str) -> Vec<Option<f64>> {
@@ -1035,6 +1067,127 @@ mod tests {
         assert_eq!((dated.starts_on, dated.stops_on), (Some(date(2026, 12, 1)), Some(date(2027, 2, 1))));
         assert!(dated.employed_on(date(2026, 12, 1)) && dated.employed_on(date(2027, 1, 31)));
         assert!(!dated.employed_on(date(2026, 11, 30)) && !dated.employed_on(date(2027, 2, 1)));
+    }
+
+    fn change(from: (u32, u32), to: (u32, u32), start: i32, end: i32, alternate: bool) -> HoursChange {
+        HoursChange { from: date(2026, from.0, from.1), to: date(2026, to.0, to.1), start, end, alternate }
+    }
+
+    fn with_changes(changes: Vec<HoursChange>) -> StaffMember {
+        StaffMember { changes, ..member("Ana Pop", Group::Office, Plan::standard_weekdays()) }
+    }
+
+    /// The start of the shift of every day of November 2026 ("08:00" for the days with 08:00–16:00, empty for a free day).
+    fn starts(sheet: &Timesheet) -> Vec<String> {
+        sheet.employees[0].days.iter().map(|d| d.intervals.first().map(|i| format!("{:02}:{:02}", i.start / 60, i.start % 60)).unwrap_or_default()).collect()
+    }
+
+    #[test]
+    fn a_period_with_other_hours_changes_the_days_he_works_and_nothing_else() {
+        // Monday 16 – Sunday 22 November: 12:00–20:00 (the weekend stays free); the weeks around keep 08:00–16:00.
+        let staff = [with_changes(vec![change((11, 16), (11, 22), 720, 1200, false)])];
+        let sheet = build_sheet(&staff, Group::Office, 2026, 11, &Settings::default());
+        let at = starts(&sheet);
+        assert_eq!(&at[8..13], ["08:00", "08:00", "08:00", "08:00", "08:00"], "9–13 November as in the plan");
+        assert_eq!(&at[15..22], ["12:00", "12:00", "12:00", "12:00", "12:00", "", ""], "16–20 November from 12:00, the weekend free");
+        assert_eq!(&at[22..27], ["08:00", "08:00", "08:00", "08:00", "08:00"], "23–27 November as in the plan");
+        let days = &sheet.employees[0].days;
+        assert_eq!((days[15].hours, days[15].intervals[0].end), (Some(8.0), 1200), "the hours follow the length of the shift");
+        assert_eq!(sheet.employees[0].totals.worked, 160.0);
+        // A period of 10:00–16:00 gives six hours a day.
+        let shorter = [with_changes(vec![change((11, 2), (11, 6), 600, 960, false)])];
+        let sheet = build_sheet(&shorter, Group::Office, 2026, 11, &Settings::default());
+        assert_eq!(sheet.employees[0].days[1].hours, Some(6.0));
+        assert_eq!(sheet.employees[0].totals.worked, 5.0 * 6.0 + 15.0 * 8.0);
+    }
+
+    #[test]
+    fn one_week_from_one_hour_and_one_week_from_the_first_hour() {
+        // From Monday 2 November to Sunday 29 November: weeks 2–8 and 16–22 from 12:00, the weeks 9–15 and 23–29 as in the plan.
+        let staff = [with_changes(vec![change((11, 2), (11, 29), 720, 1200, true)])];
+        let at = starts(&build_sheet(&staff, Group::Office, 2026, 11, &Settings::default()));
+        let monday = |day: usize| at[day - 1].clone();
+        assert_eq!((monday(2), monday(9), monday(16), monday(23)), ("12:00".into(), "08:00".into(), "12:00".into(), "08:00".into()));
+        assert_eq!((at[5].as_str(), at[11].as_str()), ("12:00", "08:00"), "Friday 6 November is in the first week, Thursday 12 November in the second");
+        // Not alternating, the same period has the other hours in all four weeks.
+        let all = [with_changes(vec![change((11, 2), (11, 29), 720, 1200, false)])];
+        let at = starts(&build_sheet(&all, Group::Office, 2026, 11, &Settings::default()));
+        assert!([2, 9, 16, 23].iter().all(|day| at[day - 1] == "12:00"));
+    }
+
+    #[test]
+    fn the_weeks_are_counted_from_the_first_day_of_the_period() {
+        // Wednesday 4 – Tuesday 10 November is the first week, Wednesday 11 – Tuesday 17 the second.
+        let staff = [with_changes(vec![change((11, 4), (11, 30), 720, 1200, true)])];
+        let at = starts(&build_sheet(&staff, Group::Office, 2026, 11, &Settings::default()));
+        assert_eq!((at[3].as_str(), at[9].as_str(), at[10].as_str(), at[16].as_str(), at[17].as_str()), ("12:00", "12:00", "08:00", "08:00", "12:00"));
+        assert_eq!(at[2], "08:00", "the day before the period is as in the plan");
+    }
+
+    #[test]
+    fn on_a_cycle_the_other_hours_are_on_the_shifts_and_the_free_days_stay_free() {
+        // The cycle starts on 1 December 2026 with two shifts then two days off. 10:00–18:00 from the 8th to the 14th.
+        let person = StaffMember { changes: vec![HoursChange { from: date(2026, 12, 8), to: date(2026, 12, 14), start: 600, end: 1080, alternate: false }], ..mover(&[]) };
+        let sheet = build_sheet(std::slice::from_ref(&person), Group::City, 2026, 12, &Settings::default());
+        let days = &sheet.employees[0].days;
+        let shift = |day: usize| days[day - 1].intervals.first().map(|i| (i.start, i.end));
+        assert_eq!(shift(5), Some((540, 1260)), "5 December as in the plan: 09:00–21:00");
+        assert_eq!(shift(9), Some((600, 1080)), "9 December from 10:00 to 18:00");
+        assert_eq!(days[8].hours, Some(8.0));
+        assert_eq!(shift(7), None, "7 December is a free day of the cycle");
+        assert_eq!((shift(13), shift(15), shift(17)), (Some((600, 1080)), None, Some((540, 1260))), "the 13th from 10:00, the 15th is free, the 17th as in the plan");
+        assert_eq!(on_days(&sheet), on_days(&build_sheet(&[mover(&[])], Group::City, 2026, 12, &Settings::default())), "the same days work, only the hours of some differ");
+    }
+
+    #[test]
+    fn the_period_added_last_decides_when_two_overlap_and_a_period_never_works_a_day_off() {
+        let staff = [with_changes(vec![change((11, 2), (11, 13), 720, 1200, false), change((11, 9), (11, 13), 600, 1080, false)])];
+        let at = starts(&build_sheet(&staff, Group::Office, 2026, 11, &Settings::default()));
+        assert_eq!((at[1].as_str(), at[8].as_str(), at[12].as_str()), ("12:00", "10:00", "10:00"));
+        assert_eq!((at[6].as_str(), at[7].as_str()), ("", ""), "Saturday 7 and Sunday 8 November stay free");
+        // A period that begins and ends on days off puts nothing there.
+        let weekend = [with_changes(vec![change((11, 7), (11, 8), 720, 1200, false)])];
+        let sheet = build_sheet(&weekend, Group::Office, 2026, 11, &Settings::default());
+        assert_eq!((sheet.employees[0].days[6].hours, sheet.employees[0].days[7].hours), (None, None));
+    }
+
+    #[test]
+    fn a_saved_month_follows_the_periods_on_the_days_nobody_typed_on() {
+        let dir = std::env::temp_dir().join(format!("pontaj-roster-hours-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let before = with_changes(Vec::new());
+        let settings = Settings { roster: vec![before.clone()], ..Settings::default() };
+        // November is saved; the office typed 4 hours on Tuesday the 17th.
+        let mut november = open(&dir, Group::Office, 2026, 11, &settings).unwrap();
+        november.employees[0].days[16].override_hours = Some(4.0);
+        rules::recompute(&mut november, &settings);
+        save(&dir, Group::Office, &november).unwrap();
+        // 12:00–20:00 for the week of 16 November.
+        let after = with_changes(vec![change((11, 16), (11, 22), 720, 1200, false)]);
+        let changed = Settings { roster: vec![after.clone()], ..settings.clone() };
+        move_cycle(&dir, &before, date(2026, 11, 16), &changed).unwrap();
+        let sheet = open(&dir, Group::Office, 2026, 11, &changed).unwrap();
+        let at = starts(&sheet);
+        assert_eq!((at[12].as_str(), at[17].as_str(), at[22].as_str()), ("08:00", "12:00", "08:00"), "before the period as it was, in it the new hours, after it as it was");
+        assert_eq!(sheet.employees[0].days[16].hours, Some(4.0), "the 17th the office typed on stays as typed");
+        // Taking the period back puts the hours of the plan again.
+        move_cycle(&dir, &after, date(2026, 11, 16), &settings).unwrap();
+        let back = open(&dir, Group::Office, 2026, 11, &settings).unwrap();
+        assert_eq!(starts(&back)[17], "08:00");
+        assert_eq!(back.employees[0].days[16].hours, Some(4.0));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_periods_are_read_and_written_and_a_person_without_periods_has_none_in_the_file() {
+        let none: StaffMember = serde_json::from_str(r#"{"name":"A B","function":"","group":"office","plan":{"kind":"manual"}}"#).unwrap();
+        assert!(none.changes.is_empty());
+        assert!(!serde_json::to_string(&none).unwrap().contains("changes"));
+        let some: StaffMember = serde_json::from_str(r#"{"name":"A B","function":"","group":"office","plan":{"kind":"manual"},"changes":[{"from":"2026-11-02","to":"2026-11-29","start":720,"end":1200,"alternate":true}]}"#).unwrap();
+        assert_eq!(some.changes, [change((11, 2), (11, 29), 720, 1200, true)]);
+        // Weeks 1 and 3 apply, weeks 2 and 4 do not.
+        assert!(some.changes[0].applies_on(date(2026, 11, 8)) && !some.changes[0].applies_on(date(2026, 11, 9)) && some.changes[0].applies_on(date(2026, 11, 16)));
+        assert!(!some.changes[0].applies_on(date(2026, 12, 1)) && !some.changes[0].applies_on(date(2026, 11, 1)));
     }
 
     #[test]
